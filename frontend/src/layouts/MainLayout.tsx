@@ -2,9 +2,11 @@ import { Layout, Dropdown, Avatar, Menu, MenuProps, Space } from 'antd'
 import {
   DatabaseOutlined,
   ExperimentOutlined,
+  KeyOutlined,
   LineChartOutlined,
   LogoutOutlined,
   RobotOutlined,
+  TeamOutlined,
   UserOutlined
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -12,18 +14,23 @@ import { useAuth } from '../context/AuthContext'
 
 const { Header, Sider, Content } = Layout
 
-const menuItems: MenuProps['items'] = [
-  { key: '/backtests', icon: <LineChartOutlined />, label: '回测中心' },
-  { key: '/optimize', icon: <ExperimentOutlined />, label: '参数寻优' },
-  { key: '/ai', icon: <RobotOutlined />, label: 'AI 分析' },
-  { key: '/data', icon: <DatabaseOutlined />, label: '数据管理' }
-]
-
 export default function MainLayout() {
   const { username, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const selectedKey = '/' + (location.pathname.split('/')[1] ?? '')
+
+  const menuItems: MenuProps['items'] = [
+    { key: '/backtests', icon: <LineChartOutlined />, label: '回测中心' },
+    { key: '/optimize', icon: <ExperimentOutlined />, label: '参数寻优' },
+    { key: '/ai', icon: <RobotOutlined />, label: 'AI 分析' },
+    { key: '/data', icon: <DatabaseOutlined />, label: '数据管理' },
+    { key: '/keys', icon: <KeyOutlined />, label: 'Key 管理' },
+    // 用户管理仅管理员可见
+    ...(username === 'admin'
+      ? [{ key: '/users', icon: <TeamOutlined />, label: '用户管理' }]
+      : [])
+  ]
 
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
     navigate(key)

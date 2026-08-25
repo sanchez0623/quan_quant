@@ -9,11 +9,22 @@ import OptimizeList from './pages/OptimizeList'
 import OptimizeDetail from './pages/OptimizeDetail'
 import AiAnalysis from './pages/AiAnalysis'
 import DataManagement from './pages/DataManagement'
+import KeyManagement from './pages/KeyManagement'
+import UserManagement from './pages/UserManagement'
 
 function RequireAuth({ children }: { children: ReactElement }) {
   const { token } = useAuth()
   if (!token) {
     return <Navigate to="/login" replace />
+  }
+  return children
+}
+
+/** 用户管理页仅 admin 可见（admin 用户名由后端 ADMIN_USERNAME 决定，默认 admin） */
+function RequireAdmin({ children }: { children: ReactElement }) {
+  const { username } = useAuth()
+  if (username !== 'admin') {
+    return <Navigate to="/backtests" replace />
   }
   return children
 }
@@ -38,6 +49,15 @@ export default function App() {
           <Route path="optimize/:id" element={<OptimizeDetail />} />
           <Route path="ai" element={<AiAnalysis />} />
           <Route path="data" element={<DataManagement />} />
+          <Route path="keys" element={<KeyManagement />} />
+          <Route
+            path="users"
+            element={
+              <RequireAdmin>
+                <UserManagement />
+              </RequireAdmin>
+            }
+          />
         </Route>
         <Route path="*" element={<Navigate to="/backtests" replace />} />
       </Routes>

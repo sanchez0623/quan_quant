@@ -278,7 +278,19 @@ export interface AiProfile {
   base_url: string
   model: string
   api_key_env: string
+  keys?: number
   available: boolean
+}
+
+/** 用户 DB Key 池条目（脱敏，profiles 接口返回） */
+export interface UserKeyPoolEntry {
+  index: number
+  provider: string
+  label: string
+  base_url: string
+  model: string
+  key_id: number
+  key_label: string
 }
 
 export interface AiProfileUsage {
@@ -287,6 +299,10 @@ export interface AiProfileUsage {
 }
 
 export interface AiProfilesResponse {
+  mode: 'db_key_pool' | 'key_pool' | 'profiles'
+  user_key_pool?: UserKeyPoolEntry[]
+  key_pool?: Array<{ index: number; provider: string; label: string; base_url: string; model: string }>
+  providers?: string[]
   profiles: AiProfile[]
   default: string
   usage: {
@@ -360,4 +376,62 @@ export interface DataStatus {
 export interface DataDemoRequest {
   stocks?: string[]
   days?: number
+}
+
+// ---- Key 管理（每用户私有 Key 池） ----
+export interface LlmKeyItem {
+  id: number
+  username: string
+  provider: string
+  model: string | null
+  base_url: string | null
+  api_key: string // 脱敏值 sk-***xxxx
+  label: string
+  sort_order: number
+  enabled: boolean
+  created_at: string
+  updated_at: string | null
+}
+
+export interface ProviderRegistryEntry {
+  base_url: string
+  default_model: string
+  label: string
+}
+
+export interface KeysResponse {
+  keys: LlmKeyItem[]
+  providers: string[]
+  registry: Record<string, ProviderRegistryEntry>
+}
+
+export interface KeyCreateRequest {
+  provider: string
+  api_key: string
+  model?: string | null
+  base_url?: string | null
+  label?: string
+  sort_order?: number
+}
+
+export interface KeyUpdateRequest {
+  provider?: string
+  api_key?: string
+  model?: string | null
+  base_url?: string | null
+  label?: string
+  sort_order?: number
+  enabled?: boolean
+}
+
+// ---- 用户管理 ----
+export interface UserItem {
+  id: number
+  username: string
+  created_at: string
+}
+
+export interface UserCreateRequest {
+  username: string
+  password: string
 }

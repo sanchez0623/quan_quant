@@ -57,6 +57,20 @@ CREATE TABLE IF NOT EXISTS llm_usage(
   prompt_tokens INTEGER, completion_tokens INTEGER,
   elapsed REAL, created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS llm_keys(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,           -- 属主：每人只看到自己的 key
+  provider TEXT NOT NULL,           -- deepseek/openrouter/volc/zhipu/siliconflow/ollama/custom
+  model TEXT,                       -- 空 = 用内置默认模型
+  base_url TEXT,                    -- custom 时必填；其余用内置注册表
+  api_key TEXT NOT NULL,
+  label TEXT DEFAULT '',            -- 备注名
+  sort_order INTEGER DEFAULT 0,     -- 轮换优先级（小者先）
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_llm_keys_user ON llm_keys(username, sort_order);
 """
 
 
@@ -101,6 +115,91 @@ def get_user(username: str, db_path: Optional[str] = None) -> Optional[dict]:
     with conn(db_path) as c:
         row = c.execute("SELECT id, username, password_hash FROM users WHERE username=?", (username,)).fetchone()
     return {"id": row[0], "username": row[1], "password_hash": row[2]} if row else None
+
+
+def list_users(db_path: Optional[str] = None) -> list[dict]:
+    with conn(db_path) as c:
+        rows = c.execute("SELECT id, username, created_at FROM users ORDER BY id").fetchall()
+    return [{"id": r[0], "username": r[1], "created_at": r[2]} for r in rows]
+
+
+def update_user_password(username: str, password_hash: str, db_path: Optional[str] = None) -> bool:
+    with conn(db_path) as c:
+        cur = c.execute("UPDATE users SET password_hash=? WHERE username=?", (password_hash, username))
+    return cur.rowcount > 0
+
+
+def delete_user(username: str, db_path: Optional[str] = None) -> bool:
+    """删除用户并级联删除其 LLM keys；禁止删除管理员账号"""
+    if username == config.ADMIN_USERNAME:
+        return False
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM users WHERE username=?", (username,))
+        c.execute("DELETE FROM llm_keys WHERE username=?", (username,))
+    return cur.rowcount > 0
+
+
+# ---------------- llm_keys（每用户私有 Key 池） ----------------
+
+_KEY_COLS = "id,username,provider,model,base_url,api_key,label,sort_order,enabled,created_at,updated_at"
+
+
+def _mask_key(key: str) -> str:
+    """脱敏：sk-abcdefgh1234 → sk-***h1234"""
+    if len(key) <= 8:
+        return "***"
+    return f"{key[:3]}***{key[-4:]}"
+
+
+def add_llm_key(username: str, provider: str, api_key: str, model: Optional[str] = None,
+                base_url: Optional[str] = None, label: str = "", sort_order: int = 0,
+                db_path: Optional[str] = None) -> int:
+    with conn(db_path) as c:
+        cur = c.execute(
+            "INSERT INTO llm_keys(username,provider,model,base_url,api_key,label,sort_order,"
+            "enabled,created_at) VALUES(?,?,?,?,?,?,?,1,?)",
+            (username, provider, model, base_url, api_key, label, int(sort_order), _now()))
+    return int(cur.lastrowid)
+
+
+def list_llm_keys(username: str, db_path: Optional[str] = None) -> list[dict]:
+    """属主自己的全部 key（明文，供调用层用）；接口层需另行脱敏"""
+    with conn(db_path) as c:
+        rows = c.execute(
+            f"SELECT {_KEY_COLS} FROM llm_keys WHERE username=? ORDER BY sort_order, id",
+            (username,)).fetchall()
+    return [{"id": r[0], "username": r[1], "provider": r[2], "model": r[3], "base_url": r[4],
+             "api_key": r[5], "label": r[6], "sort_order": r[7], "enabled": bool(r[8]),
+             "created_at": r[9], "updated_at": r[10]} for r in rows]
+
+
+def update_llm_key(key_id: int, username: str, db_path: Optional[str] = None,
+                   **fields: Any) -> bool:
+    """只允许属主修改自己的 key"""
+    allowed = {"provider", "model", "base_url", "api_key", "label", "sort_order", "enabled"}
+    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not updates:
+        return False
+    sets = ",".join(f"{k}=?" for k in updates)
+    vals = list(updates.values()) + [_now(), key_id, username]
+    with conn(db_path) as c:
+        cur = c.execute(f"UPDATE llm_keys SET {sets},updated_at=? WHERE id=? AND username=?", vals)
+    return cur.rowcount > 0
+
+
+def delete_llm_key(key_id: int, username: str, db_path: Optional[str] = None) -> bool:
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM llm_keys WHERE id=? AND username=?", (key_id, username))
+    return cur.rowcount > 0
+
+
+def llm_keys_masked(username: str, db_path: Optional[str] = None) -> list[dict]:
+    """接口展示用：脱敏 api_key"""
+    out = []
+    for k in list_llm_keys(username, db_path):
+        k["api_key"] = _mask_key(k["api_key"])
+        out.append(k)
+    return out
 
 
 # ---------------- tasks ----------------

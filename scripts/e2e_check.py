@@ -134,6 +134,40 @@ if r.status_code == 200:
 else:
     check("AI分析(无key友好失败或成功)", r.status_code in (400, 422, 500) and "Key" in r.text, r.text)
 
+# 7.5 Key 管理 + 多用户隔离
+r = client.get("/keys")
+check("Key列表", r.status_code == 200 and "keys" in r.json() and "registry" in r.json(), r.text)
+r = client.post("/keys", json={"provider": "deepseek", "api_key": "sk-e2e-test-9999abcd", "label": "e2e", "sort_order": 1})
+check("新增Key", r.status_code == 200, r.text)
+kid = r.json()["id"]
+r = client.get("/keys")
+check("Key脱敏", "sk-e2e-test-9999abcd" not in json.dumps(r.json(), ensure_ascii=False)
+      and r.json()["keys"][0]["api_key"].startswith("sk-"), str(r.json()["keys"][:1]))
+r = client.put(f"/keys/{kid}", json={"label": "e2e改", "enabled": False})
+check("改Key", r.status_code == 200 and client.get("/keys").json()["keys"][0]["enabled"] is False)
+check("删Key", client.delete(f"/keys/{kid}").status_code == 200 and client.get("/keys").json()["keys"] == [])
+r = client.post("/keys", json={"provider": "bad", "api_key": "sk-12345678"})
+check("非法provider拒绝", r.status_code == 400)
+
+# 多用户：admin 创建用户 → 新用户 key 隔离
+r = client.post("/users", json={"username": "e2e_user", "password": "e2e123456"})
+check("创建用户", r.status_code == 200, r.text)
+c2 = httpx.Client(base_url=BASE, timeout=60)
+r2 = c2.post("/auth/login", json={"username": "e2e_user", "password": "e2e123456"})
+check("新用户登录", r2.status_code == 200, r2.text)
+c2.headers["Authorization"] = f"Bearer {r2.json()['token']}"
+check("新用户无权管理用户", c2.get("/users").status_code == 403)
+r2 = c2.post("/keys", json={"provider": "openrouter", "api_key": "sk-e2e-user-key-777", "label": "u"})
+check("新用户加Key", r2.status_code == 200, r2.text)
+check("admin看不到新用户Key", all(k["provider"] != "openrouter" for k in client.get("/keys").json()["keys"]))
+check("新用户看不到admin数据隔离OK", len(c2.get("/keys").json()["keys"]) == 1)
+r2 = c2.get("/ai/profiles")
+check("新用户profiles含DB池", r2.status_code == 200 and r2.json().get("mode") == "db_key_pool"
+      and r2.json()["user_key_pool"][0]["provider"] == "openrouter", r2.text[:200])
+check("删除用户", client.delete("/users/e2e_user").status_code == 200)
+check("删除后无法登录", c2.post("/auth/login", json={"username": "e2e_user", "password": "e2e123456"}).status_code == 401)
+c2.close()
+
 # 8. 数据状态
 r = client.get("/data/status")
 check("数据状态", r.status_code == 200 and r.json().get("daily", {}).get("stocks", 0) >= 1, r.text[:300])

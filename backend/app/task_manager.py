@@ -54,14 +54,15 @@ def optimize_task(task_id: str, backtest_config: dict, param_space: dict, n_tria
 
 
 def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
-                    reports_dir: str, param_importance: Optional[dict] = None) -> None:
+                    reports_dir: str, param_importance: Optional[dict] = None,
+                    username: Optional[str] = None) -> None:
     from .llm.analyzer import analyze_backtest
     report_path = Path(reports_dir) / f"{backtest_id}.json"
     if not report_path.exists():
         raise RuntimeError(f"回测报告不存在: {backtest_id}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     result = analyze_backtest(report, profile, db_path=db_path,
-                               param_importance=param_importance)
+                               param_importance=param_importance, username=username)
     db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
                      result["content"], result["tokens"], result["elapsed"], None, db_path)
     db.finish_task(task_id, "success",

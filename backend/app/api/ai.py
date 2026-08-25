@@ -17,32 +17,40 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 
 @router.get("/profiles")
-def llm_profiles(_user: str = Depends(get_current_user)):
-    info = provider.profiles_info()
-    return {"profiles": info["profiles"], "default": info["default"],
+def llm_profiles(user: str = Depends(get_current_user)):
+    info = provider.profiles_info(user)
+    return {"mode": info["mode"], "user_key_pool": info["user_key_pool"],
+            "key_pool": info["key_pool"], "providers": info["providers"],
+            "profiles": info["profiles"], "default": info["default"],
             "usage": db.llm_usage_stats()}
 
 
 class AnalyzeRequest(BaseModel):
     backtest_id: str
-    profile: Optional[str] = None
+    profile: Optional[str] = None  # auto(默认) | 服务商名 | key_id（数字字符串）
 
 
 @router.post("/analyze")
-def create_analysis(req: AnalyzeRequest, _user: str = Depends(get_current_user)):
+def create_analysis(req: AnalyzeRequest, user: str = Depends(get_current_user)):
     bt = db.get_task(req.backtest_id)
     if bt is None or bt["status"] != "success":
         raise HTTPException(status_code=400, detail="回测任务不存在或未成功")
-    if req.profile and not provider.profile_available(req.profile):
-        # 未配置 key 的 profile 交给任务层给出友好错误（沿 fallback 尝试）
-        pass
+    # 发起人未配置任何可用 key 且系统级兜底也为空 → 提前友好报错
+    if not provider.db_key_entries(user) and not provider.key_pool_mode():
+        available = [p["name"] for p in provider.profiles_info(user)["profiles"] if p["available"]]
+        if not available:
+            raise HTTPException(
+                status_code=400,
+                detail="未配置 LLM API Key：请到「Key 管理」页添加你的 API Key（支持 DeepSeek/"
+                       "OpenRouter/火山方舟/智谱等，可配多个自动切换）")
     task_id = "ai_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, f"AI分析:{req.backtest_id}", "ai",
-                   payload={"backtest_id": req.backtest_id, "profile": req.profile})
+                   payload={"backtest_id": req.backtest_id, "profile": req.profile,
+                            "username": user})
     # 若存在同策略的寻优结果，附加参数重要性
     param_importance = _latest_param_importance(bt.get("payload", {}).get("strategy_id"))
     manager.submit("ai", task_id, backtest_id=req.backtest_id,
-                   profile=req.profile, param_importance=param_importance)
+                   profile=req.profile, param_importance=param_importance, username=user)
     return {"task_id": task_id, "status": "pending"}
 
 

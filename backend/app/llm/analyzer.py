@@ -79,8 +79,9 @@ def _trade_samples(report: dict) -> dict:
 
 def analyze_backtest(report: dict, profile: Optional[str] = None,
                      db_path: Optional[str] = None,
-                     param_importance: Optional[dict] = None) -> dict:
-    """返回 {content, model, tokens, elapsed, profile}；未配置任何可用 profile 抛 LLMError"""
+                     param_importance: Optional[dict] = None,
+                     username: Optional[str] = None) -> dict:
+    """返回 {content, model, tokens, elapsed, profile}；未配置任何可用 key 抛 LLMError"""
     parts = {
         "回测配置": {k: report.get("config", {}).get(k)
                   for k in ("name", "strategy_id", "params", "risk_config",
@@ -96,4 +97,4 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                 + json.dumps(parts, ensure_ascii=False, default=str))
     return chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
                           {"role": "user", "content": user_msg}],
-                temperature=0.3, db_path=db_path)
+                temperature=0.3, db_path=db_path, username=username)

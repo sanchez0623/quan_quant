@@ -8,6 +8,9 @@ import type {
   BacktestReport,
   DataDemoRequest,
   DataStatus,
+  KeyCreateRequest,
+  KeyUpdateRequest,
+  KeysResponse,
   KLineResponse,
   LoginRequest,
   LoginResponse,
@@ -17,7 +20,9 @@ import type {
   StockItem,
   Strategy,
   TaskCreateResponse,
-  TaskStatusResponse
+  TaskStatusResponse,
+  UserCreateRequest,
+  UserItem
 } from './types'
 
 export const TOKEN_KEY = 'quant_token'
@@ -124,6 +129,48 @@ export async function startAiAnalyze(data: AiAnalyzeRequest): Promise<TaskCreate
 
 export async function getAiAnalyses(backtestId: string): Promise<AiAnalysisItem[]> {
   const res = await api.get<AiAnalysisItem[]>('/ai/analyses', { params: { backtest_id: backtestId } })
+  return res.data
+}
+
+// ---- Key 管理（每用户私有 Key 池） ----
+export async function getKeys(): Promise<KeysResponse> {
+  const res = await api.get<KeysResponse>('/keys')
+  return res.data
+}
+
+export async function createKey(data: KeyCreateRequest): Promise<{ id: number; status: string }> {
+  const res = await api.post<{ id: number; status: string }>('/keys', data)
+  return res.data
+}
+
+export async function updateKey(keyId: number, data: KeyUpdateRequest): Promise<{ status: string }> {
+  const res = await api.put<{ status: string }>(`/keys/${keyId}`, data)
+  return res.data
+}
+
+export async function deleteKey(keyId: number): Promise<{ status: string }> {
+  const res = await api.delete<{ status: string }>(`/keys/${keyId}`)
+  return res.data
+}
+
+// ---- 用户管理（仅 admin） ----
+export async function getUsers(): Promise<UserItem[]> {
+  const res = await api.get<UserItem[]>('/users')
+  return res.data
+}
+
+export async function createUser(data: UserCreateRequest): Promise<{ status: string }> {
+  const res = await api.post<{ status: string }>('/users', data)
+  return res.data
+}
+
+export async function updateUserPassword(username: string, password: string): Promise<{ status: string }> {
+  const res = await api.put<{ status: string }>(`/users/${username}/password`, { password })
+  return res.data
+}
+
+export async function deleteUser(username: string): Promise<{ status: string }> {
+  const res = await api.delete<{ status: string }>(`/users/${username}`)
   return res.data
 }
 

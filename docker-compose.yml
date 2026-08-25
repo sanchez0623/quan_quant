@@ -7,10 +7,12 @@ services:
       - ./config:/app/config      # 配置（含 llm.yaml 等，不入库）
       - ./.env:/app/.env:ro       # 密钥文件（不入库）
     environment:
+      # LLM Key 推荐登录后在前端「Key 管理」页配置（存数据库，每用户私有）
+      # 以下为系统级公共兜底池（可选）
+      - LLM_KEY_1=${LLM_KEY_1:-}
+      - LLM_KEY_2=${LLM_KEY_2:-}
+      - LLM_KEY_3=${LLM_KEY_3:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - DEEPSEEK_API_KEY_2=${DEEPSEEK_API_KEY_2}
-      - DEEPSEEK_API_KEY_3=${DEEPSEEK_API_KEY_3}
-      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
       - ZHIPU_API_KEY=${ZHIPU_API_KEY}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY}
       - JWT_SECRET=${JWT_SECRET}

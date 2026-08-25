@@ -12,8 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# 必须在 import app 之前清除 LLM key，保证 AI 分析测试确定性地走无 key 分支
-for _k in ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "ZHIPU_API_KEY", "OLLAMA_API_KEY"):
+# 必须在 import app 之前清除 LLM key（含 key 池变量），保证 AI 分析测试确定性地走无 key 分支
+for _k in ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "ZHIPU_API_KEY", "OLLAMA_API_KEY",
+           "LLM_KEY", "LLM_KEY_1") + tuple(f"LLM_KEY_{i}" for i in range(2, 10)):
     os.environ.pop(_k, None)
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -208,22 +209,18 @@ def test_ai_no_key_fails_with_friendly_error(client, token):
     r = client.get("/api/ai/profiles", headers=H(token))
     assert r.status_code == 200
     prof = r.json()
-    assert {"profiles", "default", "usage"} <= set(prof)
+    assert {"profiles", "default", "usage", "user_key_pool", "providers"} <= set(prof)
     assert all(p["available"] is False for p in prof["profiles"])  # 环境已清空 key
+    assert prof["user_key_pool"] == []  # admin 未配置 DB key
     # 找一个成功的回测
     r = client.get("/api/backtests", headers=H(token))
     success_bt = next((t["task_id"] for t in r.json() if t["status"] == "success"), None)
     assert success_bt, "前置回测应已成功"
     r = client.post("/api/ai/analyze", headers=H(token),
                     json={"backtest_id": success_bt, "profile": "main"})
-    assert r.status_code == 200
-    ai_id = r.json()["task_id"]
-    st = _wait_task(client, ai_id, token=token)
-    assert st["status"] == "failed", "无 key 环境应 failed"
-    assert st["error"] and "未配置 LLM API Key" in st["error"], st["error"]
-    # analyses 列表
-    r = client.get("/api/ai/analyses", params={"backtest_id": success_bt}, headers=H(token))
-    assert r.status_code == 200
+    assert r.status_code == 400, "无任何 key 时应直接友好报错（不建任务）"
+    assert "未配置 LLM API Key" in r.json()["detail"]
+    assert "Key 管理" in r.json()["detail"]
 
 
 def test_data_update_no_source_friendly_error(client, token):

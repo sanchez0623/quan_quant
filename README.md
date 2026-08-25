@@ -12,7 +12,8 @@
 - **参数化风控**（与策略参数分离）：个股/总仓位上限、固定/ATR/移动止损、止盈、最大回撤熔断、日内交易次数限制
 - **完善统计**：年化收益、最大回撤、夏普/索提诺/卡玛、胜率、盈亏比、做 T 与加减仓贡献分解、月度收益热力图
 - **Optuna 参数寻优**：贝叶斯优化 + MedianPruner 剪枝 + SQLite 存储断点续跑；样本内/外 70/30 划分 + 过拟合风险评级
-- **AI 辅助调优**：多 LLM Provider（OpenAI 兼容协议，硅基流动/DeepSeek/智谱/Ollama），自动降级，token 用量统计；回测报告解读与优化建议
+- **多用户 + 私有 Key 池**：admin 创建账号；每位用户在「Key 管理」页维护自己的 LLM API Key（存数据库，前端增删改），支持 DeepSeek / OpenRouter / 火山方舟 / 智谱 / 硅基流动 / Ollama / 任意自定义 OpenAI 兼容端点；一个 key 余额不足/失效/限流自动跨服务商无缝切换下一个；回测、寻优、数据等功能全体用户共享
+- **AI 辅助调优**：回测报告解读与优化建议（用发起人自己的 Key 池），token 用量统计
 - **数据层**：Parquet 数据湖 + SQLite 元数据；多数据源抽象（baostock/akshare/mootdx，可选安装）健康检查与自动降级；内置合成演示数据一键生成
 - **前后端分离**：React + AntD + KLineCharts（K 线买卖点标记）+ ECharts；WebSocket 任务进度推送
 
@@ -53,11 +54,14 @@ npm install
 
 ```bash
 cp .env.example .env
-# 编辑 .env：设置 JWT_SECRET（openssl rand -hex 32）与 ADMIN_PASSWORD；
-# AI 分析需填写 DEEPSEEK_API_KEY（https://platform.deepseek.com/api_keys 申请）
+# 编辑 .env：设置 JWT_SECRET（openssl rand -hex 32）与 ADMIN_PASSWORD
 ```
 
-LLM 默认使用 **DeepSeek V4 Flash**（快且便宜）。支持**多 API Key 无缝切换**：在 `.env` 中依次追加 `DEEPSEEK_API_KEY_2`、`DEEPSEEK_API_KEY_3`（最多 `_9`），某个 key 余额不足(402)/失效(401)/限流(429)时自动切换下一个，全部 key 失效再降级到 fallback_chain 的其他 Provider（智谱/Ollama 等）。配置见 `config.example/llm.yaml`。
+**LLM Key 配置（推荐，前端管理）**：登录后进入「Key 管理」页添加你的 API Key——支持 DeepSeek / OpenRouter / 火山方舟 / 智谱 / 硅基流动 / Ollama 及任意自定义 OpenAI 兼容端点。Key 存本地 SQLite（data/meta.db，不入 Git），仅自己可见。配多个 Key 时按优先级自动轮换：某个 Key 余额不足(402)/失效(401)/限流(429)时**跨服务商无缝切换**下一个。
+
+系统级兜底（可选）：`.env` 中配置 `LLM_KEY_1~9`（格式 `provider|key` 或 `provider|model|key`）作为所有用户共用的公共池；用户无私有 Key 时自动使用。
+
+**多用户**：admin 登录后在「用户管理」页为朋友创建账号。每位用户管理自己的 Key；回测、寻优、AI 分析结果、数据等所有功能全体用户共享。
 
 ### 3. 启动
 

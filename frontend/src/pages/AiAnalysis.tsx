@@ -17,6 +17,7 @@ import {
 } from 'antd'
 import { PlayCircleOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
+import { useNavigate } from 'react-router-dom'
 import {
   errDetail,
   getAiAnalyses,
@@ -29,6 +30,7 @@ import { useTaskProgress } from '../hooks/useTaskProgress'
 import { fmtInt } from '../utils/format'
 
 export default function AiAnalysis() {
+  const navigate = useNavigate()
   const [backtests, setBacktests] = useState<BacktestListItem[]>([])
   const [profilesResp, setProfilesResp] = useState<AiProfilesResponse | null>(null)
   const [backtestId, setBacktestId] = useState<string | undefined>(undefined)
@@ -64,16 +66,23 @@ export default function AiAnalysis() {
     () => backtests.filter((b) => b.status === 'success'),
     [backtests]
   )
+  const userKeyPool = useMemo(() => profilesResp?.user_key_pool ?? [], [profilesResp])
+  const hasEnvPool = useMemo(
+    () => (profilesResp?.key_pool?.length ?? 0) > 0,
+    [profilesResp]
+  )
   const availableProfiles = useMemo(
     () => (profilesResp?.profiles ?? []).filter((p) => p.available),
     [profilesResp]
   )
+  // 可用 = 用户自己的 Key 池 / 系统环境变量池 / 旧 profiles 任一存在
+  const hasAnyKey = userKeyPool.length > 0 || hasEnvPool || availableProfiles.length > 0
 
   useEffect(() => {
-    if (!profile && profilesResp?.default && availableProfiles.some((p) => p.name === profilesResp.default)) {
-      setProfile(profilesResp.default)
+    if (!profile) {
+      setProfile('auto')
     }
-  }, [profilesResp, availableProfiles, profile])
+  }, [profile])
 
   const loadAnalyses = useCallback(async (bid: string) => {
     setLoadingAnalyses(true)
@@ -116,12 +125,15 @@ export default function AiAnalysis() {
       return
     }
     if (!profile) {
-      message.warning('请选择分析 Profile')
+      message.warning('请选择使用的 Key')
       return
     }
     setStarting(true)
     try {
-      const res = await startAiAnalyze({ backtest_id: backtestId, profile })
+      const res = await startAiAnalyze({
+        backtest_id: backtestId,
+        profile: profile === 'auto' ? undefined : profile
+      })
       setCurrentTaskId(res.task_id)
       message.info('分析任务已提交')
     } catch (err) {
@@ -139,12 +151,17 @@ export default function AiAnalysis() {
       <Col span={7}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Card size="small" title="分析设置">
-            {profilesResp && availableProfiles.length === 0 && (
+            {profilesResp && !hasAnyKey && (
               <Alert
                 type="warning"
                 showIcon
                 message="未配置 LLM API Key"
-                description="当前没有可用的 AI Profile，请在服务端配置对应环境变量后再使用 AI 分析。"
+                description={
+                  <span>
+                    请到「<a onClick={() => navigate('/keys')}>Key 管理</a>」页添加你的 API
+                    Key（支持 DeepSeek / OpenRouter / 火山方舟 / 智谱等，可配多个自动切换）。
+                  </span>
+                }
                 style={{ marginBottom: 16 }}
               />
             )}
@@ -165,23 +182,25 @@ export default function AiAnalysis() {
                 />
               </div>
               <div>
-                <Typography.Text type="secondary">AI Profile</Typography.Text>
+                <Typography.Text type="secondary">使用的 Key</Typography.Text>
                 <Select
                   value={profile}
                   onChange={setProfile}
-                  placeholder="选择 Profile"
                   style={{ width: '100%', marginTop: 4 }}
-                  options={availableProfiles.map((p) => ({
-                    value: p.name,
-                    label: (
-                      <Space>
-                        <span>
-                          {p.name} · {p.model}
-                        </span>
-                        {profilesResp?.default === p.name && <Tag color="blue">默认</Tag>}
-                      </Space>
-                    )
-                  }))}
+                  options={[
+                    {
+                      value: 'auto',
+                      label: `自动轮换我的 Key 池（${userKeyPool.length} 个）${
+                        userKeyPool.length === 0 && !hasAnyKey ? ' · 未配置' : ''
+                      }`
+                    },
+                    ...userKeyPool.map((k) => ({
+                      value: String(k.key_id),
+                      label: `#${k.index} ${k.label || k.provider} · ${k.model}${
+                        k.key_label ? ` · ${k.key_label}` : ''
+                      }`
+                    }))
+                  ]}
                 />
               </div>
               <Button
