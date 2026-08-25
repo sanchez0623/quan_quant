@@ -1,0 +1,33 @@
+# ---- 敏感信息（严禁入库）----
+.env
+.env.*
+!.env.example
+
+# ---- 真实配置（模板 config.example/ 入库）----
+config/
+!config.example/
+
+# ---- 行情数据与元数据 ----
+data/
+*.db
+*.sqlite3
+*.parquet
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# ---- 前端 ----
+node_modules/
+dist/
+
+# ---- 其他 ----
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.trae-browser-screenshots/

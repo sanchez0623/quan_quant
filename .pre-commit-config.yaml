@@ -1,0 +1,6 @@
+# 密钥泄漏扫描（gitleaks）：命中即阻断提交
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks

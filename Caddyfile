@@ -1,0 +1,5 @@
+# 替换为你的域名；本地试用可改为 :80（HTTP）
+your-domain.com {
+    encode gzip
+    reverse_proxy app:8000
+}

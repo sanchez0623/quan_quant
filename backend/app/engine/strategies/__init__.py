@@ -1,0 +1,49 @@
+# -*- coding: utf-8 -*-
+"""策略注册表"""
+from .ma_cross import MaCrossStrategy
+from .grid_t import GridTStrategy
+
+REGISTRY: dict[str, object] = {
+    s.id: s for s in [MaCrossStrategy(), GridTStrategy()]
+}
+
+
+def get_strategy(strategy_id: str):
+    return REGISTRY.get(strategy_id)
+
+
+def apply_param_defaults(strategy_id: str, params: dict) -> dict:
+    """参数缺失用 schema default 填充"""
+    strategy = REGISTRY.get(strategy_id)
+    if strategy is None:
+        return dict(params or {})
+    out = dict(params or {})
+    for p in strategy.param_schema:
+        if p["key"] not in out:
+            out[p["key"]] = p.get("default")
+    return out
+
+
+def validate_params(strategy_id: str, params: dict) -> tuple[bool, str]:
+    """类型/范围校验（尽力而为）"""
+    strategy = REGISTRY.get(strategy_id)
+    if strategy is None:
+        return False, f"策略不存在: {strategy_id}"
+    schema = {p["key"]: p for p in strategy.param_schema}
+    for k, v in (params or {}).items():
+        if k not in schema:
+            continue  # 允许透传（如 stop_loss_pct 同名风控参数）
+        s = schema[k]
+        t = s.get("type")
+        try:
+            if t == "int":
+                v2 = int(v)
+                if ("min" in s and v2 < s["min"]) or ("max" in s and v2 > s["max"]):
+                    return False, f"参数 {k}={v} 超出范围 [{s.get('min')}, {s.get('max')}]"
+            elif t == "float":
+                v2 = float(v)
+                if ("min" in s and v2 < s["min"]) or ("max" in s and v2 > s["max"]):
+                    return False, f"参数 {k}={v} 超出范围 [{s.get('min')}, {s.get('max')}]"
+        except (TypeError, ValueError):
+            return False, f"参数 {k} 类型错误，期望 {t}"
+    return True, ""

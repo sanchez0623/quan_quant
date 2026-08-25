@@ -1,0 +1,31 @@
+# LLM 配置模板（入库，不含密钥）
+# 密钥一律通过环境变量注入（api_key_env 指向 .env 中的变量名）
+# 实际部署：复制本目录为 config/ 并按需修改，config/ 不入库
+
+profiles:
+  main:            # 默认分析模型（报告深度分析）
+    provider: openai_compatible
+    base_url: https://api.siliconflow.cn/v1
+    model: deepseek-ai/DeepSeek-V3
+    api_key_env: SILICONFLOW_API_KEY
+
+  deepseek:        # DeepSeek 官方（便宜且强）
+    provider: openai_compatible
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+
+  zhipu:           # 智谱 GLM
+    provider: openai_compatible
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    model: glm-4-flash
+    api_key_env: ZHIPU_API_KEY
+
+  cheap:           # 轻量任务（分类/摘要），Ollama 本地零成本
+    provider: openai_compatible
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:7b
+    api_key_env: OLLAMA_API_KEY
+
+default: main
+fallback_chain: [main, deepseek, zhipu, cheap]   # 主模型失败自动降级

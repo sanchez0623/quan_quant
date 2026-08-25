@@ -1,0 +1,54 @@
+# -*- coding: utf-8 -*-
+"""数据管理接口：状态 / 增量更新 / 演示数据"""
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from .. import db
+from ..auth import get_current_user
+from ..data import sources, store
+from ..task_manager import manager
+
+router = APIRouter(prefix="/api/data", tags=["data"])
+
+
+@router.get("/status")
+def data_status(_user: str = Depends(get_current_user)):
+    return {
+        "daily": store.parquet_stats_daily(),
+        "minute5": store.parquet_stats_minute5(),
+        "adj_factor": store.parquet_stats_adj_factor(),
+        "calendar": store.parquet_stats_calendar(),
+        "sources": sources.health_snapshot(),
+    }
+
+
+class UpdateRequest(BaseModel):
+    scope: str = "daily"
+
+
+@router.post("/update")
+def data_update(req: UpdateRequest, _user: str = Depends(get_current_user)):
+    if req.scope not in ("daily", "minute5", "all"):
+        raise HTTPException(status_code=400, detail="scope 需为 daily|minute5|all")
+    task_id = "data_" + uuid.uuid4().hex[:12]
+    db.create_task(task_id, f"数据更新:{req.scope}", "data_update",
+                   payload={"scope": req.scope})
+    manager.submit("data_update", task_id, scope=req.scope)
+    return {"task_id": task_id, "status": "pending"}
+
+
+class DemoRequest(BaseModel):
+    stocks: Optional[list[str]] = None
+    days: int = Field(default=500, ge=30, le=3000)
+
+
+@router.post("/demo")
+def data_demo(req: DemoRequest, _user: str = Depends(get_current_user)):
+    task_id = "data_" + uuid.uuid4().hex[:12]
+    db.create_task(task_id, "生成演示数据", "data_update",
+                   payload={"scope": "demo", "stocks": req.stocks, "days": req.days})
+    manager.submit("data_demo", task_id, stocks=req.stocks, days=req.days)
+    return {"task_id": task_id, "status": "pending"}
