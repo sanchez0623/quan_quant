@@ -147,7 +147,12 @@ def run_optimize(task_id: str, config: dict, param_space: dict, n_trials: int, m
     try:
         completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
         if len(completed) >= 3 and len(param_space or {}) >= 1:
-            imp = optuna.importance.get_param_importances(study)
+            try:
+                imp = optuna.importance.get_param_importances(study)  # fANOVA（需 sklearn）
+            except ImportError:
+                # sklearn 未安装 → PedAnova（纯 numpy，无额外依赖）
+                imp = optuna.importance.get_param_importances(
+                    study, evaluator=optuna.importance.PedAnovaImportanceEvaluator())
             param_importance = {k: round(float(v), 4) for k, v in imp.items()}
     except Exception:  # noqa: BLE001
         param_importance = None

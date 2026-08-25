@@ -50,7 +50,7 @@ app = FastAPI(title="A股个人量化回测系统", version="1.0.0", lifespan=li
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5177", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

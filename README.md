@@ -35,14 +35,17 @@
 
 - Python 3.11+，Node.js 18+
 
+推荐使用 venv 虚拟环境隔离 Python 依赖（避免污染全局、多项目互不干扰）：
+
 ```bash
-# 后端依赖
-cd backend
-pip install -r requirements.txt
-# 真实数据源（可选，不装则用演示数据）：pip install -r requirements-sources.txt
+# 后端依赖（venv 虚拟环境）
+python -m venv .venv
+.venv\Scripts\pip install -r backend/requirements.txt        # Windows
+# .venv/bin/pip install -r backend/requirements.txt          # macOS / Linux
+# 真实数据源（可选，不装则用演示数据）：pip install -r backend/requirements-sources.txt
 
 # 前端依赖
-cd ../frontend
+cd frontend
 npm install
 ```
 
@@ -51,16 +54,19 @@ npm install
 ```bash
 cp .env.example .env
 # 编辑 .env：设置 JWT_SECRET（openssl rand -hex 32）与 ADMIN_PASSWORD；
-# 如需 AI 分析，填写任一 LLM API Key（SILICONFLOW_API_KEY / DEEPSEEK_API_KEY 等）
+# AI 分析需填写 DEEPSEEK_API_KEY（https://platform.deepseek.com/api_keys 申请）
 ```
+
+LLM 默认使用 **DeepSeek V4 Flash**（快且便宜）。支持**多 API Key 无缝切换**：在 `.env` 中依次追加 `DEEPSEEK_API_KEY_2`、`DEEPSEEK_API_KEY_3`（最多 `_9`），某个 key 余额不足(402)/失效(401)/限流(429)时自动切换下一个，全部 key 失效再降级到 fallback_chain 的其他 Provider（智谱/Ollama 等）。配置见 `config.example/llm.yaml`。
 
 ### 3. 启动
 
 ```bash
 # 终端 1：后端（http://localhost:8000）
-cd backend && python run.py
+cd backend
+..\.venv\Scripts\python.exe run.py      # Windows（venv）
 
-# 终端 2：前端（http://localhost:5173，已代理 /api 与 /ws）
+# 终端 2：前端（http://localhost:5177，已代理 /api 与 /ws）
 cd frontend && npm run dev
 ```
 

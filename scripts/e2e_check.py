@@ -85,9 +85,10 @@ r = client.get(f"/backtests/{bt_id}/kline", params={"code": code})
 check("K线数据", r.status_code == 200 and len(r.json().get("bars", [])) > 0 and len(r.json().get("marks", [])) > 0, r.text[:300])
 check("K线marks字段", r.status_code == 200 and all(k in r.json()["marks"][0] for k in ["time", "price", "side", "type", "trade_id"]))
 
-# 5. 分钟级做T回测
+# 5. 分钟级做T回测（grid_atr_mult 调小确保随机数据下网格稳定触发；关闭止损避免清仓打断做T周期）
 bt2 = dict(bt_cfg, name="联调-网格做T分钟", strategy_id="grid_t", period="minute5",
-           params={"base_pct": 30, "grid_atr_mult": 1.5, "max_t_times": 4})
+           params={"base_pct": 30, "grid_atr_mult": 0.8, "max_t_times": 6},
+           risk_config={"stop_loss_mode": "none", "max_intraday_trades": 20})
 r = client.post("/backtests", json=bt2)
 check("创建分钟回测", r.status_code == 200, r.text)
 st = wait_task(r.json()["task_id"], 300)
