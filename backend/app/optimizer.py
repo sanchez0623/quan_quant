@@ -14,6 +14,7 @@ RISK_KEYS = {
     "max_position_pct_per_stock", "max_total_position_pct", "stop_loss_mode",
     "stop_loss_pct", "atr_period", "atr_multiplier", "take_profit_pct",
     "trailing_stop_pct", "max_drawdown_breaker", "max_intraday_trades",
+    "max_holdings", "cash_reserve_pct",
 }
 
 METRICS = ("annual_return", "sharpe", "calmar", "total_return")

@@ -26,9 +26,20 @@ def _cached(key: tuple, loader) -> pl.DataFrame:
 
 
 def _attach_adj(df: pl.DataFrame, adj: Optional[pl.DataFrame]) -> pl.DataFrame:
-    """merge 复权因子并生成后复权 OHLC"""
+    """merge 复权因子并生成后复权 OHLC。
+
+    adj 必须为日级序列（每个交易日一行，由 updater 从事件级因子展开）。
+    日线 date 为 "YYYY-MM-DD"；5分钟线 date 为 "YYYY-MM-DD HH:MM"，
+    统一取前 10 位交易日关联，确保分钟线也能正确复权（此前分钟线恒为 1.0）。
+    """
     if adj is not None and adj.height:
-        df = df.join(adj.select(["code", "date", "adj_factor"]), on=["code", "date"], how="left")
+        df = df.with_columns(pl.col("date").str.slice(0, 10).alias("_d"))
+        # adj 的 date 同样归一化到交易日（兼容日级/分钟级两种写入）；
+        # 去重避免分钟级 adj 同日多行造成 join 笛卡尔膨胀
+        adj_d = (adj.select([pl.col("code"), pl.col("date").str.slice(0, 10).alias("_d"),
+                             pl.col("adj_factor").cast(pl.Float64)])
+                 .unique(subset=["code", "_d"], keep="last"))
+        df = df.join(adj_d, on=["code", "_d"], how="left").drop("_d")
     else:
         df = df.with_columns(pl.lit(1.0).alias("adj_factor"))
     df = df.with_columns(pl.col("adj_factor").fill_null(1.0))

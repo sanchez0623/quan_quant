@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """SQLite 元数据层：users / tasks / backtest_reports / ai_analyses / llm_usage
+/ llm_keys / backtest_templates
 每次操作新建连接（短事务），WAL 模式保证多进程（进程池worker）读写安全。
 """
 import json
@@ -71,6 +72,15 @@ CREATE TABLE IF NOT EXISTS llm_keys(
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_llm_keys_user ON llm_keys(username, sort_order);
+CREATE TABLE IF NOT EXISTS backtest_templates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,           -- 属主：每人只看到自己的模板
+  name TEXT NOT NULL,               -- 模板名
+  config TEXT NOT NULL,             -- 回测配置 JSON（与 BacktestRequest 同构）
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_templates_user ON backtest_templates(username, updated_at);
 """
 
 
@@ -101,6 +111,14 @@ def init_db(db_path: Optional[str] = None) -> None:
     Path(p).parent.mkdir(parents=True, exist_ok=True)
     with conn(p) as c:
         c.executescript(_SCHEMA)
+        _migrate(c)
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """轻量迁移：老库补列（幂等）"""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(ai_analyses)")}
+    if "suggestions" not in cols:
+        c.execute("ALTER TABLE ai_analyses ADD COLUMN suggestions TEXT")  # AI结构化建议 JSON
 
 
 # ---------------- users ----------------
@@ -130,12 +148,13 @@ def update_user_password(username: str, password_hash: str, db_path: Optional[st
 
 
 def delete_user(username: str, db_path: Optional[str] = None) -> bool:
-    """删除用户并级联删除其 LLM keys；禁止删除管理员账号"""
+    """删除用户并级联删除其 LLM keys 与回测模板；禁止删除管理员账号"""
     if username == config.ADMIN_USERNAME:
         return False
     with conn(db_path) as c:
         cur = c.execute("DELETE FROM users WHERE username=?", (username,))
         c.execute("DELETE FROM llm_keys WHERE username=?", (username,))
+        c.execute("DELETE FROM backtest_templates WHERE username=?", (username,))
     return cur.rowcount > 0
 
 
@@ -309,17 +328,28 @@ def get_report_path(task_id: str, db_path: Optional[str] = None) -> Optional[str
     return row[0] if row else None
 
 
+def delete_task(task_id: str, db_path: Optional[str] = None) -> bool:
+    """删除任务及关联记录（报告映射、AI 分析）。返回该任务是否存在过。"""
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        c.execute("DELETE FROM backtest_reports WHERE task_id=?", (task_id,))
+        c.execute("DELETE FROM ai_analyses WHERE backtest_id=? OR task_id=?", (task_id, task_id))
+    return cur.rowcount > 0
+
+
 # ---------------- ai_analyses ----------------
 
 def save_analysis(task_id: str, backtest_id: str, profile: str, model: str, status: str,
                   content: Optional[str], tokens_used: Optional[int], elapsed: Optional[float],
-                  error: Optional[str], db_path: Optional[str] = None) -> None:
+                  error: Optional[str], suggestions: Optional[dict] = None,
+                  db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
             "INSERT INTO ai_analyses(task_id,backtest_id,profile,model,status,content,"
-            "tokens_used,elapsed,error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "tokens_used,elapsed,error,suggestions,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, backtest_id, profile, model, status, content, tokens_used, elapsed,
-             error, _now()))
+             error, json.dumps(suggestions, ensure_ascii=False) if suggestions else None,
+             _now()))
 
 
 def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = None) -> list[dict]:
@@ -327,15 +357,22 @@ def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = No
         if backtest_id:
             rows = c.execute(
                 "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,created_at FROM ai_analyses WHERE backtest_id=? ORDER BY id DESC",
+                "error,suggestions,created_at FROM ai_analyses WHERE backtest_id=? ORDER BY id DESC",
                 (backtest_id,)).fetchall()
         else:
             rows = c.execute(
                 "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,created_at FROM ai_analyses ORDER BY id DESC").fetchall()
-    return [{"task_id": r[0], "backtest_id": r[1], "profile": r[2], "model": r[3], "status": r[4],
-             "content": r[5], "tokens_used": r[6], "elapsed": r[7], "error": r[8],
-             "created_at": r[9]} for r in rows]
+                "error,suggestions,created_at FROM ai_analyses ORDER BY id DESC").fetchall()
+    out = []
+    for r in rows:
+        try:
+            suggestions = json.loads(r[9]) if r[9] else None
+        except json.JSONDecodeError:
+            suggestions = None
+        out.append({"task_id": r[0], "backtest_id": r[1], "profile": r[2], "model": r[3],
+                    "status": r[4], "content": r[5], "tokens_used": r[6], "elapsed": r[7],
+                    "error": r[8], "suggestions": suggestions, "created_at": r[10]})
+    return out
 
 
 # ---------------- llm_usage ----------------
@@ -358,3 +395,45 @@ def llm_usage_stats(db_path: Optional[str] = None) -> dict:
     return {"total_tokens": sum(v["tokens"] for v in by_profile.values()),
             "total_calls": sum(v["calls"] for v in by_profile.values()),
             "by_profile": by_profile}
+
+
+def clear_llm_usage(db_path: Optional[str] = None) -> None:
+    """清空用量统计（如清除测试期产生的脏数据）"""
+    with conn(db_path) as c:
+        c.execute("DELETE FROM llm_usage")
+
+
+# ---------------- backtest_templates（每用户私有配置模板） ----------------
+
+def add_template(username: str, name: str, config: dict,
+                 db_path: Optional[str] = None) -> int:
+    with conn(db_path) as c:
+        cur = c.execute(
+            "INSERT INTO backtest_templates(username,name,config,created_at) VALUES(?,?,?,?)",
+            (username, name, json.dumps(config, ensure_ascii=False), _now()))
+    return int(cur.lastrowid)
+
+
+def list_templates(username: str, db_path: Optional[str] = None) -> list[dict]:
+    with conn(db_path) as c:
+        rows = c.execute(
+            "SELECT id,name,config,created_at,updated_at FROM backtest_templates "
+            "WHERE username=? ORDER BY id DESC", (username,)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            config = json.loads(r[2])
+        except json.JSONDecodeError:
+            config = {}
+        out.append({"id": r[0], "name": r[1], "config": config,
+                    "created_at": r[3], "updated_at": r[4]})
+    return out
+
+
+def delete_template(template_id: int, username: str,
+                    db_path: Optional[str] = None) -> bool:
+    """只允许属主删除自己的模板"""
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM backtest_templates WHERE id=? AND username=?",
+                        (template_id, username))
+    return cur.rowcount > 0

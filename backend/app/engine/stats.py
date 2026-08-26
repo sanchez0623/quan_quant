@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""绩效统计：核心指标 + 做T/加减仓贡献分解 + 月度收益"""
+"""绩效统计：核心指标 + 做T/加减仓贡献分解 + 月度收益 + 月度出金指标
+
+统计口径：出金视为资金流出而非亏损——收益/回撤/夏普全部基于
+"调整净值"（真实净值 + 累计提取金额），月度收益同理。
+"""
 from typing import Optional
 
 
@@ -7,13 +11,18 @@ def _safe_div(a: float, b: float) -> Optional[float]:
     return a / b if b else None
 
 
+def _adj_series(equity_curve: list[dict]) -> list[float]:
+    """调整净值序列（无出金时等于真实净值）"""
+    return [p.get("adjusted_equity", p["equity"]) for p in equity_curve]
+
+
 def monthly_returns(equity_curve: list[dict], start_equity: float) -> list[dict]:
-    """equity_curve 按月末采样计算月度收益"""
+    """equity_curve 按月末采样计算月度收益（基于调整净值，出金不算亏损）"""
     out: list[dict] = []
     last_by_month: dict[tuple[int, int], tuple[str, float]] = {}
     for p in equity_curve:
         y, m = int(p["date"][:4]), int(p["date"][5:7])
-        last_by_month[(y, m)] = (p["date"], p["equity"])
+        last_by_month[(y, m)] = (p["date"], p.get("adjusted_equity", p["equity"]))
     prev_equity = start_equity
     for (y, m) in sorted(last_by_month):
         _d, eq = last_by_month[(y, m)]
@@ -26,20 +35,26 @@ def monthly_returns(equity_curve: list[dict], start_equity: float) -> list[dict]
 def build_metrics(trade_log: list[dict], equity_curve: list[dict],
                   start_equity: float, end_equity: float,
                   commission_total: float,
-                  t_cycle_pnls: Optional[list[float]] = None) -> dict:
-    """契约 metrics 全字段 + 做T贡献分解"""
-    # ---- 收益/风险（基于日频 equity 曲线）----
-    total_return = end_equity / start_equity - 1 if start_equity else 0.0
+                  t_cycle_pnls: Optional[list[float]] = None,
+                  withdrawn: Optional[dict] = None,
+                  wd_base: float = 0.0,
+                  completed_months: int = 0) -> dict:
+    """契约 metrics 全字段 + 做T贡献分解 + 出金指标"""
+    w = withdrawn or {}
+    withdrawn_total = float(w.get("total") or 0.0)
+
+    # ---- 收益/风险（基于调整净值：真实净值 + 累计提取）----
+    adj_end = end_equity + withdrawn_total
+    total_return = adj_end / start_equity - 1 if start_equity else 0.0
     n_days = len(equity_curve)
-    annual_return = (end_equity / start_equity) ** (252 / max(n_days, 1)) - 1 \
-        if start_equity > 0 and end_equity > 0 and n_days > 0 else 0.0
+    annual_return = (adj_end / start_equity) ** (252 / max(n_days, 1)) - 1 \
+        if start_equity > 0 and adj_end > 0 and n_days > 0 else 0.0
 
     max_drawdown = 0.0
     peak = None
     rets: list[float] = []
     prev_eq = None
-    for p in equity_curve:
-        eq = p["equity"]
+    for eq in _adj_series(equity_curve):
         if prev_eq is not None and prev_eq > 0:
             rets.append(eq / prev_eq - 1)
         prev_eq = eq
@@ -74,7 +89,7 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
     sortino = _sortino()
     calmar = _safe_div(annual_return, abs(max_drawdown)) if max_drawdown < 0 else None
 
-    # ---- 平仓笔统计（做T分解：持有时长<1交易日 → T交易）----
+    # ---- 平仓笔统计（做T分解：持有时长<1交易日 -> T交易）----
     closes = [t for t in trade_log if t["side"] == "sell" and t.get("pnl") is not None]
     wins = [t for t in closes if t["pnl"] > 0]
     losses = [t for t in closes if t["pnl"] < 0]
@@ -97,7 +112,7 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         pnl = t["pnl"]
         open_day = (t.get("open_time") or t["time"])[:10]
         close_day = t["time"][:10]
-        is_t = open_day == close_day  # 当日买当日卖 → T交易（T+1下罕见）
+        is_t = open_day == close_day  # 当日买当日卖 -> T交易（T+1下罕见）
         tag = t.get("tag") or "开仓"
         if is_t and not t_cycle_pnls:
             t_count += 1
@@ -125,6 +140,17 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
     total_pnl = sum(t["pnl"] for t in closes)
     avg_hold = _safe_div(sum(hold_days), len(hold_days)) if hold_days else 0.0
 
+    # ---- 出金指标 ----
+    months = w.get("months") or {}
+    shortfall_total = float(w.get("shortfall") or 0.0)
+    recovered_total = float(w.get("recover") or 0.0)
+    # coverage 分母用"已过完的完整月份数"（completed_months，runner 传入），而非 len(months)
+    # （len(months) 只统计发生出金的月份，会高估覆盖率）
+    coverage = None
+    if wd_base > 0 and completed_months > 0:
+        full_months = sum(1 for v in months.values() if v >= wd_base - 0.01)
+        coverage = full_months / completed_months
+
     return {
         "total_return": round(total_return, 6),
         "annual_return": round(annual_return, 6),
@@ -147,4 +173,11 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         "commission_total": round(commission_total, 2),
         "start_equity": round(start_equity, 2),
         "end_equity": round(end_equity, 2),
+        # ---- 出金（落袋为安） ----
+        "withdrawn_total": round(withdrawn_total, 2),
+        "t_profit_withdrawn": round(float(w.get("t_profit") or 0.0), 2),
+        "month_topup_withdrawn": round(float(w.get("topup") or 0.0), 2),
+        "withdrawal_coverage": round(coverage, 4) if coverage is not None else None,
+        "shortfall_unrecovered": round(shortfall_total, 2) if shortfall_total > 0 else None,
+        "shortfall_recovered": round(recovered_total, 2) if recovered_total > 0 else None,
     }

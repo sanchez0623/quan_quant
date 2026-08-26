@@ -24,7 +24,8 @@ class GridTStrategy(Strategy):
         {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 0, "min": 0, "max": 10},
     ]
 
-    def prepare(self, data: dict[str, pl.DataFrame], params: dict) -> dict[str, pl.DataFrame]:
+    def prepare(self, data: dict[str, pl.DataFrame], params: dict,
+                start_date: str | None = None) -> dict[str, pl.DataFrame]:
         base_pct = float(params.get("base_pct") or 30)
         mult = float(params.get("grid_atr_mult") or 1.5)
         atr_n = int(params.get("atr_period") or 14)
@@ -33,7 +34,7 @@ class GridTStrategy(Strategy):
         out: dict[str, pl.DataFrame] = {}
         for code, df in data.items():
             df = self._with_day_atr_pct(df, atr_n)
-            signals, tags, reasons = self._walk(df, base_pct, mult, max_t)
+            signals, tags, reasons = self._walk(df, base_pct, mult, max_t, start_date)
             df = df.with_columns([
                 pl.Series("signal", signals, dtype=pl.Int32),
                 pl.Series("tag", tags, dtype=pl.Utf8),
@@ -63,8 +64,9 @@ class GridTStrategy(Strategy):
 
     @staticmethod
     def _walk(df: pl.DataFrame, base_pct: float, mult: float,
-              max_t: int) -> tuple[list[int], list[str], list[str]]:
-        """逐bar网格状态机：返回 (signal, tag, reason) 列表"""
+              max_t: int, start_date: str | None = None) -> tuple[list[int], list[str], list[str]]:
+        """逐bar网格状态机：返回 (signal, tag, reason) 列表
+        start_date 之前为预热期：只跳过不推进状态机（避免虚拟建仓）"""
         n = df.height
         signals = [0] * n
         tags = [""] * n
@@ -76,6 +78,8 @@ class GridTStrategy(Strategy):
         t_count = 0
         for i, (date, close, atr_pct) in enumerate(rows):
             day = date[:10]
+            if start_date and day < start_date:
+                continue  # 预热期：不产生信号
             if day != cur_day:  # 新交易日
                 cur_day = day
                 ref = None

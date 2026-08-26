@@ -13,10 +13,16 @@ class Strategy(ABC):
     description: str = ""
     periods: list[str] = []
     param_schema: list[dict] = []
+    warmup_days: int = 0  # 指标预热建议值（交易日数），引擎据此前推数据加载窗口
 
     @abstractmethod
-    def prepare(self, data: dict[str, pl.DataFrame], params: dict) -> dict[str, pl.DataFrame]:
-        """向量化计算指标与信号列，返回带 signal(1/-1/0)、reason 及附加列的每个code的df"""
+    def prepare(self, data: dict[str, pl.DataFrame], params: dict,
+                start_date: str | None = None) -> dict[str, pl.DataFrame]:
+        """向量化计算指标与信号列，返回带 signal(1/-1/0)、reason 及附加列的每个code的df
+
+        start_date: 回测起始日（预热期之后）。有内部状态的策略（如做T状态机）
+        应在 start_date 之前只计算指标、不推进交易状态机，避免预热期"虚拟建仓"。
+        """
 
 
 class MaCrossStrategy(Strategy):
@@ -32,7 +38,8 @@ class MaCrossStrategy(Strategy):
          "min": 1, "max": 50, "step": 0.5, "unit": "%"},
     ]
 
-    def prepare(self, data: dict[str, pl.DataFrame], params: dict) -> dict[str, pl.DataFrame]:
+    def prepare(self, data: dict[str, pl.DataFrame], params: dict,
+                start_date: str | None = None) -> dict[str, pl.DataFrame]:
         fast = int(params.get("fast") or 5)
         slow = int(params.get("slow") or 20)
         out: dict[str, pl.DataFrame] = {}
