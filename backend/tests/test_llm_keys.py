@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from app.llm import provider
+from app.llm import analyzer, provider
 
 
 @pytest.fixture()
@@ -247,7 +247,7 @@ def test_chat_db_pool_by_key_id(db_pool, monkeypatch):
 
 
 def test_chat_db_pool_empty_falls_to_env(monkeypatch):
-    """用户无 DB key → 回退环境变量池"""
+    """用户无 DB key -> 回退环境变量池"""
     import app.llm.provider as prov
     monkeypatch.delenv("LLM_KEY", raising=False)
     monkeypatch.delenv("LLM_KEY_1", raising=False)
@@ -258,3 +258,63 @@ def test_chat_db_pool_empty_falls_to_env(monkeypatch):
     monkeypatch.setattr(provider, "_chat_once", lambda b, m, k, ms, t: _ok(m))
     result = provider.chat(None, [{"role": "user", "content": "hi"}], username="nobody")
     assert result["profile"] == "deepseek"
+
+
+# ---------------- AI 结构化建议提取 ----------------
+
+_REPORT = {"config": {"params": {"fast": 5, "slow": 20, "max_t_times": 4},
+                      "risk_config": {"stop_loss_pct": 8}}}
+
+
+def test_extract_suggestions_normal():
+    content = ("## 策略弱点诊断\n...\n## 优化建议\n1. 放宽止损\n\n"
+               '```json\n{"params": {"fast": 10}, '
+               '"risk_config": {"stop_loss_pct": 12, "max_holdings": 3}}\n```')
+    body, s = analyzer._extract_suggestions(content, _REPORT)
+    assert "```json" not in body and "策略弱点诊断" in body
+    assert s == {"params": {"fast": 10},
+                 "risk_config": {"stop_loss_pct": 12, "max_holdings": 3}}
+
+
+def test_extract_suggestions_filters_unknown_fields():
+    """未知参数名/风控字段被过滤；非基本类型值被过滤"""
+    content = ('```json\n{"params": {"fast": 10, "hack_param": 1}, '
+               '"risk_config": {"stop_loss_pct": 5, "bad_field": 1, "atr_period": {"x": 1}}}\n```')
+    _, s = analyzer._extract_suggestions(content, _REPORT)
+    assert s == {"params": {"fast": 10}, "risk_config": {"stop_loss_pct": 5}}
+
+
+def test_extract_suggestions_empty_means_none():
+    content = '分析...\n```json\n{"params": {}, "risk_config": {}}\n```'
+    body, s = analyzer._extract_suggestions(content, _REPORT)
+    assert s is None and "```json" not in body
+
+
+def test_extract_suggestions_no_block_or_bad_json():
+    assert analyzer._extract_suggestions("纯文本无json", _REPORT) == ("纯文本无json", None)
+    body, s = analyzer._extract_suggestions("前文\n```json\n{bad json}\n```", _REPORT)
+    assert s is None and "```json" in body  # 解析失败保留原正文
+
+
+def test_extract_suggestions_takes_last_block():
+    content = ('```json\n{"params": {"fast": 1}}\n```\n中间文字\n'
+               '```json\n{"params": {"fast": 2}}\n```')
+    _, s = analyzer._extract_suggestions(content, _REPORT)
+    assert s == {"params": {"fast": 2}, "risk_config": {}}
+
+
+def test_analyze_backtest_returns_suggestions(monkeypatch):
+    """chat 返回带 json 块 -> 结果中剥离正文并带出 suggestions"""
+    monkeypatch.delenv("LLM_KEY", raising=False)
+    monkeypatch.delenv("LLM_KEY_1", raising=False)
+    for i in range(2, 10):
+        monkeypatch.delenv(f"LLM_KEY_{i}", raising=False)
+    monkeypatch.setenv("LLM_KEY_1", "deepseek|sk-x")
+    monkeypatch.setattr(
+        provider, "_chat_once",
+        lambda b, m, k, ms, t: {"content": "分析正文\n```json\n{\"params\": {\"slow\": 30}}\n```",
+                                "model": m, "prompt_tokens": 1, "completion_tokens": 1,
+                                "elapsed": 0.1})
+    result = analyzer.analyze_backtest(_REPORT)
+    assert "```json" not in result["content"]
+    assert result["suggestions"] == {"params": {"slow": 30}, "risk_config": {}}

@@ -152,17 +152,68 @@ def test_user_create_delete_flow(client, tokens):
     r = client.post("/api/users", headers=admin_h,
                     json={"username": "tmp_user", "password": "tmp123456"})
     assert r.status_code == 200
-    # 重复创建 → 400
+    # 重复创建 -> 400
     assert client.post("/api/users", headers=admin_h,
                        json={"username": "tmp_user", "password": "tmp123456"}).status_code == 400
     # 新用户能登录、能加 key
     t = _login(client, "tmp_user", "tmp123456")
     assert client.post("/api/keys", headers=H(t),
                        json={"provider": "deepseek", "api_key": "sk-tmp-99999xx"}).status_code == 200
-    # 删除用户 → 其 key 级联删除，无法再登录
+    # 删除用户 -> 其 key 级联删除，无法再登录
     assert client.delete("/api/users/tmp_user", headers=admin_h).status_code == 200
     assert client.post("/api/auth/login",
                        json={"username": "tmp_user", "password": "tmp123456"}).status_code == 401
     assert db.list_llm_keys("tmp_user") == []
     # 不能删 admin
     assert client.delete("/api/users/admin", headers=admin_h).status_code == 400
+
+
+# ---------------- 回测配置模板 ----------------
+
+def _demo_cfg(name="模板测试"):
+    return {"name": name, "strategy_id": "ma_cross",
+            "params": {"fast": 5, "slow": 20}, "risk_config": {"stop_loss_pct": 8},
+            "universe": ["600000"], "start_date": "2024-01-01", "end_date": "2024-06-30",
+            "period": "daily", "initial_capital": 1000000}
+
+
+def test_template_crud_and_isolation(client, tokens):
+    a_h, b_h, admin_h = H(tokens["a"]), H(tokens["b"]), H(tokens["admin"])
+    # 创建
+    r = client.post("/api/backtests/templates", headers=a_h,
+                    json={"name": "A的标准配置", "config": _demo_cfg()})
+    assert r.status_code == 200, r.text
+    tid = r.json()["id"]
+    # 缺 strategy_id -> 400
+    bad = _demo_cfg(); bad["strategy_id"] = ""
+    assert client.post("/api/backtests/templates", headers=a_h,
+                       json={"name": "x", "config": bad}).status_code == 400
+    # 列表只看自己的
+    assert client.post("/api/backtests/templates", headers=b_h,
+                       json={"name": "B的配置", "config": _demo_cfg()}).status_code == 200
+    a_list = client.get("/api/backtests/templates", headers=a_h).json()
+    assert len(a_list) == 1 and a_list[0]["name"] == "A的标准配置"
+    assert a_list[0]["config"]["strategy_id"] == "ma_cross"
+    assert len(client.get("/api/backtests/templates", headers=b_h).json()) == 1
+    # b 删 a 的模板 -> 404（属主校验）
+    assert client.delete(f"/api/backtests/templates/{tid}", headers=b_h).status_code == 404
+    # a 删自己的 -> ok
+    assert client.delete(f"/api/backtests/templates/{tid}", headers=a_h).status_code == 200
+    assert len(client.get("/api/backtests/templates", headers=a_h).json()) == 0
+    # 清理 b
+    b_id = client.get("/api/backtests/templates", headers=b_h).json()[0]["id"]
+    client.delete(f"/api/backtests/templates/{b_id}", headers=b_h)
+    _ = admin_h  # admin 未参与模板操作
+
+
+# ---------------- LLM 用量统计清空 ----------------
+
+def test_clear_llm_usage(client, tokens):
+    a_h = H(tokens["a"])
+    db.record_llm_usage("deepseek", "deepseek-v4-flash", 100, 50, 0.5)
+    stats = client.get("/api/ai/profiles", headers=a_h).json()["usage"]
+    assert stats["total_calls"] >= 1
+    assert client.delete("/api/ai/usage", headers=a_h).status_code == 200
+    stats = client.get("/api/ai/profiles", headers=a_h).json()["usage"]
+    assert stats["total_tokens"] == 0 and stats["total_calls"] == 0
+    assert stats["by_profile"] == {}

@@ -108,20 +108,35 @@ def test_fee_calculation():
     b = Broker(slippage_pct=0.001, commission_rate=0.0003, commission_min=5,
                stamp_tax=0.001, transfer_fee=0.00001)
     amount = 100_000
-    # 买单：佣金 max(30,5)=30 + 过户费 1 = 31
-    assert b.buy_fee(amount) == pytest.approx(31.0)
-    # 卖单：佣金 30 + 印花税 100 + 过户费 1 = 131
-    assert b.sell_fee(amount) == pytest.approx(131.0)
-    # 最低佣金：小单 amount=10000 → 佣金 max(3,5)=5
-    assert b.buy_fee(10_000) == pytest.approx(5.0 + 0.1)
-    assert b.sell_fee(10_000) == pytest.approx(5.0 + 10.0 + 0.1)
+    # 双边费用：经手万0.341 + 证管万0.2 + 过户万0.1 = 万0.641 -> 6.41
+    # 买单：佣金 max(30,5)=30 + 6.41 = 36.41
+    assert b.buy_fee(amount) == pytest.approx(36.41)
+    # 卖单：佣金 30 + 印花税 100 + 6.41 = 136.41
+    assert b.sell_fee(amount) == pytest.approx(136.41)
+    # 最低佣金：小单 amount=10000 -> 佣金 max(3,5)=5（Broker 内 round 2位）
+    assert b.buy_fee(10_000) == pytest.approx(5.64, abs=0.005)
+    assert b.sell_fee(10_000) == pytest.approx(15.64, abs=0.005)
+
+
+def test_default_fee_structure():
+    """默认费率结构：佣金万0.5(最低5元) + 印花税万5(卖出) + 经手万0.341 + 证管万0.2 + 过户万0.1"""
+    b = Broker()
+    amount = 200_000
+    # 买单：佣金 max(10,5)=10 + 200000×万0.641=12.82 -> 22.82
+    assert b.buy_fee(amount) == pytest.approx(10.0 + 12.82)
+    # 卖单：佣金 10 + 印花税 100 + 12.82 -> 122.82
+    assert b.sell_fee(amount) == pytest.approx(10.0 + 100.0 + 12.82)
+    # 小单最低佣金（Broker 内 round 2位：5+0.3205=5.3205 -> 5.32）
+    assert b.buy_fee(5_000) == pytest.approx(5.32, abs=0.005)
 
 
 def test_backtest_fee_fields(demo_env):
     cfg, data_dir = make_config(demo_env)
     report = run_backtest(cfg, data_dir=data_dir)
+    # 双边费用 = 过户万0.1 + 经手万0.341 + 证管万0.2 = 万0.641
+    bilateral = 0.00001 + 0.0000341 + 0.00002
     for t in report["trade_log"]:
-        expected = (max(t["amount"] * 0.0003, 5) + t["amount"] * 0.00001)
+        expected = (max(t["amount"] * 0.0003, 5) + t["amount"] * bilateral)
         if t["side"] == "sell":
             expected += t["amount"] * 0.001
         assert t["fee"] == pytest.approx(expected, abs=0.5), \
@@ -366,3 +381,281 @@ def test_total_position_cap(demo_env):
     for p in report["equity_curve"]:
         assert p["position_ratio"] <= 0.50 * 1.05 + 0.01, \
             f"{p['date']} 总仓位 {p['position_ratio']:.2%} 超过上限50%"
+
+
+# ---------------- 7. 持仓只数与现金缓冲 ----------------
+
+def test_max_holdings(demo_env):
+    """3只票 universe + max_holdings=1 -> 任意时点持仓股票数 <= 1"""
+    cfg, data_dir = make_config(demo_env, risk_config={
+        "max_position_pct_per_stock": 30, "max_total_position_pct": 100,
+        "stop_loss_mode": "none", "max_drawdown_breaker": 30,
+        "max_holdings": 1})
+    report = run_backtest(cfg, data_dir=data_dir)
+    for s in report["position_snapshots"]:
+        n = len({p["code"] for p in s["positions"]})
+        assert n <= 1, f"{s['date']} 持仓 {n} 只超过上限1"
+
+
+def test_cash_reserve(demo_env):
+    """cash_reserve_pct=40 -> 可投上限 60%：仓位比例恒 <= 60%（容差）"""
+    cfg, data_dir = make_config(demo_env, risk_config={
+        "max_position_pct_per_stock": 100, "max_total_position_pct": 100,
+        "stop_loss_mode": "none", "max_drawdown_breaker": 30,
+        "cash_reserve_pct": 40})
+    report = run_backtest(cfg, data_dir=data_dir)
+    for p in report["equity_curve"]:
+        assert p["position_ratio"] <= 0.60 * 1.05 + 0.02, \
+            f"{p['date']} 总仓位 {p['position_ratio']:.2%} 超过现金缓冲约束（应<=60%）"
+
+
+# ---------------- 8. 月度出金 ----------------
+
+def _write_trend_minute_data(tmp_path, n_days=90, daily_ret=0.004, amp=0.02):
+    """缓慢趋势 + 日内正弦波动的分钟数据（自然跨约3-4个月）"""
+    codes = ["600000"]
+    rows = []
+    dates = synthetic.trade_dates(n_days)
+    for code in codes:
+        base = 10.0
+        for _di, d in enumerate(dates):
+            closes = [base * (1 + amp * math.sin(2 * math.pi * k / 12))
+                      for k in range(len(synthetic.BAR_TIMES))]
+            prev_c = base
+            for k, hhmm in enumerate(synthetic.BAR_TIMES):
+                c = closes[k]
+                o = prev_c
+                rows.append({
+                    "code": code, "date": f"{d} {hhmm}",
+                    "open": round(o, 3), "high": round(max(o, c) * 1.001, 3),
+                    "low": round(min(o, c) * 0.999, 3), "close": round(c, 3),
+                    "volume": 100_000, "amount": round(c * 100_000, 2)})
+                prev_c = c
+            base *= (1 + daily_ret)
+    mdf = pl.DataFrame(rows)
+    ddf = (mdf.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
+           .group_by("day").agg(
+               pl.col("open").first().alias("open"),
+               pl.col("high").max().alias("high"),
+               pl.col("low").min().alias("low"),
+               pl.col("close").last().alias("close"),
+               pl.col("volume").sum().alias("volume"),
+               pl.col("amount").sum().alias("amount"),
+               pl.lit(codes[0]).alias("code"))
+           .with_columns(pl.col("day").alias("date")).drop("day")
+           .select(["code", "date", "open", "high", "low", "close", "volume", "amount"]))
+    store.write_minute5(codes[0], mdf, str(tmp_path))
+    store.write_daily(ddf, str(tmp_path))
+    dates_all = sorted(ddf["date"].to_list())
+    store.write_calendar(pl.DataFrame({"date": dates_all, "is_open": [1] * len(dates_all)}),
+                         str(tmp_path))
+    store.write_adj_factor(pl.DataFrame({
+        "code": [codes[0]] * len(rows), "date": mdf["date"].to_list(),
+        "adj_factor": [1.0] * len(rows)}), str(tmp_path))
+    store.write_stock_basic(pl.DataFrame({
+        "code": codes, "name": ["趋势股600000"], "st": [False],
+        "list_date": ["20100101"]}), str(tmp_path))
+    return dates_all[0], dates_all[-1]
+
+
+def test_monthly_withdrawal(tmp_path):
+    """出金开启：逐笔T提成 + 月末兜底；统计用调整净值（出金不算亏损）"""
+    start, end = _write_trend_minute_data(tmp_path)
+    cfg = {
+        "name": "withdraw-test", "strategy_id": "grid_t",
+        "params": {"base_pct": 60, "grid_atr_mult": 0.5, "atr_period": 3,
+                   "max_t_times": 6, "max_adds": 0},
+        "risk_config": {"stop_loss_mode": "none", "max_position_pct_per_stock": 90,
+                        "max_total_position_pct": 100, "max_intraday_trades": 12},
+        "universe": ["600000"], "start_date": start, "end_date": end,
+        "period": "minute5", "initial_capital": 400_000,
+        "monthly_withdraw_base": 5000, "t_profit_withdraw_pct": 10,
+        "min_t_amount": 0,
+    }
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    wd = report["withdrawal"]
+    # 出金结构完整
+    assert set(wd) >= {"monthly_base", "total", "t_profit", "month_topup", "months", "log"}
+    assert wd["monthly_base"] == 5000
+    # 跨月数据：应有多个月的出金记录
+    assert len(wd["months"]) >= 2, "90天数据应覆盖>=2个自然月"
+    # 至少发生了一笔出金（T提成或月末补齐）
+    assert wd["total"] > 0, "盈利行情下应有出金"
+    # 调整净值 >= 真实净值（累计提取 >= 0）
+    for p in report["equity_curve"]:
+        assert p["adjusted_equity"] >= p["equity"] - 0.01
+    # 总收益基于调整净值：含已提取金额
+    m = report["metrics"]
+    assert m["withdrawn_total"] == pytest.approx(wd["total"])
+    expected_ret = (m["end_equity"] + wd["total"]) / 400_000 - 1
+    assert m["total_return"] == pytest.approx(expected_ret, abs=1e-4)
+    # 出金覆盖率：有出金配置时应给出
+    assert m["withdrawal_coverage"] is not None or wd["monthly_base"] == 0
+
+
+def test_withdrawal_disabled_by_default(tmp_path):
+    """出金默认关闭：行为与旧版一致，无出金记录且口径不变"""
+    start, end = _write_trend_minute_data(tmp_path, n_days=30)
+    cfg = {
+        "name": "no-withdraw", "strategy_id": "grid_t",
+        "params": {"base_pct": 60, "grid_atr_mult": 0.5, "atr_period": 3,
+                   "max_t_times": 6, "max_adds": 0},
+        "risk_config": {"stop_loss_mode": "none", "max_position_pct_per_stock": 90,
+                        "max_total_position_pct": 100, "max_intraday_trades": 12},
+        "universe": ["600000"], "start_date": start, "end_date": end,
+        "period": "minute5", "initial_capital": 400_000,
+    }
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    assert report["withdrawal"]["total"] == 0
+    assert report["metrics"]["withdrawn_total"] == 0
+    for p in report["equity_curve"]:
+        assert p["adjusted_equity"] == pytest.approx(p["equity"])
+
+
+# ---------------- 9. momentum_t 策略 ----------------
+
+def _write_noisy_minute_data(tmp_path, n_days=160, drift=0.001, noise=0.008,
+                             crash_days=0, crash_ret=0.05, seed=1):
+    """带噪声分钟数据：日收益 = drift + N(0, noise)，末段可选暴涨（崩溃保护测试用）
+    噪声让 σ 处于真实量级（约1%），避免恒定收益序列触发 std 浮点下溢"""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    codes = ["600000"]
+    rows = []
+    dates = synthetic.trade_dates(n_days)
+    for code in codes:
+        prev = 10.0
+        for di, d in enumerate(dates):
+            ret = crash_ret if (crash_days and di >= n_days - crash_days) \
+                else drift + float(rng.normal(0, noise))
+            for k, hhmm in enumerate(synthetic.BAR_TIMES):
+                o = prev
+                c = o * (1 + ret / 48)
+                rows.append({"code": code, "date": f"{d} {hhmm}",
+                             "open": round(o, 4), "high": round(max(o, c) * 1.001, 4),
+                             "low": round(min(o, c) * 0.999, 4), "close": round(c, 4),
+                             "volume": 100_000, "amount": round(c * 100_000, 2)})
+                prev = c
+    mdf = pl.DataFrame(rows)
+    ddf = (mdf.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
+           .group_by("day").agg(
+               pl.col("open").first().alias("open"),
+               pl.col("high").max().alias("high"),
+               pl.col("low").min().alias("low"),
+               pl.col("close").last().alias("close"),
+               pl.col("volume").sum().alias("volume"),
+               pl.col("amount").sum().alias("amount"),
+               pl.lit(codes[0]).alias("code"))
+           .with_columns(pl.col("day").alias("date")).drop("day")
+           .select(["code", "date", "open", "high", "low", "close", "volume", "amount"]))
+    store.write_minute5(codes[0], mdf, str(tmp_path))
+    store.write_daily(ddf, str(tmp_path))
+    dates_all = sorted(ddf["date"].to_list())
+    store.write_calendar(pl.DataFrame({"date": dates_all, "is_open": [1] * len(dates_all)}),
+                         str(tmp_path))
+    store.write_adj_factor(pl.DataFrame({
+        "code": [codes[0]] * len(rows), "date": mdf["date"].to_list(),
+        "adj_factor": [1.0] * len(rows)}), str(tmp_path))
+    store.write_stock_basic(pl.DataFrame({
+        "code": codes, "name": ["噪声趋势股600000"], "st": [False],
+        "list_date": ["20100101"]}), str(tmp_path))
+    return dates_all[0], dates_all[-1]
+
+
+def test_momentum_t_bull_open_and_bear_no_open(tmp_path):
+    """上涨趋势：出现开仓信号（带动态预算）；下跌趋势：不建仓
+    数据需 >= mom_long(120)+缓冲 -> 用 160 天带噪声数据"""
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.006, seed=11)
+    from app.engine import datafeed
+    data = datafeed.load_minute5(["600000"], start, end, str(tmp_path))
+    sig = strat.prepare(data, {}, start_date=start)["600000"]
+    rows = sig.to_dicts()
+    opens = [r for r in rows if r["signal"] == 1 and r["tag"] == "开仓"]
+    assert opens, "上涨趋势应产生开仓信号"
+    for r in opens:
+        assert r["date"][:10] >= start, "开仓信号不应早于回测起始日（预热边界）"
+        assert r["budget_pct"] is not None and 10 <= r["budget_pct"] <= 70
+    # 下跌趋势数据：不建仓
+    start2, end2 = _write_noisy_minute_data(tmp_path / "bear", n_days=160,
+                                            drift=-0.006, seed=22)
+    data2 = datafeed.load_minute5(["600000"], start2, end2, str(tmp_path / "bear"))
+    sig2 = strat.prepare(data2, {}, start_date=start2)["600000"]
+    assert not any(r["signal"] == 1 and r["tag"] == "开仓"
+                   for r in sig2.to_dicts()), "下跌趋势不应开仓"
+
+
+def test_momentum_crash_guard_sigma_adaptive():
+    """σ自适应崩溃保护：平稳期有动量分；末段连续暴涨 -> 动量分作废（不入榜）
+    σ 窗口包含暴涨日会被撑大（真实特性，保护存在1日滞后），断言后段置空"""
+    import numpy as np
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    dates = synthetic.trade_dates(160)
+    n_days = len(dates)
+    rows = []
+    rng = np.random.default_rng(3)
+    prev = 10.0
+    for di, d in enumerate(dates):
+        ret = 0.05 if di >= n_days - 5 else 0.001 + float(rng.normal(0, 0.008))
+        for hhmm in synthetic.BAR_TIMES:
+            o = prev
+            c = o * (1 + ret / 48)
+            rows.append({"code": "600000", "date": f"{d} {hhmm}",
+                         "open": round(o, 4), "high": round(max(o, c) * 1.0005, 4),
+                         "low": round(min(o, c) * 0.9995, 4), "close": round(c, 4),
+                         "volume": 100_000, "amount": round(c * 100_000, 2)})
+            prev = c
+    df = pl.DataFrame(rows)
+    p = {k["key"]: k["default"] for k in strat.param_schema}
+    feats = strat._daily_features(df, p)
+    days = feats["day"].to_list()
+    scores = feats["score"].to_list()
+    # 平稳期（长周期就绪后）：动量分非空且为正
+    ready = [(d, s) for d, s in zip(days, scores) if d < dates[n_days - 5]]
+    assert any(s is not None and s > 0 for _d, s in ready), "平稳上涨期应有正动量分"
+    # 暴涨后段（第3~5天）：σ自适应保护触发，动量分置空
+    crash = [s for d, s in zip(days, scores) if d >= dates[n_days - 3]]
+    assert all(s is None for s in crash), "连续暴涨末段动量分应被崩溃保护置空"
+
+
+def test_momentum_t_full_backtest(tmp_path):
+    """momentum_t 完整回测：报告结构完整、生命周期交易类型合法"""
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.005, seed=33)
+    cfg = {
+        "name": "momentum-t-test", "strategy_id": "momentum_t",
+        "params": {},  # 全默认参数
+        "risk_config": {"stop_loss_mode": "none", "max_position_pct_per_stock": 100,
+                        "max_total_position_pct": 100, "max_intraday_trades": 8,
+                        "max_holdings": 3},
+        "universe": ["600000"], "start_date": start, "end_date": end,
+        "period": "minute5", "initial_capital": 400_000,
+        "monthly_withdraw_base": 5000, "t_profit_withdraw_pct": 10,
+    }
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    assert report["metrics"]["total_trades"] > 0, "应有交易发生"
+    types = {t["type"] for t in report["trade_log"]}
+    assert "开仓" in types, "应有开仓交易"
+    # 信号列扩展字段驱动的能力：做T/加仓/减仓（若发生）必须类型合法
+    assert types <= {"开仓", "加仓", "减仓", "做T", "止损", "止盈", "清仓"}
+    for t in report["trade_log"]:
+        if t["side"] == "sell":
+            assert (t.get("open_time") or "")[:10] != t["time"][:10], "T+1违规"
+
+
+def test_momentum_t_warmup_no_trades_before_start(tmp_path):
+    """预热期前推：start_date 之前不产生任何交易"""
+    start, end = _write_trend_minute_data(tmp_path, n_days=60, daily_ret=0.005)
+    cfg = {
+        "name": "warmup-test", "strategy_id": "momentum_t",
+        "params": {}, "risk_config": {"stop_loss_mode": "none"},
+        "universe": ["600000"], "start_date": end, "end_date": end,
+        "period": "minute5", "initial_capital": 400_000,
+    }
+    # start_date=end_date（同一天）：warmup_days=300 前推加载，仅末日交易
+    # 数据窗口整体处于预热期内时不崩溃
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    assert "metrics" in report
+    for t in report["trade_log"]:
+        assert t["time"][:10] >= end
