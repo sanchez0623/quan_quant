@@ -53,11 +53,11 @@ param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/mi
     "stop_loss_mode": "fixed",
     "stop_loss_pct": 8.0,
     "atr_period": 14,
-    "atr_multiplier": 2.0,
+    "atr_multiplier": 2.5,
     "take_profit_pct": 0,
     "trailing_stop_pct": 0,
     "max_drawdown_breaker": 30,
-    "max_intraday_trades": 4
+    "max_intraday_trades": null
   },
   "universe": ["600000", "000001"],
   "start_date": "2023-01-01",
@@ -72,10 +72,20 @@ param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/mi
   "exclude_st": true
 }
 ```
-risk_config 全字段可选（有默认值）。响应：`{"task_id": "bt_xxx", "status": "pending"}`
+risk_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null`/缺省时自动对齐策略参数 `max_t_times`（策略无该参数则兜底 4）。响应：`{"task_id": "bt_xxx", "status": "pending"}`
 
 ### GET /api/backtests
-响应：`[{"task_id","name","status(pending|running|success|failed)","created_at","strategy_id","period","error}]`（倒序）
+响应：`[{"task_id","name","status(pending|running|success|failed)","created_at","strategy_id","period","config(完整回测配置,供存为模板)","error}]`（倒序）
+
+### GET /api/backtests/templates
+响应：`[{"id","name","config(BacktestRequest 同构)","created_at","updated_at"}]`（当前用户私有，倒序）
+
+### POST /api/backtests/templates
+请求：`{"name":"我的标准配置","config":{...BacktestRequest 同构...}}`
+响应：`{"id":1,"status":"ok"}`（config 缺 strategy_id 时 400）
+
+### DELETE /api/backtests/templates/{template_id}
+响应：`{"status":"ok"}`（非属主 404）
 
 ### GET /api/backtests/{task_id}/status
 响应：`{"task_id","status","progress": 0~100,"message":"回测中: 600000","error": null}`
@@ -180,6 +190,9 @@ metric 可选：annual_return / sharpe / calmar / total_return（默认 annual_r
 ```
 available = 对应环境变量已配置。
 
+### DELETE /api/ai/usage
+响应：`{"status":"ok"}`（清空 llm_usage 用量统计，如清除测试脏数据）
+
 ### POST /api/ai/analyze
 请求：`{"backtest_id": "bt_xxx", "profile": "main"}`（profile 可选，默认 default）
 响应（异步任务）：`{"task_id": "ai_xxx", "status": "pending"}`
@@ -190,8 +203,11 @@ available = 对应环境变量已配置。
 ```json
 [{"task_id":"ai_xxx","backtest_id":"bt_xxx","profile":"main","model":"...",
   "status":"success","created_at":"...",
-  "content": "## 策略诊断\n...(markdown)","tokens_used": 3500, "elapsed": 12.3, "error": null}]
+  "content": "## 策略诊断\n...(markdown)","tokens_used": 3500, "elapsed": 12.3, "error": null,
+  "suggestions": {"params": {"fast": 10}, "risk_config": {"stop_loss_pct": 12}}}]
 ```
+suggestions 为 LLM 输出末尾 ```json 块解析出的结构化参数建议（已过滤非法字段；无可调参数时为 null），
+前端用于「应用建议并创建下一轮回测」：与原回测 config 合并后预填回测表单。
 
 ## 7. 数据管理
 

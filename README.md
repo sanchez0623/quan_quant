@@ -43,7 +43,13 @@
 python -m venv .venv
 .venv\Scripts\pip install -r backend/requirements.txt        # Windows
 # .venv/bin/pip install -r backend/requirements.txt          # macOS / Linux
-# 真实数据源（可选，不装则用演示数据）：pip install -r backend/requirements-sources.txt
+
+# 真实数据源（可选，不装则用演示数据）
+# 注意：必须用 venv 的 pip（如 .venv\Scripts\pip），裸 pip 会装进全局 Python
+.venv\Scripts\pip install -r backend/requirements-sources.txt   # Windows
+# .venv/bin/pip install -r backend/requirements-sources.txt     # macOS / Linux
+# 提示：mootdx 固定依赖 httpx<0.26，安装时 pip 会把 httpx 降级并警告与
+# requirements.txt 的 httpx>=0.27 冲突——属预期现象，项目代码兼容 0.25.x
 
 # 前端依赖
 cd frontend
@@ -91,7 +97,7 @@ cd frontend && npm run dev
 
 ```bash
 cd backend
-python -m pytest tests/ -q        # 20 项引擎/API 单元测试
+python -m pytest tests/ -q        # 50 项引擎/API 单元测试
 cd ..
 python scripts/e2e_check.py      # 端到端联调检查（需后端已启动，34 项）
 ```
@@ -143,8 +149,17 @@ docker compose up -d --build
 |---|---|---|
 | ma_cross 双均线 | 日线/5分钟 | 快线上穿慢线买入、下穿卖出，支持加仓 |
 | grid_t 网格做T | 5分钟（推荐） | 底仓 + ATR 自适应网格（动态阈值=近N日ATR/close×倍数），高抛低吸做 T |
+| momentum_t 动量趋势+做T | 5分钟 | 动量为主+做T增强：MACD三重确认建仓（底仓10%~70%动态）、横截面动量排名选股、金字塔加仓、过热减仓、双确认清仓；ATR分位自适应非对称网格做T（动态T比例+费用下限） |
 
 策略通过 `param_schema` 声明参数，前端动态渲染表单；新策略实现 `Strategy.prepare()` 并注册即可。
+
+## 引擎与账户能力
+
+- **指标预热**：策略声明 `warmup_days`，引擎自动前推数据加载窗口（指标就绪前不出信号、不交易），避免回测起点附近信号失真
+- **月度出金（落袋为安）**：`monthly_withdraw_base`（月度目标额，0=关闭）+ `t_profit_withdraw_pct`（逐笔T盈利即时提成%）。每笔做T盈利即时提取 x%；月末不足目标额自动补齐；护栏保证累计提取不吃本金，现金不足记缺口。所有绩效指标基于**调整净值**（真实净值+累计提取），出金不算亏损；报告新增 `withdrawal_coverage`（月度足额提取占比）
+- **持仓规划**：`max_holdings`（最大持仓只数，只限制新开仓）+ `cash_reserve_pct`（现金缓冲，永不进场的资金，用于出金兜底）
+- **完整生命周期订单**：开仓（动态预算）/ 金字塔加仓（递减预算）/ 按比例减仓（允许零股卖出）/ 做T（动态比例+最小金额保护）/ 清仓 / 止损止盈
+- **交易成本**：佣金（双边，最低5元）+ 印花税（卖出）+ 经手费 + 证管费 + 过户费，全部可配置（默认按现行官方费率）
 
 ## 已知限制
 
