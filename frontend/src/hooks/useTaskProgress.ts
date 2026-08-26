@@ -19,11 +19,11 @@ const FINAL_STATES: TaskStatus[] = ['success', 'failed', 'cancelled']
 
 /**
  * 任务进度 hook：优先 WebSocket /ws/tasks/{id}，失败时回退为每 1s 轮询
- * GET /api/backtests/{id}/status。任务进入终态时回调 onDone(status)。
+ * GET /api/backtests/{id}/status。任务进入终态时回调 onDone(status, fullState)。
  */
 export function useTaskProgress(
   taskId: string | null | undefined,
-  onDone?: (status: TaskStatus) => void
+  onDone?: (status: TaskStatus, fullState: TaskProgress | null) => void
 ): TaskProgress {
   const [state, setState] = useState<TaskProgress>({ status: null, progress: 0, message: '' })
   const onDoneRef = useRef(onDone)
@@ -72,7 +72,12 @@ export function useTaskProgress(
         if (data.status === 'success') {
           setState((prev) => ({ ...prev, progress: 100 }))
         }
-        onDoneRef.current?.(data.status)
+        // 传递完整状态给回调，包含错误信息
+        onDoneRef.current?.(data.status, {
+          status: data.status,
+          progress: 100,
+          message: data.message || data.error || ''
+        })
         cleanup()
       }
     }

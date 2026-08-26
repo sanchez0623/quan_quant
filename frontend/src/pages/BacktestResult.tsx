@@ -110,12 +110,18 @@ export default function BacktestResult() {
         {report ? (
           <Card>
             <Tabs
+              destroyInactiveTabPane
               items={[
                 {
                   key: 'kline',
                   label: 'K线图',
                   children: (
-                    <KLineTab taskId={report.task_id} universe={universe} trades={report.trade_log} />
+                    <KLineTab
+                      taskId={report.task_id}
+                      universe={universe}
+                      trades={report.trade_log}
+                      reportPeriod={report.config?.period}
+                    />
                   )
                 },
                 {

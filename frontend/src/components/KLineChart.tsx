@@ -54,32 +54,44 @@ function ensureIndicatorRegistered(): void {
     draw: ({ ctx, indicator, visibleRange, xAxis, yAxis }: IndicatorDrawParams<TradeMarkPoint>) => {
       const marks = (indicator.extendData ?? []) as TradeMarkPoint[]
       if (!marks || marks.length === 0) return false
+      // 同一天（同一根K线）多笔交易按横轴错开，避免重叠成一点
+      const groups = new Map<number, TradeMarkPoint[]>()
       for (const m of marks) {
         if (m.dataIndex < visibleRange.from - 2 || m.dataIndex > visibleRange.to + 2) continue
-        const x = xAxis.convertToPixel(m.dataIndex)
-        const y = yAxis.convertToPixel(m.price)
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue
-        const isBuy = m.side === 'buy'
-        const color = MARK_COLORS[m.type] ?? (isBuy ? '#f5222d' : '#52c41a')
-        ctx.fillStyle = color
-        ctx.beginPath()
-        if (isBuy) {
-          const top = y + 6
-          ctx.moveTo(x, top)
-          ctx.lineTo(x - 5, top + 9)
-          ctx.lineTo(x + 5, top + 9)
-        } else {
-          const bottom = y - 6
-          ctx.moveTo(x, bottom)
-          ctx.lineTo(x - 5, bottom - 9)
-          ctx.lineTo(x + 5, bottom - 9)
-        }
-        ctx.closePath()
-        ctx.fill()
-        ctx.font = '10px sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'alphabetic'
-        ctx.fillText(TYPE_SHORT[m.type] ?? m.type, x, isBuy ? y + 28 : y - 18)
+        const arr = groups.get(m.dataIndex) ?? []
+        arr.push(m)
+        groups.set(m.dataIndex, arr)
+      }
+      for (const [di, group] of groups) {
+        const xBase = xAxis.convertToPixel(di)
+        const n = group.length
+        group.forEach((m, k) => {
+          const dx = n > 1 ? (k - (n - 1) / 2) * 8 : 0
+          const x = xBase + dx
+          const y = yAxis.convertToPixel(m.price)
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return
+          const isBuy = m.side === 'buy'
+          const color = MARK_COLORS[m.type] ?? (isBuy ? '#f5222d' : '#52c41a')
+          ctx.fillStyle = color
+          ctx.beginPath()
+          if (isBuy) {
+            const top = y + 6
+            ctx.moveTo(x, top)
+            ctx.lineTo(x - 5, top + 9)
+            ctx.lineTo(x + 5, top + 9)
+          } else {
+            const bottom = y - 6
+            ctx.moveTo(x, bottom)
+            ctx.lineTo(x - 5, bottom - 9)
+            ctx.lineTo(x + 5, bottom - 9)
+          }
+          ctx.closePath()
+          ctx.fill()
+          ctx.font = '10px sans-serif'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'alphabetic'
+          ctx.fillText(TYPE_SHORT[m.type] ?? m.type, x, isBuy ? y + 28 : y - 18)
+        })
       }
       return false
     }
@@ -119,8 +131,15 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
         const p = params as { data?: { dataIndex?: number }; dataIndex?: number }
         const di = p?.data?.dataIndex ?? p?.dataIndex ?? null
         lastDataIndexRef.current = di
-        const m = di === null ? undefined : markPointsRef.current.find((x) => x.dataIndex === di)
-        setHoverInfo(m ? `${m.time} ${m.side === 'buy' ? '买入' : '卖出'} · ${m.type} @ ${m.price}` : null)
+        const ms = di === null ? [] : markPointsRef.current.filter((x) => x.dataIndex === di)
+        if (ms.length === 0) {
+          setHoverInfo(null)
+          return
+        }
+        const parts = ms.map(
+          (m) => `${m.side === 'buy' ? '买' : '卖'}${TYPE_SHORT[m.type] ?? m.type}@${m.price}`
+        )
+        setHoverInfo(`${ms.length}笔 · ${parts.join(' ')}`)
       })
     } catch {
       /* ignore */
@@ -182,15 +201,22 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
   const onChartClick = () => {
     const di = lastDataIndexRef.current
     if (di === null) return
-    const m = markPointsRef.current.find((x) => x.dataIndex === di)
-    if (!m) return
+    const ms = markPointsRef.current.filter((x) => x.dataIndex === di)
+    if (!ms.length) return
     Modal.info({
-      title: `${m.side === 'buy' ? '买入' : '卖出'} · ${m.type}`,
+      title: `交易标记 · ${ms.length}笔`,
       content: (
         <div>
-          <p>时间：{m.time}</p>
-          <p>价格：{m.price}</p>
-          {m.reason ? <p>理由：{m.reason}</p> : null}
+          {ms.map((m, i) => (
+            <div key={i} style={{ marginBottom: 8 }}>
+              <div>
+                #{i + 1} {m.side === 'buy' ? '买入' : '卖出'} · {m.type}
+              </div>
+              <div>时间：{m.time}</div>
+              <div>价格：{m.price}</div>
+              {m.reason ? <div>理由：{m.reason}</div> : null}
+            </div>
+          ))}
         </div>
       )
     })

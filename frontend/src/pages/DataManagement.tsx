@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Input,
   InputNumber,
   message,
   Modal,
@@ -34,6 +35,7 @@ export default function DataManagement() {
   const [scope, setScope] = useState<'daily' | 'minute5' | 'all'>('daily')
   const [task, setTask] = useState<{ id: string; label: string } | null>(null)
   const [demoDays, setDemoDays] = useState<number>(500)
+  const [stocksInput, setStocksInput] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -50,22 +52,41 @@ export default function DataManagement() {
     refresh()
   }, [refresh])
 
-  const { progress, message: taskMessage } = useTaskProgress(task?.id ?? null, (s) => {
+  const { progress, message: taskMessage, status: taskStatus } = useTaskProgress(task?.id ?? null, (s, fullState) => {
     const label = task?.label ?? '任务'
     if (s === 'success') {
       message.success(`${label}完成`)
     } else {
-      message.error(`${label}失败`)
+      // 显示具体错误信息
+      const errMsg = fullState?.message || `${label}失败`
+      message.error(errMsg)
     }
     setTask(null)
     refresh()
   })
 
+  const [elapsedSec, setElapsedSec] = useState(0)
+  useEffect(() => {
+    if (!task) return
+    setElapsedSec(0)
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [task])
+
   const onUpdate = async () => {
+    const stocks = stocksInput
+      .split(/[,，\s;；]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
     try {
-      const res = await updateData(scope)
+      const res = await updateData(scope, stocks.length > 0 ? stocks : undefined)
       setTask({ id: res.task_id, label: '数据更新' })
-      message.info('更新任务已提交')
+      message.info(
+        stocks.length > 0 ? `更新任务已提交（指定 ${stocks.length} 只）` : '更新任务已提交（全量）'
+      )
     } catch (err) {
       message.error(errDetail(err, '提交更新失败'))
     }
@@ -180,26 +201,40 @@ export default function DataManagement() {
           <div>
             <Typography.Text strong>增量更新</Typography.Text>
             <div style={{ marginTop: 8 }}>
-              <Space>
-                <Radio.Group
-                  value={scope}
-                  onChange={(e) => setScope(e.target.value)}
-                  optionType="button"
-                  options={[
-                    { value: 'daily', label: '日线' },
-                    { value: 'minute5', label: '5分钟线' },
-                    { value: 'all', label: '全部' }
-                  ]}
-                />
-                <Button
-                  type="primary"
-                  icon={<SyncOutlined />}
-                  disabled={!!task}
-                  loading={!!task}
-                  onClick={onUpdate}
-                >
-                  开始更新
-                </Button>
+              <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                <Space>
+                  <Radio.Group
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                    optionType="button"
+                    options={[
+                      { value: 'daily', label: '日线' },
+                      { value: 'minute5', label: '5分钟线' },
+                      { value: 'all', label: '全部' }
+                    ]}
+                  />
+                  <Button
+                    type="primary"
+                    icon={<SyncOutlined />}
+                    disabled={!!task}
+                    loading={!!task}
+                    onClick={onUpdate}
+                  >
+                    开始更新
+                  </Button>
+                </Space>
+                <Space.Compact style={{ width: 480 }}>
+                  <Input
+                    placeholder="指定股票代码（可选，逗号/空格分隔），如：600021, 600000；留空=更新全部股票"
+                    value={stocksInput}
+                    onChange={(e) => setStocksInput(e.target.value)}
+                    allowClear
+                  />
+                </Space.Compact>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  只回测少数股票时建议指定代码按需拉取（如
+                  600021），全量更新（约 5500 只）耗时较长。
+                </Typography.Text>
               </Space>
             </div>
           </div>
@@ -220,9 +255,16 @@ export default function DataManagement() {
           </div>
           {task && (
             <div>
-              <Typography.Text strong>{task.label}进行中</Typography.Text>
+              <Space size="small">
+                <Typography.Text strong>{task.label}进行中</Typography.Text>
+                <Typography.Text type="secondary">
+                  已耗时 {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}
+                </Typography.Text>
+              </Space>
               <Progress percent={progress} status="active" style={{ maxWidth: 480 }} />
-              <Typography.Text type="secondary">{taskMessage || '执行中...'}</Typography.Text>
+              <div>
+                <Typography.Text type="secondary">{taskMessage || '执行中...'}</Typography.Text>
+              </div>
             </div>
           )}
         </Space>

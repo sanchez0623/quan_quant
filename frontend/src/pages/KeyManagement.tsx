@@ -23,6 +23,7 @@ import {
   deleteKey,
   errDetail,
   getKeys,
+  testKey,
   updateKey
 } from '../api/client'
 import type { LlmKeyItem, ProviderRegistryEntry } from '../api/types'
@@ -45,6 +46,7 @@ export default function KeyManagement() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<LlmKeyItem | null>(null)
   const [saving, setSaving] = useState(false)
+  const [testingId, setTestingId] = useState<number | null>(null)
   const [form] = Form.useForm<KeyFormValues>()
 
   const load = useCallback(async () => {
@@ -146,6 +148,18 @@ export default function KeyManagement() {
     }
   }
 
+  const onTest = async (record: LlmKeyItem) => {
+    setTestingId(record.id)
+    try {
+      const r = await testKey(record.id)
+      message.success(`联通成功 · ${r.model}（${r.elapsed}s）：${r.reply ?? '（无回复内容）'}`)
+    } catch (err) {
+      message.error(errDetail(err, '测试失败'))
+    } finally {
+      setTestingId(null)
+    }
+  }
+
   const columns: ColumnsType<LlmKeyItem> = useMemo(
     () => [
       {
@@ -187,9 +201,17 @@ export default function KeyManagement() {
       {
         title: '操作',
         key: 'actions',
-        width: 140,
+        width: 170,
         render: (_, record) => (
           <Space size="small">
+            <Button
+              type="link"
+              size="small"
+              loading={testingId === record.id}
+              onClick={() => onTest(record)}
+            >
+              测试
+            </Button>
             <Button type="link" size="small" onClick={() => openEdit(record)}>
               编辑
             </Button>
@@ -207,7 +229,7 @@ export default function KeyManagement() {
       }
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [registry, providerLabel]
+    [registry, providerLabel, testingId]
   )
 
   const watchProvider = Form.useWatch('provider', form)

@@ -5,6 +5,7 @@ import { fmtInt, fmtMoney, fmtNum } from '../../utils/format'
 
 const posColumns: ColumnsType<PositionSnapshotPosition> = [
   { title: '代码', dataIndex: 'code', width: 110 },
+  { title: '名称', dataIndex: 'name', width: 120, render: (v?: string) => v || '-' },
   {
     title: '持仓数量',
     dataIndex: 'volume',

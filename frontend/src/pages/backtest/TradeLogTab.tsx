@@ -21,19 +21,43 @@ const TYPE_TAG_COLOR: Record<string, string> = {
 export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [sideFilter, setSideFilter] = useState<string>('all')
+  const [codeFilter, setCodeFilter] = useState<string>('all')
+
+  // 交易涉及的全部股票（代码+名称，去重，按代码排序）
+  const stockOptions = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const t of trades) m.set(t.code, t.name || t.code)
+    return [...m.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([code, name]) => ({ value: code, label: `${code} ${name}` }))
+  }, [trades])
 
   const filtered = useMemo(
     () =>
       trades.filter(
         (t) =>
+          (codeFilter === 'all' || t.code === codeFilter) &&
           (typeFilter === 'all' || t.type === typeFilter) &&
           (sideFilter === 'all' || t.side === sideFilter)
       ),
-    [trades, typeFilter, sideFilter]
+    [trades, codeFilter, typeFilter, sideFilter]
   )
 
+  // 每笔交易成交后该股票的剩余持仓量（按交易时间顺序累计，过滤不影响数值）
+  const remainByTrade = useMemo(() => {
+    const map = new Map<number, number>()
+    const cur = new Map<string, number>()
+    for (const t of [...trades].sort((a, b) => a.trade_id - b.trade_id)) {
+      const before = cur.get(t.code) ?? 0
+      const after = t.side === 'buy' ? before + t.volume : before - t.volume
+      map.set(t.trade_id, after)
+      cur.set(t.code, after)
+    }
+    return map
+  }, [trades])
+
   const exportCsv = () => {
-    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '金额', '手续费', '类型', '理由', '平仓盈亏']
+    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '剩余持仓', '金额', '手续费', '类型', '理由', '平仓盈亏']
     const rows = filtered.map((t) => [
       t.trade_id,
       t.time,
@@ -42,6 +66,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       t.side,
       t.price,
       t.volume,
+      remainByTrade.get(t.trade_id) ?? '',
       t.amount,
       t.fee,
       t.type,
@@ -89,6 +114,15 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       render: (v: number) => v.toLocaleString('zh-CN')
     },
     {
+      title: '剩余持仓',
+      width: 100,
+      align: 'right',
+      render: (_v, t) => {
+        const r = remainByTrade.get(t.trade_id)
+        return r === undefined ? '-' : <span>{r.toLocaleString('zh-CN')}</span>
+      }
+    },
+    {
       title: '金额',
       dataIndex: 'amount',
       width: 120,
@@ -134,6 +168,15 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   return (
     <div>
       <Space style={{ marginBottom: 12 }}>
+        <Typography.Text>股票：</Typography.Text>
+        <Select
+          value={codeFilter}
+          onChange={setCodeFilter}
+          style={{ width: 220 }}
+          showSearch
+          optionFilterProp="label"
+          options={[{ value: 'all', label: '全部' }, ...stockOptions]}
+        />
         <Typography.Text>类型：</Typography.Text>
         <Select
           value={typeFilter}

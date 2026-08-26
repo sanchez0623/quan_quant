@@ -57,10 +57,24 @@ export interface RiskConfig {
   trailing_stop_pct?: number
   max_drawdown_breaker?: number
   max_intraday_trades?: number
+  /** 最大持仓只数，0=不限 */
+  max_holdings?: number
+  /** 现金缓冲比例（永不进场的资金） */
+  cash_reserve_pct?: number
+}
+
+// ---- 月度出金 ----
+export interface WithdrawalConfig {
+  /** 每月提取目标额（0=关闭）：不足月末补齐 */
+  monthly_withdraw_base?: number
+  /** 每笔做T盈利即时提取比例（%） */
+  t_profit_withdraw_pct?: number
+  /** 做T卖出最小金额（防碎单费用磨损） */
+  min_t_amount?: number
 }
 
 // ---- 回测任务 ----
-export interface BacktestCreateRequest {
+export interface BacktestCreateRequest extends WithdrawalConfig {
   name: string
   strategy_id: string
   params: Record<string, ParamValue>
@@ -75,7 +89,11 @@ export interface BacktestCreateRequest {
   commission_min?: number
   stamp_tax?: number
   transfer_fee?: number
+  handling_fee?: number
+  regulatory_fee?: number
   exclude_st?: boolean
+  /** 指标预热交易日数（0=使用策略建议值） */
+  warmup_days?: number
 }
 
 export interface TaskCreateResponse {
@@ -90,7 +108,23 @@ export interface BacktestListItem {
   created_at: string
   strategy_id: string
   period: string
+  /** 完整回测配置（供「存为模板」复用） */
+  config?: BacktestCreateRequest | null
   error?: string | null
+}
+
+// ---- 回测配置模板（每用户私有） ----
+export interface BacktestTemplateItem {
+  id: number
+  name: string
+  config: BacktestCreateRequest
+  created_at: string
+  updated_at: string | null
+}
+
+export interface TemplateCreateRequest {
+  name: string
+  config: BacktestCreateRequest
 }
 
 export interface TaskStatusResponse {
@@ -124,11 +158,23 @@ export interface Metrics {
   commission_total: number
   start_equity: number
   end_equity: number
+  // ---- 出金（落袋为安） ----
+  withdrawn_total?: number
+  t_profit_withdrawn?: number
+  month_topup_withdrawn?: number
+  /** 出金覆盖率：足额月份占比（月度目标>0 时） */
+  withdrawal_coverage?: number | null
+  /** 未补齐的历史缺口累计金额（有缺口时） */
+  shortfall_unrecovered?: number | null
+  /** 后续月份追偿的历史缺口金额（发生过追偿时） */
+  shortfall_recovered?: number | null
 }
 
 export interface EquityPoint {
   date: string
   equity: number
+  /** 调整净值 = 真实净值 + 累计提取（统计口径基准，出金不算亏损） */
+  adjusted_equity?: number
   drawdown: number
   position_ratio?: number
 }
@@ -157,6 +203,8 @@ export interface TradeLogItem {
 
 export interface PositionSnapshotPosition {
   code: string
+  /** 股票名称 */
+  name?: string
   volume: number
   cost: number
 }
@@ -168,6 +216,27 @@ export interface PositionSnapshot {
   positions: PositionSnapshotPosition[]
 }
 
+// ---- 出金记录 ----
+export interface WithdrawalLogItem {
+  month: string
+  date: string
+  type: 't_profit' | 'month_topup' | 'shortfall' | 'shortfall_recover'
+  amount: number
+}
+
+export interface WithdrawalSummary {
+  monthly_base: number
+  total: number
+  t_profit: number
+  month_topup: number
+  /** 未补齐的历史缺口累计金额 */
+  shortfall?: number
+  /** 后续月份已追偿的历史缺口金额 */
+  recover?: number
+  months: Record<string, number>
+  log: WithdrawalLogItem[]
+}
+
 export interface BacktestReport {
   task_id: string
   name: string
@@ -177,6 +246,7 @@ export interface BacktestReport {
   monthly_returns: MonthlyReturn[]
   trade_log: TradeLogItem[]
   position_snapshots: PositionSnapshot[]
+  withdrawal?: WithdrawalSummary
 }
 
 // ---- K线 ----
@@ -317,6 +387,12 @@ export interface AiAnalyzeRequest {
   profile?: string
 }
 
+/** AI 结构化参数建议（LLM 输出末尾 json 块解析而来） */
+export interface AiSuggestions {
+  params?: Record<string, ParamValue>
+  risk_config?: RiskConfig
+}
+
 export interface AiAnalysisItem {
   task_id: string
   backtest_id: string
@@ -328,6 +404,7 @@ export interface AiAnalysisItem {
   tokens_used: number | null
   elapsed: number | null
   error: string | null
+  suggestions?: AiSuggestions | null
 }
 
 // ---- 数据管理 ----
@@ -422,6 +499,13 @@ export interface KeyUpdateRequest {
   label?: string
   sort_order?: number
   enabled?: boolean
+}
+
+export interface KeyTestResult {
+  ok: boolean
+  reply?: string
+  model?: string
+  elapsed?: number
 }
 
 // ---- 用户管理 ----

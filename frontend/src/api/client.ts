@@ -9,6 +9,7 @@ import type {
   DataDemoRequest,
   DataStatus,
   KeyCreateRequest,
+  KeyTestResult,
   KeyUpdateRequest,
   KeysResponse,
   KLineResponse,
@@ -21,6 +22,8 @@ import type {
   Strategy,
   TaskCreateResponse,
   TaskStatusResponse,
+  TemplateCreateRequest,
+  BacktestTemplateItem,
   UserCreateRequest,
   UserItem
 } from './types'
@@ -74,6 +77,12 @@ export async function getStocks(keyword: string, limit = 20): Promise<StockItem[
   return res.data
 }
 
+/** 按代码批量查询股票（支持逗号/空格/换行分隔，兼容 sh./sz. 前缀） */
+export async function getStocksByCodes(codes: string[]): Promise<StockItem[]> {
+  const res = await api.get<StockItem[]>('/stocks/by-codes', { params: { codes: codes.join(',') } })
+  return res.data
+}
+
 // ---- 回测任务 ----
 export async function createBacktest(data: BacktestCreateRequest): Promise<TaskCreateResponse> {
   const res = await api.post<TaskCreateResponse>('/backtests', data)
@@ -82,6 +91,30 @@ export async function createBacktest(data: BacktestCreateRequest): Promise<TaskC
 
 export async function getBacktests(): Promise<BacktestListItem[]> {
   const res = await api.get<BacktestListItem[]>('/backtests')
+  return res.data
+}
+
+/** 删除回测任务（运行中的任务会被后端拒绝） */
+export async function deleteBacktest(taskId: string): Promise<{ status: string }> {
+  const res = await api.delete<{ status: string }>(`/backtests/${taskId}`)
+  return res.data
+}
+
+// ---- 回测配置模板（每用户私有） ----
+export async function getTemplates(): Promise<BacktestTemplateItem[]> {
+  const res = await api.get<BacktestTemplateItem[]>('/backtests/templates')
+  return res.data
+}
+
+export async function createTemplate(
+  data: TemplateCreateRequest
+): Promise<{ id: number; status: string }> {
+  const res = await api.post<{ id: number; status: string }>('/backtests/templates', data)
+  return res.data
+}
+
+export async function deleteTemplate(templateId: number): Promise<{ status: string }> {
+  const res = await api.delete<{ status: string }>(`/backtests/templates/${templateId}`)
   return res.data
 }
 
@@ -95,8 +128,10 @@ export async function getBacktestReport(taskId: string): Promise<BacktestReport>
   return res.data
 }
 
-export async function getKline(taskId: string, code: string): Promise<KLineResponse> {
-  const res = await api.get<KLineResponse>(`/backtests/${taskId}/kline`, { params: { code } })
+export async function getKline(taskId: string, code: string, period?: string): Promise<KLineResponse> {
+  const res = await api.get<KLineResponse>(`/backtests/${taskId}/kline`, {
+    params: { code, ...(period ? { period } : {}) }
+  })
   return res.data
 }
 
@@ -119,6 +154,11 @@ export async function getOptimizeDetail(taskId: string): Promise<OptimizeDetail>
 // ---- AI 分析 ----
 export async function getAiProfiles(): Promise<AiProfilesResponse> {
   const res = await api.get<AiProfilesResponse>('/ai/profiles')
+  return res.data
+}
+
+export async function clearAiUsage(): Promise<{ status: string }> {
+  const res = await api.delete<{ status: string }>('/ai/usage')
   return res.data
 }
 
@@ -153,6 +193,11 @@ export async function deleteKey(keyId: number): Promise<{ status: string }> {
   return res.data
 }
 
+export async function testKey(keyId: number): Promise<KeyTestResult> {
+  const res = await api.post<KeyTestResult>(`/keys/${keyId}/test`)
+  return res.data
+}
+
 // ---- 用户管理（仅 admin） ----
 export async function getUsers(): Promise<UserItem[]> {
   const res = await api.get<UserItem[]>('/users')
@@ -180,8 +225,11 @@ export async function getDataStatus(): Promise<DataStatus> {
   return res.data
 }
 
-export async function updateData(scope: 'daily' | 'minute5' | 'all'): Promise<TaskCreateResponse> {
-  const res = await api.post<TaskCreateResponse>('/data/update', { scope })
+export async function updateData(
+  scope: 'daily' | 'minute5' | 'all',
+  stocks?: string[]
+): Promise<TaskCreateResponse> {
+  const res = await api.post<TaskCreateResponse>('/data/update', { scope, stocks })
   return res.data
 }
 
