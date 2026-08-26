@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""LLM Key 管理接口：每用户私有的 Key 池（增删改查）"""
+"""LLM Key 管理接口：每用户私有的 Key 池（增删改查 + 连通性测试）"""
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..auth import get_current_user
-from ..llm.provider import PROVIDER_REGISTRY
+from ..llm.provider import PROVIDER_REGISTRY, _chat_once
 
 router = APIRouter(prefix="/api/keys", tags=["keys"])
 
@@ -89,3 +90,54 @@ def remove_key(key_id: int, user: str = Depends(get_current_user)):
     if not db.delete_llm_key(key_id, user):
         raise HTTPException(status_code=404, detail="Key 不存在或不属于当前用户")
     return {"status": "ok"}
+
+
+def _http_error_detail(e: httpx.HTTPStatusError) -> str:
+    """把服务商 HTTP 错误转成可读原因（含服务商返回的原始 message）"""
+    code = e.response.status_code
+    reason = {
+        401: "API Key 无效或已过期",
+        402: "余额不足或欠费",
+        403: "无权限访问",
+        404: "端点或模型不存在（请检查 base_url / 模型名）",
+        429: "触发限流",
+    }.get(code, f"HTTP {code}")
+    try:
+        body = e.response.json()
+        msg = (body.get("error") or {}).get("message") or body.get("message") or ""
+        if msg:
+            return f"{reason}：{str(msg)[:200]}"
+    except Exception:  # noqa: BLE001
+        pass
+    return reason
+
+
+@router.post("/{key_id}/test")
+def test_key(key_id: int, user: str = Depends(get_current_user)):
+    """连通性测试：用该 Key 向对应服务商发送「你好」，确认能联通。"""
+    rec = next((k for k in db.list_llm_keys(user) if k["id"] == key_id), None)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Key 不存在或不属于当前用户")
+    if not rec["enabled"]:
+        raise HTTPException(status_code=400, detail="该 Key 已禁用，请先启用再测试")
+    if rec["provider"] == "custom":
+        if not rec["base_url"] or not rec["model"]:
+            raise HTTPException(status_code=400, detail="自定义服务商需填写 base_url 与模型名")
+        base_url, model = rec["base_url"], rec["model"]
+    else:
+        reg = PROVIDER_REGISTRY.get(rec["provider"])
+        if reg is None:
+            raise HTTPException(status_code=400, detail=f"未知服务商 {rec['provider']}，无法测试")
+        base_url, model = reg["base_url"], rec["model"] or reg["default_model"]
+    try:
+        result = _chat_once(base_url, model, rec["api_key"],
+                            [{"role": "user", "content": "你好"}],
+                            temperature=0.3, timeout=20.0)
+        return {"ok": True, "reply": (result["content"] or "").strip()[:200],
+                "model": result["model"], "elapsed": result["elapsed"]}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=400, detail=f"连接失败：{_http_error_detail(e)}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=400, detail="连接超时（20秒内无响应），请检查网络或服务商状态")
+    except Exception as e:  # noqa: BLE001  连接/解析错误等
+        raise HTTPException(status_code=400, detail=f"连接失败：{e}")

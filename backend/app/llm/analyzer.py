@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""回测报告 → prompt → LLM 分析结果(markdown)"""
+"""回测报告 -> prompt -> LLM 分析结果(markdown + 结构化参数建议)"""
 import json
 import random
+import re
 from typing import Optional
 
 from .provider import chat
@@ -11,8 +12,53 @@ SYSTEM_PROMPT = (
     "包含以下部分：\n"
     "## 策略弱点诊断（如止损过紧、做T贡献为负、回撤过大等，指出具体证据）\n"
     "## 参数敏感性判断（结合参数重要性，若有）\n"
-    "## 优化建议（编号列表，每条需具体到参数与调整方向，并说明理由）"
+    "## 优化建议（编号列表，每条需具体到参数与调整方向，并说明理由）\n\n"
+    "最后必须以一个 ```json 代码块作为全文结尾（系统会用它自动生成下一轮回测配置），格式严格为：\n"
+    '{"params": {"参数名": 新值, ...}, "risk_config": {"字段名": 新值, ...}}\n'
+    "要求：\n"
+    "1. params 的键只能取自「回测配置.params」中已有的参数名，只写需要调整的，数值类型与原值保持一致；\n"
+    "2. risk_config 的键只能取自：max_position_pct_per_stock, max_total_position_pct, stop_loss_mode, "
+    "stop_loss_pct, atr_period, atr_multiplier, take_profit_pct, trailing_stop_pct, "
+    "max_drawdown_breaker, max_intraday_trades, max_holdings, cash_reserve_pct；\n"
+    '3. 若认为无需调整任何参数，输出 {"params": {}, "risk_config": {}}。'
 )
+
+# risk_config 允许建议修改的字段（与 RiskConfigModel 对齐）
+_RISK_FIELDS = {
+    "max_position_pct_per_stock", "max_total_position_pct", "stop_loss_mode",
+    "stop_loss_pct", "atr_period", "atr_multiplier", "take_profit_pct",
+    "trailing_stop_pct", "max_drawdown_breaker", "max_intraday_trades",
+    "max_holdings", "cash_reserve_pct",
+}
+
+
+def _extract_suggestions(content: str, report: dict) -> tuple[str, Optional[dict]]:
+    """提取 markdown 末尾的 ```json 建议块并净化。
+    返回 (去掉json块的正文, 建议dict)；无有效建议时第二个返回值为 None。"""
+    last = None
+    for m in re.finditer(r"```json\s*(\{.*?\})\s*```", content, re.S):
+        last = m
+    if last is None:
+        return content, None
+    try:
+        data = json.loads(last.group(1))
+        if not isinstance(data, dict):
+            raise ValueError
+    except (json.JSONDecodeError, ValueError):
+        return content, None
+    known_params = set((report.get("config", {}).get("params") or {}).keys())
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    risk = data.get("risk_config") if isinstance(data.get("risk_config"), dict) else {}
+    clean_params = {str(k): v for k, v in params.items()
+                    if k in known_params and isinstance(v, (int, float, str, bool))}
+    clean_risk = {str(k): v for k, v in risk.items()
+                  if k in _RISK_FIELDS and isinstance(v, (int, float, str, bool))}
+    suggestions = None
+    if clean_params or clean_risk:
+        suggestions = {"params": clean_params, "risk_config": clean_risk}
+    # 从展示正文中移除 json 块（前端单独渲染建议卡片）
+    content = (content[:last.start()] + content[last.end():]).rstrip() + "\n"
+    return content, suggestions
 
 
 def _curve_features(report: dict) -> dict:
@@ -81,7 +127,7 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                      db_path: Optional[str] = None,
                      param_importance: Optional[dict] = None,
                      username: Optional[str] = None) -> dict:
-    """返回 {content, model, tokens, elapsed, profile}；未配置任何可用 key 抛 LLMError"""
+    """返回 {content, model, tokens, elapsed, profile, suggestions}；未配置任何可用 key 抛 LLMError"""
     parts = {
         "回测配置": {k: report.get("config", {}).get(k)
                   for k in ("name", "strategy_id", "params", "risk_config",
@@ -95,6 +141,8 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
         parts["参数重要性(来自寻优)"] = param_importance
     user_msg = ("请分析以下回测报告（JSON）：\n"
                 + json.dumps(parts, ensure_ascii=False, default=str))
-    return chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
-                          {"role": "user", "content": user_msg}],
-                temperature=0.3, db_path=db_path, username=username)
+    result = chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_msg}],
+                  temperature=0.3, db_path=db_path, username=username)
+    content, suggestions = _extract_suggestions(result["content"], report)
+    return {**result, "content": content, "suggestions": suggestions}

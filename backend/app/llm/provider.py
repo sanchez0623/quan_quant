@@ -252,12 +252,12 @@ def profiles_info(username: Optional[str] = None, db_path: Optional[str] = None)
 # ================= 调用 =================
 
 def _chat_once(base_url: str, model: str, api_key: str, messages: list,
-               temperature: float) -> dict:
+               temperature: float, timeout: float = 120.0) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     body = {"model": model, "messages": messages, "temperature": temperature}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     t0 = time.time()
-    with httpx.Client(timeout=120.0, trust_env=False) as client:
+    with httpx.Client(timeout=timeout, trust_env=False) as client:
         resp = client.post(url, json=body, headers=headers)
     elapsed = round(time.time() - t0, 3)
     resp.raise_for_status()

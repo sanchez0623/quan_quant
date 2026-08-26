@@ -25,6 +25,13 @@ def llm_profiles(user: str = Depends(get_current_user)):
             "usage": db.llm_usage_stats()}
 
 
+@router.delete("/usage")
+def clear_usage(_user: str = Depends(get_current_user)):
+    """清空 LLM 用量统计（如清除测试期产生的脏数据）"""
+    db.clear_llm_usage()
+    return {"status": "ok"}
+
+
 class AnalyzeRequest(BaseModel):
     backtest_id: str
     profile: Optional[str] = None  # auto(默认) | 服务商名 | key_id（数字字符串）
