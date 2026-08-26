@@ -27,16 +27,20 @@ def data_status(_user: str = Depends(get_current_user)):
 
 class UpdateRequest(BaseModel):
     scope: str = "daily"
+    stocks: Optional[list[str]] = None  # 指定股票（sh.600021/600021 均可）；空=全量
 
 
 @router.post("/update")
 def data_update(req: UpdateRequest, _user: str = Depends(get_current_user)):
     if req.scope not in ("daily", "minute5", "all"):
         raise HTTPException(status_code=400, detail="scope 需为 daily|minute5|all")
+    if req.stocks is not None and not req.stocks:
+        raise HTTPException(status_code=400, detail="stocks 为空时请勿传该字段（全量更新）")
     task_id = "data_" + uuid.uuid4().hex[:12]
-    db.create_task(task_id, f"数据更新:{req.scope}", "data_update",
-                   payload={"scope": req.scope})
-    manager.submit("data_update", task_id, scope=req.scope)
+    label = f"数据更新:{req.scope}" + (f"({len(req.stocks)}只)" if req.stocks else "")
+    db.create_task(task_id, label, "data_update",
+                   payload={"scope": req.scope, "stocks": req.stocks})
+    manager.submit("data_update", task_id, scope=req.scope, codes=req.stocks)
     return {"task_id": task_id, "status": "pending"}
 
 

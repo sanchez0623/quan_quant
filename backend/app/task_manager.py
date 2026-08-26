@@ -57,14 +57,18 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
                     reports_dir: str, param_importance: Optional[dict] = None,
                     username: Optional[str] = None) -> None:
     from .llm.analyzer import analyze_backtest
+    db.update_progress(task_id, 5, "读取回测报告...", db_path)
     report_path = Path(reports_dir) / f"{backtest_id}.json"
     if not report_path.exists():
         raise RuntimeError(f"回测报告不存在: {backtest_id}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    db.update_progress(task_id, 20, "正在调用 LLM 生成分析（深度思考可能需数十秒）...", db_path)
     result = analyze_backtest(report, profile, db_path=db_path,
                                param_importance=param_importance, username=username)
+    db.update_progress(task_id, 90, "解析结构化建议...", db_path)
     db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
-                     result["content"], result["tokens"], result["elapsed"], None, db_path)
+                     result["content"], result["tokens"], result["elapsed"], None,
+                     suggestions=result.get("suggestions"), db_path=db_path)
     db.finish_task(task_id, "success",
                    payload={"backtest_id": backtest_id, "profile": result["profile"]},
                    db_path=db_path)
@@ -80,9 +84,10 @@ def data_demo_task(task_id: str, stocks: Optional[list], days: int,
     db.finish_task(task_id, "success", payload=stats, db_path=db_path)
 
 
-def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str) -> None:
+def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str,
+                     codes: Optional[list[str]] = None) -> None:
     from .data.updater import update_task
-    update_task(task_id, scope, db_path=db_path, data_dir=data_dir)
+    update_task(task_id, scope, codes=codes, db_path=db_path, data_dir=data_dir)
 
 
 _TASK_FUNCS = {
