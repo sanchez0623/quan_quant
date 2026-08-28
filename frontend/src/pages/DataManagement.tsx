@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Input,
   InputNumber,
   message,
@@ -16,6 +17,7 @@ import {
   Tag,
   Typography
 } from 'antd'
+import type { Dayjs } from 'dayjs'
 import { SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { createDemoData, errDetail, getDataStatus, updateData } from '../api/client'
@@ -36,6 +38,7 @@ export default function DataManagement() {
   const [task, setTask] = useState<{ id: string; label: string } | null>(null)
   const [demoDays, setDemoDays] = useState<number>(500)
   const [stocksInput, setStocksInput] = useState('')
+  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -82,7 +85,16 @@ export default function DataManagement() {
       .map((s) => s.trim())
       .filter(Boolean)
     try {
-      const res = await updateData(scope, stocks.length > 0 ? stocks : undefined)
+      const res = await updateData(
+        scope,
+        stocks.length > 0 ? stocks : undefined,
+        dateRange
+          ? {
+              startDate: dateRange[0]?.format('YYYY-MM-DD') || undefined,
+              endDate: dateRange[1]?.format('YYYY-MM-DD') || undefined
+            }
+          : undefined
+      )
       setTask({ id: res.task_id, label: '数据更新' })
       message.info(
         stocks.length > 0 ? `更新任务已提交（指定 ${stocks.length} 只）` : '更新任务已提交（全量）'
@@ -213,6 +225,13 @@ export default function DataManagement() {
                       { value: 'all', label: '全部' }
                     ]}
                   />
+                  <DatePicker.RangePicker
+                    value={dateRange}
+                    onChange={(dates) => setDateRange(dates)}
+                    allowClear
+                    style={{ width: 260 }}
+                    placeholder={['开始日期', '结束日期']}
+                  />
                   <Button
                     type="primary"
                     icon={<SyncOutlined />}
@@ -232,8 +251,8 @@ export default function DataManagement() {
                   />
                 </Space.Compact>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  只回测少数股票时建议指定代码按需拉取（如
-                  600021），全量更新（约 5500 只）耗时较长。
+                  日期留空=拉取全历史；指定日期则只拉该区间（5分钟线受数据源约 2 年深度限制）。
+                  只回测少数股票时建议指定代码按需拉取（如 600021），全量更新（约 5500 只）耗时较长。
                 </Typography.Text>
               </Space>
             </div>

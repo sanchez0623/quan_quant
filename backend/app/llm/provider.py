@@ -37,7 +37,7 @@ PROVIDER_REGISTRY: dict[str, dict] = {
         "label": "OpenRouter",
     },
     "volc": {
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
         "default_model": "doubao-seed-1.6",
         "label": "火山方舟",
     },

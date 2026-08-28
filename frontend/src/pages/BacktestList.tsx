@@ -346,7 +346,9 @@ export default function BacktestList() {
     }
     setSavingTemplate(true)
     try {
-      await createTemplate({ name, config: saveSource.config })
+      // 模板名与配置内 name 同步：载入模板时回显的应是当前模板名，
+      // 而非保存前记录/表单里的旧任务名（如从列表「存为模板」改名后残留）
+      await createTemplate({ name, config: { ...saveSource.config, name } })
       message.success('模板已保存')
       setSaveModalOpen(false)
       loadTemplates()

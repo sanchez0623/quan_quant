@@ -28,6 +28,8 @@ def data_status(_user: str = Depends(get_current_user)):
 class UpdateRequest(BaseModel):
     scope: str = "daily"
     stocks: Optional[list[str]] = None  # 指定股票（sh.600021/600021 均可）；空=全量
+    start_date: Optional[str] = None    # 拉取起始日 YYYY-MM-DD；空=全历史
+    end_date: Optional[str] = None      # 拉取截止日 YYYY-MM-DD；空=全历史
 
 
 @router.post("/update")
@@ -39,8 +41,11 @@ def data_update(req: UpdateRequest, _user: str = Depends(get_current_user)):
     task_id = "data_" + uuid.uuid4().hex[:12]
     label = f"数据更新:{req.scope}" + (f"({len(req.stocks)}只)" if req.stocks else "")
     db.create_task(task_id, label, "data_update",
-                   payload={"scope": req.scope, "stocks": req.stocks})
-    manager.submit("data_update", task_id, scope=req.scope, codes=req.stocks)
+                   payload={"scope": req.scope, "stocks": req.stocks,
+                            "start_date": req.start_date, "end_date": req.end_date})
+    manager.submit("data_update", task_id, scope=req.scope, codes=req.stocks,
+                   start_date=req.start_date or "1990-01-01",
+                   end_date=req.end_date or "2099-12-31")
     return {"task_id": task_id, "status": "pending"}
 
 

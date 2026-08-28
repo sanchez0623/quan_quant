@@ -3,9 +3,11 @@
 from .grid_t import GridTStrategy
 from .ma_cross import MaCrossStrategy
 from .momentum_t import MomentumTStrategy
+from .select_trend import SelectTrendStrategy
 
 REGISTRY: dict[str, object] = {
-    s.id: s for s in [MaCrossStrategy(), GridTStrategy(), MomentumTStrategy()]
+    s.id: s for s in [MaCrossStrategy(), GridTStrategy(), MomentumTStrategy(),
+                      SelectTrendStrategy()]
 }
 
 
@@ -45,6 +47,10 @@ def validate_params(strategy_id: str, params: dict) -> tuple[bool, str]:
                 v2 = float(v)
                 if ("min" in s and v2 < s["min"]) or ("max" in s and v2 > s["max"]):
                     return False, f"参数 {k}={v} 超出范围 [{s.get('min')}, {s.get('max')}]"
+            elif t == "categorical":
+                choices = s.get("choices") or []
+                if choices and v not in choices:
+                    return False, f"参数 {k}={v} 不在可选值 {choices} 中"
         except (TypeError, ValueError):
             return False, f"参数 {k} 类型错误，期望 {t}"
     return True, ""

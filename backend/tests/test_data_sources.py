@@ -95,3 +95,76 @@ def test_demo_data_normalizes_codes(tmp_path):
     assert (tmp_path / "minute5" / "600021.parquet").exists()   # 文件名纯数字，回测可命中
     basic = store.read_stock_basic(str(tmp_path))
     assert basic["code"].to_list() == ["600021"]
+
+
+# ---------------- BaostockSource 登录缓存 / 会话失效自动重连 ----------------
+
+class _FakeRs:
+    def __init__(self, error_code, rows=(), fields=()):
+        self.error_code = error_code
+        self._rows = list(rows)
+        self._fields = list(fields)
+
+    @property
+    def fields(self):
+        return self._fields
+
+    def next(self):
+        return bool(self._rows)
+
+    def get_row_data(self):
+        return self._rows.pop(0) if self._rows else []
+
+
+class _FakeBs:
+    """假 baostock：统计登录/登出次数，可模拟查询级会话失效"""
+    def __init__(self):
+        self.login_calls = 0
+        self.logout_calls = 0
+        self.logged_in = False
+        self.fail_next = False   # 下次查询返回错误码（模拟服务端断开会话）
+
+    def login(self):
+        self.login_calls += 1
+        self.logged_in = True
+        return _FakeRs("0")
+
+    def logout(self):
+        self.logout_calls += 1
+        self.logged_in = False
+
+    def query_history_k_data_plus(self, *a, **k):
+        if self.fail_next:
+            self.fail_next = False
+            return _FakeRs("1011")   # 查询失败（会话失效）
+        if not self.logged_in:
+            return _FakeRs("1001")   # 未登录
+        return _FakeRs("0", rows=[["2020-01-02", "1", "2", "3", "4", "5", "6"]],
+                       fields=["date", "open", "high", "low", "close",
+                               "volume", "amount"])
+
+
+def test_baostock_login_cached_and_reconnect():
+    src = sources.BaostockSource()
+    fake = _FakeBs()
+    src._bs = fake
+    src._ok = True
+    sources.BaostockSource._bs_logged_in = False  # 清类级登录态，避免测试间污染
+
+    # 连续两次查询：登录态复用，只 login 一次、不登出
+    d1 = src.get_daily("600000", "2020-01-01", "2020-01-10")
+    d2 = src.get_daily("600000", "2020-01-02", "2020-01-05")
+    assert d1 is not None and d2 is not None
+    assert fake.login_calls == 1, "登录态应被缓存，第二次查询不应重新登录"
+    assert fake.logout_calls == 0, "缓存登录态下不应每次查询后登出"
+
+    # 会话失效（查询错误码）：自动登出并重登重试一次
+    fake.fail_next = True
+    d3 = src.get_daily("600000", "2020-01-01", "2020-01-10")
+    assert d3 is not None, "会话失效后应自动重连重试"
+    assert fake.login_calls == 2
+    assert fake.logout_calls == 1
+
+    # health_check 复用同一登录态，不额外登录
+    assert src.health_check() is True
+    assert fake.login_calls == 2, "health_check 不应触发额外登录"

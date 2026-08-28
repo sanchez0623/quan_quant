@@ -57,7 +57,7 @@ def test_parse_key_pool_mixed_providers(mixed_pool):
     assert pool[2]["provider"] == "openrouter"
     assert pool[2]["base_url"] == "https://openrouter.ai/api/v1"
     assert pool[3]["provider"] == "volc"
-    assert pool[3]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert pool[3]["base_url"] == "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 
 def test_parse_key_pool_custom_endpoint(monkeypatch):
