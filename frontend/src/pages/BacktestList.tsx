@@ -73,6 +73,13 @@ interface BacktestFormValues {
   exclude_st?: boolean
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
+  capital_preset?: string
+}
+
+/** 资金档预设：选择后一键填充 初始资金 / 最大持股 / 月提取 / 最小T金额 */
+const CAPITAL_PRESETS: Record<string, { label: string; initial_capital: number; max_holdings: number; monthly_withdraw_base: number; min_t_amount: number }> = {
+  '50w': { label: '50万档', initial_capital: 500000, max_holdings: 3, monthly_withdraw_base: 6000, min_t_amount: 30000 },
+  '300w': { label: '300万档', initial_capital: 3000000, max_holdings: 5, monthly_withdraw_base: 20000, min_t_amount: 80000 }
 }
 
 export default function BacktestList() {
@@ -273,6 +280,20 @@ export default function BacktestList() {
       if (p.default !== undefined) params[p.key] = p.default
     })
     form.setFieldsValue({ params, period: s?.periods?.[0] })
+  }
+
+  /** 资金档预设：一键填充 初始资金 / 最大持股 / 月提取 / 最小T金额 */
+  const applyCapitalPreset = (presetKey: string) => {
+    if (!presetKey) return
+    const p = CAPITAL_PRESETS[presetKey]
+    if (!p) return
+    form.setFieldsValue({
+      initial_capital: p.initial_capital,
+      monthly_withdraw_base: p.monthly_withdraw_base,
+      min_t_amount: p.min_t_amount,
+      risk_config: { ...(form.getFieldValue('risk_config') ?? {}), max_holdings: p.max_holdings }
+    })
+    message.success(`${p.label}已填充：持股≤${p.max_holdings} · 月提取 ${(p.monthly_withdraw_base / 10000).toFixed(1)}万 · 最小T金额 ${(p.min_t_amount / 10000).toFixed(0)}万`)
   }
 
   const onFinish = async () => {
@@ -602,6 +623,21 @@ export default function BacktestList() {
                 rules={[{ required: true, message: '请输入初始资金' }]}
               >
                 <InputNumber min={1000} step={100000} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="capital_preset"
+                label="资金档预设"
+                extra="一键填充初始资金/最大持股/月提取/最小T金额"
+              >
+                <Select
+                  placeholder="选择资金档"
+                  allowClear
+                  options={Object.entries(CAPITAL_PRESETS).map(([k, p]) => ({
+                    value: k,
+                    label: p.label
+                  }))}
+                  onChange={applyCapitalPreset}
+                />
               </Form.Item>
             </Col>
           </Row>
