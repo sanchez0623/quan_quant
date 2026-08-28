@@ -18,7 +18,7 @@ import {
   Typography
 } from 'antd'
 import type { Dayjs } from 'dayjs'
-import { SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { DatabaseOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { createDemoData, errDetail, getDataStatus, updateData } from '../api/client'
 import type { DataSourceHealth } from '../api/types'
@@ -99,6 +99,17 @@ export default function DataManagement() {
       message.info(
         stocks.length > 0 ? `更新任务已提交（指定 ${stocks.length} 只）` : '更新任务已提交（全量）'
       )
+    } catch (err) {
+      message.error(errDetail(err, '提交更新失败'))
+    }
+  }
+
+  /** 更新行业与成分（申万三级 + 指数成分），无需指定股票/日期 */
+  const onUpdateIndustry = async () => {
+    try {
+      const res = await updateData('industry')
+      setTask({ id: res.task_id, label: '行业与成分更新' })
+      message.info('行业与成分更新任务已提交（申万三级约需 3~5 分钟）')
     } catch (err) {
       message.error(errDetail(err, '提交更新失败'))
     }
@@ -286,6 +297,48 @@ export default function DataManagement() {
               </div>
             </div>
           )}
+        </Space>
+      </Card>
+
+      <Card size="small" title="行业与成分（申万三级 + 指数成分）">
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Space size="large" wrap>
+            <Statistic
+              title="指数成分快照"
+              value={status?.index?.snapshot_date ?? '未更新'}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="申万行业快照"
+              value={status?.industry?.snapshot_date ?? '未更新'}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="指数成分覆盖"
+              value={fmtInt(status?.index?.stocks)}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="申万三级行业数"
+              value={fmtInt(status?.industry?.l3_count)}
+              valueStyle={{ fontSize: 16 }}
+            />
+          </Space>
+          <Space>
+            <Button
+              type="primary"
+              icon={<DatabaseOutlined />}
+              disabled={!!task}
+              loading={!!task}
+              onClick={onUpdateIndustry}
+            >
+              更新行业与成分
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              拉取 baostock 上证50/沪深300/中证500 成分（+中证800派生）与乐咕申万 2021 三级行业，
+              约 3~5 分钟。供「新建回测 → 条件选股」按行业/指数筛选。月度级变动，手动触发即可。
+            </Typography.Text>
+          </Space>
         </Space>
       </Card>
     </Space>

@@ -22,6 +22,9 @@ import type {
   OptimizeCreateRequest,
   OptimizeDetail,
   OptimizeListItem,
+  PickOptions,
+  PickRequest,
+  PickResponse,
   StockItem,
   Strategy,
   TaskCreateResponse,
@@ -83,6 +86,19 @@ export async function getStocks(keyword: string, limit = 20): Promise<StockItem[
 /** 按代码批量查询股票（支持逗号/空格/换行分隔，兼容 sh./sz. 前缀） */
 export async function getStocksByCodes(codes: string[]): Promise<StockItem[]> {
   const res = await api.get<StockItem[]>('/stocks/by-codes', { params: { codes: codes.join(',') } })
+  return res.data
+}
+
+// ---- 条件选股（UNIVERSE_PICKER）----
+/** 获取条件选股筛选维度选项（指数/行业树/板块 + 快照日期） */
+export async function getPickOptions(): Promise<PickOptions> {
+  const res = await api.get<PickOptions>('/stocks/pick-options')
+  return res.data
+}
+
+/** 条件选股：过滤 + 可复现随机抽样（同 seed 同池子） */
+export async function pickStocks(data: PickRequest): Promise<PickResponse> {
+  const res = await api.post<PickResponse>('/stocks/pick', data)
   return res.data
 }
 
@@ -258,7 +274,7 @@ export async function getDataStatus(): Promise<DataStatus> {
 }
 
 export async function updateData(
-  scope: 'daily' | 'minute5' | 'all',
+  scope: 'daily' | 'minute5' | 'all' | 'industry',
   stocks?: string[],
   dateRange?: { startDate?: string; endDate?: string }
 ): Promise<TaskCreateResponse> {

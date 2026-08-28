@@ -6,6 +6,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Collapse,
   Form,
   Input,
   InputNumber,
@@ -33,10 +34,12 @@ import type {
   BacktestListItem,
   ExperimentCell,
   ExperimentListItem,
-  Strategy
+  Strategy,
+  UniverseMeta
 } from '../api/types'
 import TaskStatusTag from '../components/TaskStatusTag'
 import BacktestRangePicker from '../components/BacktestRangePicker'
+import StockPicker from '../components/StockPicker'
 
 /** 实验矩阵：cell -> (时钟, T开关) 与标签 */
 const CELLS: Array<{ value: ExperimentCell; label: string; desc: string }> = [
@@ -67,6 +70,11 @@ export default function ExperimentList() {
   const [backtests, setBacktests] = useState<BacktestListItem[]>([])
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [templateConfig, setTemplateConfig] = useState<BacktestCreateRequest | null>(null)
+  // 条件选股覆盖股票池（可选）：非空时覆盖模板基座的 universe / universe_meta
+  const [universeOverride, setUniverseOverride] = useState<{
+    codes: string[]
+    meta?: UniverseMeta | null
+  }>({ codes: [] })
   const [submitting, setSubmitting] = useState(false)
   const [list, setList] = useState<ExperimentListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
@@ -111,6 +119,7 @@ export default function ExperimentList() {
 
   const onTemplateChange = async (taskId: string) => {
     setTemplateConfig(null)
+    setUniverseOverride({ codes: [] })
     if (!taskId) return
     try {
       const report = await getBacktestReport(taskId)
@@ -152,9 +161,15 @@ export default function ExperimentList() {
     }
     setSubmitting(true)
     try {
+      // 条件选股覆盖：非空时用其替换模板基座的股票池（并携带溯源 meta）
+      const base = { ...templateConfig }
+      if (universeOverride.codes.length > 0) {
+        base.universe = universeOverride.codes
+        base.universe_meta = universeOverride.meta ?? null
+      }
       const res = await createExperiment({
         name: values.name,
-        base_config: { ...templateConfig },
+        base_config: base,
         cells: values.cells,
         capitals,
         start_date: start.format('YYYY-MM-DD'),
@@ -280,6 +295,31 @@ export default function ExperimentList() {
               message={`基座配置：策略 ${templateConfig.strategy_id} · 周期 ${
                 templateConfig.period
               } · 股票池 ${templateConfig.universe?.length ?? 0} 只`}
+            />
+          )}
+
+          {templateConfig && (
+            <Collapse
+              ghost
+              style={{ marginBottom: 8 }}
+              items={[
+                {
+                  key: 'override',
+                  label: (
+                    <Typography.Text type="secondary">
+                      条件选股覆盖股票池（可选，用筛选/随机池替换基座 universe）
+                    </Typography.Text>
+                  ),
+                  children: (
+                    <StockPicker
+                      value={universeOverride.codes}
+                      onChange={(c) => setUniverseOverride((prev) => ({ codes: c, meta: prev.meta }))}
+                      meta={universeOverride.meta}
+                      onMetaChange={(m) => setUniverseOverride((prev) => ({ codes: prev.codes, meta: m }))}
+                    />
+                  )
+                }
+              ]}
             />
           )}
 

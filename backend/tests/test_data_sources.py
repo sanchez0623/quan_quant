@@ -19,6 +19,8 @@ from app.data import sources, store, updater  # noqa: E402
     ("sz.000001", "000001"),
     ("sh600021", "600021"),     # 无点前缀
     (" 600021 ", "600021"),     # 空白
+    ("600313.SH", "600313"),    # 乐咕成分股格式：代码在前、后缀在后
+    ("000713.SZ", "000713"),
 ])
 def test_norm_code(raw, expected):
     assert sources._norm_code(raw) == expected

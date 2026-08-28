@@ -45,6 +45,80 @@ export interface StockItem {
   st: boolean
 }
 
+// ---- 条件选股（UNIVERSE_PICKER）----
+/** 条件选股溯源：池子的来历与 seed，随 config 存入模板/report（方案 §7） */
+export interface UniverseMeta {
+  source: string
+  filters: {
+    index?: string | null
+    industry_l1?: string[]
+    industry_l2?: string[]
+    industry_l3?: string[]
+    boards?: string[]
+    exclude_st?: boolean
+  }
+  seed_used?: number | null
+  total_matched?: number
+  total_picked?: number
+  picked_at?: string
+}
+
+export interface PickIndexOption {
+  key: string
+  name: string
+  count: number
+}
+
+export interface PickBoardOption {
+  key: string
+  name: string
+  count: number
+}
+
+export interface PickIndustryNode {
+  value: string
+  label: string
+  count: number
+  children?: PickIndustryNode[]
+}
+
+export interface PickOptions {
+  indices: PickIndexOption[]
+  industry_tree: PickIndustryNode[]
+  boards: PickBoardOption[]
+  industry_snapshot: string | null
+  index_snapshot: string | null
+}
+
+export interface PickFiltersInput {
+  index?: string | null
+  industry_l1?: string[]
+  industry_l2?: string[]
+  industry_l3?: string[]
+  boards?: string[]
+  exclude_st?: boolean
+}
+
+export interface PickRandomInput {
+  n?: number | null
+  seed?: number | null
+}
+
+export interface PickRequest {
+  filters: PickFiltersInput
+  random?: PickRandomInput | null
+}
+
+export interface PickResponse {
+  codes: string[]
+  name_map: Record<string, string>
+  total_matched: number
+  total_picked: number
+  seed_used?: number | null
+  truncated?: boolean
+  meta: UniverseMeta
+}
+
 // ---- 风控配置 ----
 export interface RiskConfig {
   max_position_pct_per_stock?: number
@@ -80,6 +154,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   params: Record<string, ParamValue>
   risk_config?: RiskConfig
   universe: string[]
+  /** 条件选股溯源（方案 §7）：池子来历与 seed，模板载入/实验复现可审计 */
+  universe_meta?: UniverseMeta | null
   start_date: string
   end_date: string
   period: Period
@@ -582,6 +658,21 @@ export interface DataCalendarStatus {
   end: string | null
 }
 
+export interface DataIndexStatus {
+  rows: number
+  stocks: number
+  snapshot_date?: string | null
+  updated_at?: string | null
+}
+
+export interface DataIndustryStatus {
+  rows: number
+  stocks: number
+  l3_count: number
+  snapshot_date?: string | null
+  updated_at?: string | null
+}
+
 export interface DataSourceHealth {
   name: string
   role: string
@@ -595,6 +686,10 @@ export interface DataStatus {
   minute5: DataMinute5Status
   adj_factor: DataAdjFactorStatus
   calendar: DataCalendarStatus
+  /** 指数成分快照（未更新时为 null） */
+  index: DataIndexStatus | null
+  /** 申万行业快照（未更新时为 null） */
+  industry: DataIndustryStatus | null
   sources: DataSourceHealth[]
 }
 

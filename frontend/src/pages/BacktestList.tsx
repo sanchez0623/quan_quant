@@ -12,12 +12,10 @@ import {
   message,
   Modal,
   Popconfirm,
-  Popover,
   Radio,
   Row,
   Select,
   Space,
-  Spin,
   Switch,
   Table,
   Tooltip,
@@ -33,8 +31,6 @@ import {
   deleteTemplate,
   errDetail,
   getBacktests,
-  getStocks,
-  getStocksByCodes,
   getStrategies,
   getTemplates
 } from '../api/client'
@@ -44,13 +40,14 @@ import type {
   BacktestTemplateItem,
   ParamValue,
   RiskConfig,
-  StockItem,
-  Strategy
+  Strategy,
+  UniverseMeta
 } from '../api/types'
 import TaskStatusTag from '../components/TaskStatusTag'
 import ParamSchemaForm from '../components/ParamSchemaForm'
 import RiskConfigForm, { DEFAULT_RISK_CONFIG } from '../components/RiskConfigForm'
 import BacktestRangePicker from '../components/BacktestRangePicker'
+import StockPicker from '../components/StockPicker'
 
 interface BacktestFormValues {
   name: string
@@ -88,16 +85,11 @@ export default function BacktestList() {
   const location = useLocation()
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [strategyId, setStrategyId] = useState<string | null>(null)
-  const [stocks, setStocks] = useState<StockItem[]>([])
-  const [stockSearching, setStockSearching] = useState(false)
-  // ---- 股票池批量粘贴 ----
-  const [batchOpen, setBatchOpen] = useState(false)
-  const [batchText, setBatchText] = useState('')
-  const [batchLoading, setBatchLoading] = useState(false)
+  // 条件选股溯源 meta（随 config 存模板/report）
+  const [universeMeta, setUniverseMeta] = useState<UniverseMeta | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [list, setList] = useState<BacktestListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
-  const searchTimer = useRef<number | null>(null)
   // ---- 配置模板 ----
   const [templates, setTemplates] = useState<BacktestTemplateItem[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined)
@@ -146,6 +138,7 @@ export default function BacktestList() {
       params: (values.params ?? {}) as Record<string, ParamValue>,
       risk_config: values.risk_config as RiskConfig | undefined,
       universe: values.universe ?? [],
+      universe_meta: universeMeta ?? null,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
       period: (values.period as 'daily' | 'minute5') ?? 'daily',
@@ -163,12 +156,14 @@ export default function BacktestList() {
       min_t_amount: values.min_t_amount,
       exclude_st: values.exclude_st ?? true
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [universeMeta])
 
   /** 回测配置 -> 表单（载入模板 / AI 建议预填共用） */
   const applyConfigToForm = useCallback(
     (cfg: BacktestCreateRequest, tip = '配置已载入') => {
       setStrategyId(cfg.strategy_id)
+      setUniverseMeta(cfg.universe_meta ?? null)
       const values: Record<string, unknown> = {
         name: cfg.name ?? '',
         strategy_id: cfg.strategy_id,
@@ -219,58 +214,7 @@ export default function BacktestList() {
     return () => window.clearInterval(timer)
   }, [hasActive])
 
-  // 股票池远程搜索（防抖 300ms）
-  const onStockSearch = (kw: string) => {
-    if (searchTimer.current !== null) {
-      window.clearTimeout(searchTimer.current)
-    }
-    if (!kw) {
-      setStocks([])
-      return
-    }
-    searchTimer.current = window.setTimeout(async () => {
-      setStockSearching(true)
-      try {
-        setStocks(await getStocks(kw, 100))
-      } catch {
-        /* ignore */
-      } finally {
-        setStockSearching(false)
-      }
-    }, 300)
-  }
-
-  // 批量粘贴代码添加：解析 6 位代码 -> 后端按代码批量解析名称 -> 合并进股票池（去重）
-  const addBatchCodes = async () => {
-    const codes = [...new Set((batchText.match(/\d{6}/g) ?? []))]
-    if (codes.length === 0) {
-      message.warning('未识别到有效的 6 位股票代码')
-      return
-    }
-    setBatchLoading(true)
-    try {
-      const items = await getStocksByCodes(codes)
-      if (items.length === 0) {
-        message.warning('未匹配到任何股票，请确认代码是否正确')
-        return
-      }
-      const cur = (form.getFieldValue('universe') ?? []) as string[]
-      const merged = [...new Set([...cur, ...items.map((s) => s.code)])]
-      form.setFieldsValue({ universe: merged })
-      const missing = codes.filter((c) => !items.some((s) => s.code === c))
-      if (missing.length > 0) {
-        message.warning(`已添加 ${items.length} 只；以下代码未匹配: ${missing.join(', ')}`)
-      } else {
-        message.success(`已添加 ${items.length} 只股票`)
-      }
-      setBatchText('')
-      setBatchOpen(false)
-    } catch (err) {
-      message.error(errDetail(err, '批量添加失败'))
-    } finally {
-      setBatchLoading(false)
-    }
-  }
+  // 股票池远程搜索与批量粘贴逻辑已抽至 StockPicker 组件（方案 §8.3）
 
   const onStrategyChange = (id: string) => {
     setStrategyId(id)
@@ -553,57 +497,12 @@ export default function BacktestList() {
             <Col span={12}>
               <Form.Item
                 name="universe"
-                label={
-                  <Space size={4}>
-                    股票池
-                    <Popover
-                      open={batchOpen}
-                      onOpenChange={setBatchOpen}
-                      trigger="click"
-                      content={
-                        <div style={{ width: 320 }}>
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            粘贴多个 6 位代码，逗号/空格/换行分隔（支持 sh.600000 前缀），
-                            自动解析名称并合并进股票池
-                          </Typography.Text>
-                          <Input.TextArea
-                            value={batchText}
-                            onChange={(e) => setBatchText(e.target.value)}
-                            rows={4}
-                            placeholder={'600000, 000001\n600036 601318'}
-                            style={{ margin: '8px 0' }}
-                          />
-                          <Button
-                            type="primary"
-                            size="small"
-                            block
-                            loading={batchLoading}
-                            onClick={addBatchCodes}
-                          >
-                            添加到股票池
-                          </Button>
-                        </div>
-                      }
-                    >
-                      <Button type="link" size="small" style={{ padding: 0 }}>
-                        批量添加
-                      </Button>
-                    </Popover>
-                  </Space>
-                }
+                label="股票池（手动选择 / 条件选股）"
                 rules={[{ required: true, message: '请选择至少一只股票' }]}
               >
-                <Select
-                  mode="multiple"
-                  placeholder="输入代码或名称搜索"
-                  filterOption={false}
-                  onSearch={onStockSearch}
-                  notFoundContent={stockSearching ? <Spin size="small" /> : null}
-                  options={stocks.map((s) => ({
-                    value: s.code,
-                    label: `${s.code} ${s.name}${s.st ? ' (ST)' : ''}`
-                  }))}
-                  allowClear
+                <StockPicker
+                  meta={universeMeta}
+                  onMetaChange={(m) => setUniverseMeta(m ?? null)}
                 />
               </Form.Item>
             </Col>
