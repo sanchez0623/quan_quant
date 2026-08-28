@@ -76,7 +76,7 @@ class MomentumTStrategy(Strategy):
         # ---- 做T网格 ----
         {"key": "atr_period", "label": "ATR周期", "type": "int", "default": 14, "min": 5, "max": 30},
         {"key": "vol_window", "label": "波动中位数窗口", "type": "int", "default": 120, "min": 30, "max": 250, "unit": "日"},
-        {"key": "grid_atr_mult", "label": "网格ATR倍数", "type": "float", "default": 0.5,
+        {"key": "grid_atr_mult", "label": "网格ATR倍数", "type": "float", "default": 1.0,
          "min": 0.1, "max": 2, "step": 0.1},
         {"key": "grid_floor_pct", "label": "网格阈值下限", "type": "float", "default": 0.4,
          "min": 0.2, "max": 1.0, "step": 0.1, "unit": "%"},
@@ -86,6 +86,21 @@ class MomentumTStrategy(Strategy):
          "min": 10, "max": 50, "step": 1, "unit": "%"},
         {"key": "max_t_times", "label": "日内T次数上限", "type": "int", "default": 4, "min": 0, "max": 10,
          "description": "0=关闭做T层（对比实验C/D格）"},
+        # ---- 做T机制（T_REFACTOR）：双止损 / 回补纪律 / 时点规律 / 关闭 ----
+        {"key": "t_mode", "label": "做T机制", "type": "categorical",
+         "choices": ["grid", "discipline", "time", "off"], "default": "grid",
+         "description": "grid=网格+双止损(L1)；discipline=回补纪律(L2)；time=时点规律T(D)；off=关闭做T(C)"},
+        {"key": "t_debt_max_days", "label": "债务时限", "type": "int", "default": 2, "min": 1, "max": 10,
+         "unit": "交易日", "description": "做T债务超过N交易日未回补 -> 作废转正式减仓"},
+        {"key": "t_max_chase_pct", "label": "追回价格上限", "type": "float", "default": 3.0,
+         "min": 0, "max": 20, "step": 0.5, "unit": "%",
+         "description": "grid模式：买回价高于卖出均价N%即放弃追回（封右尾）"},
+        {"key": "reentry_discount", "label": "回补限价折让", "type": "float", "default": 1.0,
+         "min": 0, "max": 10, "step": 0.1, "unit": "%",
+         "description": "discipline模式：仅当价格回到卖出价下方N%才回补"},
+        {"key": "asym_sell_cap", "label": "卖飞保护乖离", "type": "float", "default": 2.0,
+         "min": 0, "max": 6, "step": 0.1, "unit": "×ATR",
+         "description": "乖离超过该值禁止网格卖出（仅买回），治强趋势卖飞"},
         # ---- 波动状态定档（滚动分位数，每只票自适应）----
         {"key": "vol_q_hi", "label": "高波分位数", "type": "float", "default": 0.7,
          "min": 0.5, "max": 0.95, "step": 0.05, "description": "ATR% 高于该分位视为高波"},
@@ -285,6 +300,10 @@ class MomentumTStrategy(Strategy):
         asym = float(p["asym_bias"])
         t_base = float(p["t_ratio_base"]) / 100.0
         max_t = int(p["max_t_times"])
+        t_mode = str(p.get("t_mode") or "grid")
+        asym_sell_cap = float(p.get("asym_sell_cap") or 2.0)
+        if t_mode == "off":
+            max_t = 0  # 关闭做T层（C 基线）
         vol_grid_hi = float(p["vol_grid_hi"])
         vol_grid_lo = float(p["vol_grid_lo"])
         t_vol_hi = float(p["t_vol_hi"])
@@ -387,7 +406,25 @@ class MomentumTStrategy(Strategy):
                 ref = close
                 continue
 
-            # ---- 6) ATR 自适应非对称网格做T ----
+            # ---- 6) 做T：时点规律T(D) 或 ATR 自适应非对称网格 ----
+            if t_mode == "time":
+                # D：每日 09:35 高抛 1/4 底仓 / 14:50 尾盘买回（吃 A 股开盘冲高+尾盘低位规律）
+                if " " not in date or t_count >= max_t:
+                    continue
+                hhmm = date[11:16]
+                if hhmm == "09:35":
+                    signals[i] = -1
+                    tags[i] = "做T"
+                    t_ratios[i] = 25.0
+                    reasons[i] = "时点T：09:35高抛1/4底仓"
+                    t_count += 1
+                elif hhmm == "14:50":
+                    signals[i] = 1
+                    tags[i] = "做T"
+                    budgets[i] = base_min
+                    reasons[i] = "时点T：14:50尾盘买回"
+                    t_count += 1
+                continue
             if atr_pct is None or t_count >= max_t:
                 continue
             g = float(atr_pct) * mult
@@ -420,7 +457,7 @@ class MomentumTStrategy(Strategy):
                 reasons[i] = f"跌破下网格线(阈值{g_buy * 100:.2f}%)买回"
                 ref = close
                 t_count += 1
-            elif close >= ref * (1 + g_sell):
+            elif b <= asym_sell_cap and close >= ref * (1 + g_sell):
                 signals[i] = -1
                 tags[i] = "做T"
                 t_ratios[i] = ratio * 100

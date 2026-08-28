@@ -227,6 +227,10 @@ export interface Metrics {
   t_trade_count: number
   t_win_rate: number
   t_pnl: number
+  /** 已闭环做T价差（旧周期口径对照，T_REFACTOR 配对口径） */
+  t_pnl_closed?: number | null
+  /** 做T盈亏比（平均盈利/|平均亏损|） */
+  t_payoff?: number | null
   open_pnl: number
   add_pnl: number
   reduce_pnl: number
@@ -275,6 +279,8 @@ export interface TradeLogItem {
   group_id?: number
   reason?: string | null
   pnl?: number | null
+  /** 做T机制标记（grid/discipline/time/off，T_REFACTOR） */
+  t_mode?: string | null
 }
 
 export interface PositionSnapshotPosition {
@@ -323,6 +329,34 @@ export interface BacktestReport {
   trade_log: TradeLogItem[]
   position_snapshots: PositionSnapshot[]
   withdrawal?: WithdrawalSummary
+  /** 引擎版本（t_refactor_v1 = 做T配对口径，与旧版结果不可比） */
+  engine_version?: string
+  /** 期末未闭环做T债务（mark-to-market 浮亏已计提进 t_pnl） */
+  t_open_debts?: TOpenDebt[]
+  /** 追回/回补被拒事件（审计可见，不进 trade_log） */
+  t_reject_events?: TRejectEvent[]
+}
+
+// ---- 做T重构（T_REFACTOR） ----
+export interface TOpenDebt {
+  code: string
+  name: string
+  sell_date: string | null
+  remaining: number
+  sell_px_avg: number
+  last_price: number
+  float_pnl: number
+}
+
+export interface TRejectEvent {
+  code: string
+  name: string
+  date: string
+  /** chase=超追回上限 / discipline=回补限价未到 */
+  type: string
+  buy_price: number
+  sell_px_avg: number
+  reason: string
 }
 
 // ---- K线 ----
@@ -489,6 +523,8 @@ export interface OptimizeDetail {
 
 // ---- 对比实验（TREN_T_COMPARISON） ----
 export type ExperimentCell = 'A' | 'B' | 'C' | 'D' | 'E'
+/** 实验矩阵：clock=趋势时钟×T 2×2 / t_mode=做T四机制竞争（T_REFACTOR L3） */
+export type ExperimentMatrix = 'clock' | 't_mode'
 
 export interface ExperimentCreateRequest {
   name: string
@@ -499,6 +535,8 @@ export interface ExperimentCreateRequest {
   end_date: string
   /** 附带 E 格（纯日线 15 年参考，默认关） */
   with_e?: boolean
+  /** 矩阵类型，默认 clock */
+  matrix?: ExperimentMatrix
 }
 
 export interface ExperimentMatrixItem {
@@ -528,7 +566,21 @@ export interface ExperimentCellAttribution {
     clock_ab?: number | null
     clock_cd?: number | null
     interaction?: number | null
+    // t_mode 矩阵：4 机制差值分解
+    grid?: number | null
+    discipline?: number | null
+    off?: number | null
+    time?: number | null
+    discipline_vs_grid?: number | null
+    grid_vs_off?: number | null
+    time_vs_off?: number | null
+    time_vs_grid?: number | null
   }>
+  // t_mode 矩阵：total_return 主归因（4 机制两两差值）
+  discipline_vs_grid?: number | null
+  grid_vs_off?: number | null
+  time_vs_off?: number | null
+  time_vs_grid?: number | null
 }
 
 export interface ExperimentDetail {
@@ -545,6 +597,8 @@ export interface ExperimentDetail {
   start_date?: string | null
   end_date?: string | null
   sub_task_ids: string[]
+  /** 矩阵类型（clock/t_mode），历史数据缺省为 clock */
+  matrix_type?: ExperimentMatrix
   matrix: ExperimentMatrixItem[]
   attribution: {
     per_capital: Record<string, ExperimentCellAttribution>
@@ -557,6 +611,7 @@ export interface ExperimentListItem {
   name: string
   cells: ExperimentCell[]
   capitals: number[]
+  matrix_type?: ExperimentMatrix
   status: TaskStatus
   progress: number
   error?: string | null

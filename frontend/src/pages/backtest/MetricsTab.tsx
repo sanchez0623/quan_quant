@@ -1,7 +1,13 @@
 import { useMemo } from 'react'
-import { Card, Col, Empty, Row, Statistic, Table, Typography } from 'antd'
+import { Alert, Card, Col, Empty, Row, Statistic, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { BacktestReport, WithdrawalLogItem, WithdrawalSummary } from '../../api/types'
+import type {
+  BacktestReport,
+  TOpenDebt,
+  TRejectEvent,
+  WithdrawalLogItem,
+  WithdrawalSummary
+} from '../../api/types'
 import { fmtMoney, fmtNum, fmtPct, pnlColor } from '../../utils/format'
 import HeatmapChart from '../../components/HeatmapChart'
 
@@ -106,12 +112,58 @@ export default function MetricsTab({ report }: Props) {
   const breakdownCards: Array<{ title: string; value: string; color?: string }> = [
     { title: 'T交易数', value: String(m.t_trade_count ?? 0) },
     { title: 'T胜率', value: fmtPct(m.t_win_rate) },
-    { title: 'T盈亏', value: fmtMoney(m.t_pnl), color: pnlColor(m.t_pnl) },
+    { title: 'T盈亏（配对口径）', value: fmtMoney(m.t_pnl), color: pnlColor(m.t_pnl) },
+    {
+      title: 'T已闭环盈亏',
+      value: m.t_pnl_closed != null ? fmtMoney(m.t_pnl_closed) : '-',
+      color: m.t_pnl_closed != null ? pnlColor(m.t_pnl_closed) : undefined
+    },
+    { title: 'T盈亏比', value: m.t_payoff != null ? fmtNum(m.t_payoff, 2) : '-' },
     { title: '平均持仓天数', value: fmtNum(m.avg_hold_days, 1) },
     { title: '开仓盈亏', value: fmtMoney(m.open_pnl), color: pnlColor(m.open_pnl) },
     { title: '加仓盈亏', value: fmtMoney(m.add_pnl), color: pnlColor(m.add_pnl) },
     { title: '减仓盈亏', value: fmtMoney(m.reduce_pnl), color: pnlColor(m.reduce_pnl) },
     { title: '止损盈亏', value: fmtMoney(m.stop_loss_pnl), color: pnlColor(m.stop_loss_pnl) }
+  ]
+
+  // ---- T_REFACTOR：期末未闭环债务 + 纪律审计 ----
+  const openDebts = report.t_open_debts ?? []
+  const rejectEvents = report.t_reject_events ?? []
+  const debtColumns: ColumnsType<TOpenDebt> = [
+    { title: '代码', dataIndex: 'code', width: 90 },
+    { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
+    { title: '卖出日', dataIndex: 'sell_date', width: 110, render: (v: string | null) => v ?? '-' },
+    {
+      title: '未回补股数',
+      dataIndex: 'remaining',
+      width: 110,
+      align: 'right',
+      render: (v: number) => v.toLocaleString('zh-CN')
+    },
+    { title: '卖出均价', dataIndex: 'sell_px_avg', width: 100, align: 'right', render: (v: number) => fmtNum(v, 3) },
+    { title: '期末价', dataIndex: 'last_price', width: 90, align: 'right', render: (v: number) => fmtNum(v, 3) },
+    {
+      title: '浮亏计提',
+      dataIndex: 'float_pnl',
+      width: 120,
+      align: 'right',
+      render: (v: number) => <span style={{ color: pnlColor(v) }}>{fmtMoney(v)}</span>
+    }
+  ]
+  const rejectColumns: ColumnsType<TRejectEvent> = [
+    { title: '日期', dataIndex: 'date', width: 110 },
+    { title: '代码', dataIndex: 'code', width: 90 },
+    { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      width: 130,
+      render: (v: string) =>
+        v === 'chase' ? <Tag color="orange">超追回上限</Tag> : <Tag color="purple">回补限价未到</Tag>
+    },
+    { title: '现价', dataIndex: 'buy_price', width: 90, align: 'right', render: (v: number) => fmtNum(v, 3) },
+    { title: '卖出均价', dataIndex: 'sell_px_avg', width: 100, align: 'right', render: (v: number) => fmtNum(v, 3) },
+    { title: '原因', dataIndex: 'reason', ellipsis: true }
   ]
 
   const wd = report.withdrawal
@@ -158,6 +210,47 @@ export default function MetricsTab({ report }: Props) {
           ))}
         </Row>
       </Card>
+
+      {report.engine_version === 't_refactor_v1' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 16 }}
+          message="做T盈亏为配对口径：已闭环价差 + 期末未闭环浮亏计提（引擎 t_refactor_v1），与旧版结果不可直接比较。"
+        />
+      )}
+
+      {openDebts.length > 0 && (
+        <Card
+          size="small"
+          title={`期末未闭环做T债务（${openDebts.length} 只，浮亏已计提进 T盈亏）`}
+          style={{ marginTop: 16 }}
+        >
+          <Table<TOpenDebt>
+            size="small"
+            rowKey="code"
+            dataSource={openDebts}
+            columns={debtColumns}
+            pagination={false}
+          />
+        </Card>
+      )}
+
+      {rejectEvents.length > 0 && (
+        <Card
+          size="small"
+          title={`做T纪律审计 · 追回/回补被拒（${rejectEvents.length} 次，不计入交易明细）`}
+          style={{ marginTop: 16 }}
+        >
+          <Table<TRejectEvent>
+            size="small"
+            rowKey={(_, i) => String(i)}
+            dataSource={rejectEvents}
+            columns={rejectColumns}
+            pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          />
+        </Card>
+      )}
 
       {hasWithdrawal && wd && (
         <Card

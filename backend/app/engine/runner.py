@@ -42,6 +42,11 @@ DEFAULTS = {
     # 止损成交口径：next_open = bar收盘判定、次bar开盘成交（诚实化，缺5分钟缺口）；
     # close = 旧口径，同bar收盘判定+同bar收盘成交（仅用于泄漏量对照）
     "stop_fill": "next_open",
+    # ---- 做T机制重构（T_REFACTOR）：双止损 + 回补纪律 + 时点规律 ----
+    "t_mode": "grid",          # grid=网格(双止损)/discipline=回补纪律/time=时点规律/off=关闭做T
+    "t_debt_max_days": 2,      # 债务时限（交易日）：超过未回补 -> 作废转正式减仓
+    "t_max_chase_pct": 3.0,    # 追回价格上限（%）：买回价 > 卖出均价×(1+N%) -> 不追
+    "reentry_discount": 1.0,   # 回补限价折让（%）：discipline 模式下卖出价下方 N% 才回补
 }
 
 
@@ -152,6 +157,11 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     # 兜底比例（策略未传 t_ratio/reduce_pct 时）：来自 DEFAULTS，可被配置覆盖
     t_ratio_fb = float(cfg.get("t_ratio_fallback") or 33.3333)
     reduce_fb = float(cfg.get("reduce_pct_fallback") or 33.3333)
+    # ---- 做T机制（T_REFACTOR）：双止损/回补纪律/时点规律 参数（策略 schema 优先，DEFAULTS 兜底）----
+    t_mode = str(params.get("t_mode") or cfg.get("t_mode") or "grid")
+    t_debt_max_days = max(1, int(params.get("t_debt_max_days") if params.get("t_debt_max_days") is not None else (cfg.get("t_debt_max_days") or 2)))
+    t_max_chase_pct = float(params.get("t_max_chase_pct") if params.get("t_max_chase_pct") is not None else (cfg.get("t_max_chase_pct") or 3.0))
+    reentry_discount = float(params.get("reentry_discount") if params.get("reentry_discount") is not None else (cfg.get("reentry_discount") or 1.0))
 
     # ---- 出金配置 ----
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
@@ -188,15 +198,85 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     pending: dict[str, dict] = {}      # code -> 下一bar执行的单
     pending_stops: dict[str, list] = {}  # code -> 待执行的止损/止盈单（next_open，一字跌停顺延）
     stop_fill = str(cfg.get("stop_fill") or "next_open")
-    t_state: dict[str, dict] = {}      # code -> 做T债务 {sold, bought, sell_amt, buy_amt}（跨日保留直至还清/清仓作废）
+    t_state: dict[str, dict] = {}      # code -> 做T债务（跨日保留直至回补/到期作废/清仓）
     adds_count: dict[str, int] = {}    # code -> 当前持仓期内加仓次数
     max_adds = int(params.get("max_adds") or 0)
-    t_cycle_pnls: list[float] = []     # 已完成的做T周期盈亏（卖旧-买回价差，跨日持续至还清）
+    t_cycle_pnls: list[float] = []     # 已闭环做T周期价差合计（旧周期口径，t_pnl_closed 对照）
+    t_cycle_records: list[dict] = []   # 配对口径周期明细 {code, sell_date, buy_date, pnl}
+    t_reject_events: list[dict] = []   # 追回/回补被拒事件（审计可见，不污染 trade_log）
     state = {"intraday_trades": {}, "commission_total": 0.0, "trade_seq": 0}  # code -> 当日交易次数
 
     def _t_state(code: str) -> dict:
         return t_state.setdefault(code, {"sold": 0, "bought": 0,
-                                         "sell_amt": 0.0, "buy_amt": 0.0})
+                                         "sell_amt": 0.0, "buy_amt": 0.0,
+                                         "open_day": None, "deadline_day": None,
+                                         "sell_trade_ids": []})
+
+    def _advance_trading_day(d: str, n: int):
+        "从 d 起推进 n 个交易日（next_day 为交易日映射）"
+        cur = d
+        for _ in range(n):
+            nd = next_day.get(cur)
+            if nd is None:
+                return None
+            cur = nd
+        return cur
+
+    def _book_t_cycle(code, day, sell_date, pnl):
+        t_cycle_pnls.append(pnl)
+        t_cycle_records.append({"code": code, "sell_date": sell_date,
+                                "buy_date": day, "pnl": pnl})
+        if pnl > 0 and wd_pct > 0:
+            amt = min(pnl * wd_pct / 100.0, portfolio.cash)
+            if amt > 0:
+                portfolio.cash -= amt
+                w_state["total"] += amt
+                w_state["t_profit"] += amt
+                month = day[:7]
+                w_state["months"][month] = w_state["months"].get(month, 0.0) + amt
+                w_state["log"].append({"month": month, "date": day,
+                                       "type": "t_profit", "amount": round(amt, 2)})
+
+    def _reclassify_sells(st, suffix):
+        for tid in st.get("sell_trade_ids") or []:
+            for entry in trade_log:
+                if entry["trade_id"] == tid:
+                    entry["tag"] = "减仓"
+                    entry["reason"] = (entry.get("reason") or "") + "（" + suffix + "）"
+                    break
+
+    def _expire_debt(code, st, day, suffix):
+        if st["sold"] > 0 and st["bought"] > 0:
+            sell_px_avg = st["sell_amt"] / st["sold"]
+            _book_t_cycle(code, day, st["open_day"],
+                          sell_px_avg * st["bought"] - st["buy_amt"])
+        _reclassify_sells(st, suffix)
+        t_state.pop(code, None)
+
+    def _clear_debt_on_close(code):
+        st = t_state.pop(code, None)
+        if st and st["sold"] > st["bought"] and st.get("sell_trade_ids"):
+            _reclassify_sells(st, "清仓：做T债务作废转减仓")
+
+    def _t_rebuy_allowed(st, raw_price, day, code):
+        if not st["sold"]:
+            return True
+        sell_px_avg = st["sell_amt"] / st["sold"]
+        if t_mode == "discipline":
+            limit = sell_px_avg * (1 - reentry_discount / 100.0)
+            ok = raw_price <= limit
+            rtype, rsn = "discipline", "回补限价未到"
+        else:
+            limit = sell_px_avg * (1 + t_max_chase_pct / 100.0)
+            ok = raw_price <= limit
+            rtype, rsn = "chase", "超追回上限" + str(t_max_chase_pct) + "%"
+        if not ok:
+            t_reject_events.append({"code": code, "name": names.get(code, code),
+                                    "date": day, "type": rtype,
+                                    "buy_price": round(raw_price, 4),
+                                    "sell_px_avg": round(sell_px_avg, 4),
+                                    "reason": rsn})
+        return ok
 
     def _trades_today(code: str) -> int:
         return state["intraday_trades"].get(code, 0)
@@ -204,7 +284,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     # ---- 闭包工具 ----
 
     def log_trade(code, bar, side, price, volume, fee, ttype, group_id, reason,
-                  pnl=None, tag="", open_time=""):
+                  pnl=None, tag="", open_time="", t_mode=""):
         state["trade_seq"] += 1
         state["commission_total"] += fee
         factor = float(bar.get("adj_factor") or 1.0)
@@ -216,7 +296,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             "volume": int(volume), "amount": round(raw_price * volume, 2),
             "fee": round(fee, 2), "type": ttype, "group_id": group_id,
             "reason": reason, "pnl": (round(pnl, 2) if pnl is not None else None),
-            "tag": tag, "open_time": open_time,
+            "tag": tag, "open_time": open_time, "t_mode": t_mode or None,
         })
 
     def execute_sell(code, bar, volume_wanted, ttype, reason, basis_price):
@@ -266,7 +346,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         state["intraday_trades"][code] = _trades_today(code) + 1
         if not portfolio.positions_of(code):
             adds_count.pop(code, None)  # 清仓后重置加仓计数
-            t_state.pop(code, None)     # 仓位清零：未还清的做T债务作废（该部分已按平仓盈亏入账）
+            _clear_debt_on_close(code)  # 仓位清零：未还清做T债务作废（卖出利润已按平仓盈亏入账，转减仓语义）
         return vol, exec_price
 
     def execute_buy(code, bar, order):
@@ -300,7 +380,10 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         if tag == "做T":
             debt = (st["sold"] - st["bought"]) // 100 * 100
             if debt >= 100:
-                # 买回做T卖出的筹码（债务跨日保留，直至还清）
+                # 追回/回补执行判定（L1 价格止损 / L2 回补纪律），被拒则本次不成交
+                if not _t_rebuy_allowed(st, raw_price, day, code):
+                    return
+                # 买回做T卖出的筹码（债务跨日保留，直至回补/到期作废）
                 amount = min(debt * raw_price, budget)
                 vol = broker.lots_for_amount(amount, raw_price)
             elif portfolio.volume_of(code) == 0:
@@ -342,23 +425,11 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             st["bought"] += vol
             st["buy_amt"] += raw_price * vol
             log_trade(code, bar, "buy", price, vol, fee, "做T", pos.group_id,
-                      order.get("reason", "网格买回"))
+                      order.get("reason", "网格买回"), t_mode=t_mode)
             if st["bought"] >= st["sold"]:
-                # 做T周期完成：卖旧与买回的价差即为做T贡献
-                pnl = st["sell_amt"] - st["buy_amt"]
-                t_cycle_pnls.append(pnl)
-                t_state[code] = {"sold": 0, "bought": 0, "sell_amt": 0.0, "buy_amt": 0.0}
-                # 逐笔出金：该笔T盈利即时提取 x%（落袋为安）
-                if pnl > 0 and wd_pct > 0:
-                    amt = min(pnl * wd_pct / 100.0, portfolio.cash)
-                    if amt > 0:
-                        portfolio.cash -= amt
-                        w_state["total"] += amt
-                        w_state["t_profit"] += amt
-                        month = day[:7]
-                        w_state["months"][month] = w_state["months"].get(month, 0.0) + amt
-                        w_state["log"].append({"month": month, "date": bar["date"],
-                                               "type": "t_profit", "amount": round(amt, 2)})
+                # 做T周期完成：卖旧与买回的价差即为做T贡献（配对口径 + 逐笔出金）
+                _book_t_cycle(code, day, st["open_day"], st["sell_amt"] - st["buy_amt"])
+                t_state.pop(code, None)
         elif tag == "加仓":
             same_code = portfolio.positions_of(code)
             base = same_code[-1] if same_code else None
@@ -393,12 +464,24 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                 raw_est = est_price / float(bar.get("adj_factor") or 1.0)
                 if want < 100 or (min_t_amount > 0 and want * raw_est < min_t_amount):
                     return
+                seq0 = state["trade_seq"]
                 sold, fill_price = execute_sell(code, bar, want, "做T",
                                                 order.get("reason", "网格卖出"), bar["open"])
                 if sold:
                     st = _t_state(code)
                     st["sold"] += sold
                     st["sell_amt"] += (fill_price / float(bar.get("adj_factor") or 1.0)) * sold
+                    # 债务记账：首次卖出记录 open_day + deadline_day（到期作废转减仓）
+                    if st["open_day"] is None:
+                        st["open_day"] = day
+                        st["deadline_day"] = _advance_trading_day(day, t_debt_max_days)
+                    # 记录本次卖出的 trade_id（到期/清仓时转减仓标注）+ t_mode 标签
+                    st["sell_trade_ids"].extend(range(seq0 + 1, state["trade_seq"] + 1))
+                    for tid in range(seq0 + 1, state["trade_seq"] + 1):
+                        for entry in trade_log:
+                            if entry["trade_id"] == tid:
+                                entry["t_mode"] = t_mode
+                                break
             elif order.get("tag") == "减仓":
                 # 按比例减仓：过热锁盈 / 分批止盈。
                 # A股卖出申报同样为100股整数倍（不足100股的零股只能一次性清仓卖出），
@@ -512,9 +595,14 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     cur_day = None
     for ti, t in enumerate(timeline):
         day = t[:10]
-        if day != cur_day:  # 新交易日：重置日内状态（做T债务 t_state 跨日保留直至还清）
+        if day != cur_day:  # 新交易日：重置日内状态（做T债务跨日保留直至回补/到期作废）
             cur_day = day
             state["intraday_trades"] = {}
+            # 做T时间止损（L1/L2）：债务超过 t_debt_max_days 交易日未回补 -> 作废转正式减仓
+            for code in list(t_state):
+                st = t_state[code]
+                if st["sold"] > st["bought"] and st["deadline_day"] and day > st["deadline_day"]:
+                    _expire_debt(code, st, day, "T债务超时转减仓")
 
         in_warmup = bool(start_date) and day < start_date  # 预热期：只喂指标不交易
         for code in bars:
@@ -603,9 +691,24 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     # coverage 分母：已过完的完整月份数 = equity_curve 覆盖的月份集合
     # （每个覆盖月份都在月末/末日各结算一次，等价于实际执行的月度结算次数，而非 len(months) 出金月数）
     completed_months = len({ec["date"][:7] for ec in equity_curve}) if equity_curve else 0
+    # ---- 期末未闭环债务（配对口径浮亏计提：未回补部分按当前价 mark-to-market）----
+    t_open_debts = []
+    for code, st in t_state.items():
+        if st["sold"] <= st["bought"]:
+            continue
+        remaining = st["sold"] - st["bought"]
+        sell_px_avg = st["sell_amt"] / st["sold"] if st["sold"] else 0.0
+        last_price = price_map.get(code) or 0.0
+        t_open_debts.append({
+            "code": code, "name": names.get(code, code),
+            "sell_date": st["open_day"], "remaining": remaining,
+            "sell_px_avg": round(sell_px_avg, 4), "last_price": round(last_price, 4),
+            "float_pnl": round((sell_px_avg - last_price) * remaining, 2),
+        })
     metrics = build_metrics(trade_log, equity_curve, portfolio.initial_cash,
                             end_equity, state["commission_total"],
-                            t_cycle_pnls=t_cycle_pnls, withdrawn=w_state,
+                            t_cycle_pnls=t_cycle_pnls, t_cycle_records=t_cycle_records,
+                            t_open_debts=t_open_debts, withdrawn=w_state,
                             wd_base=wd_base, completed_months=completed_months)
     mret = monthly_returns(equity_curve, portfolio.initial_cash)
     if progress_cb:
@@ -614,12 +717,15 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     report = {
         "name": cfg.get("name", ""),
         "config": cfg,
+        "engine_version": "t_refactor_v1",   # T_REFACTOR：t_pnl 改配对口径后与旧版不可比（AUDIT B1）
         "metrics": metrics,
         "equity_curve": equity_curve,
         "monthly_returns": mret,
         "trade_log": trade_log,
         "position_snapshots": snapshots,
         "withdrawal": withdrawn_summary,
+        "t_open_debts": t_open_debts,
+        "t_reject_events": t_reject_events,
     }
     if cfg.get("task_id"):
         report["task_id"] = cfg["task_id"]

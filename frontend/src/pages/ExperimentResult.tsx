@@ -7,6 +7,7 @@ import type {
   ExperimentCell,
   ExperimentCellAttribution,
   ExperimentDetail,
+  ExperimentMatrix,
   ExperimentMatrixItem
 } from '../api/types'
 import TaskStatusTag from '../components/TaskStatusTag'
@@ -18,6 +19,14 @@ const CELL_TITLE: Record<ExperimentCell, string> = {
   B: '盘中×T',
   C: '日线×无T',
   D: '盘中×无T',
+  E: '纯日线15年(参考)'
+}
+/** t_mode 机制矩阵的格子标题（T_REFACTOR L3） */
+const TMODE_CELL_TITLE: Record<ExperimentCell, string> = {
+  A: '网格+双止损(L1)',
+  B: '回补纪律(L2)',
+  C: '无T基线',
+  D: '时点规律T',
   E: '纯日线15年(参考)'
 }
 
@@ -64,6 +73,10 @@ export default function ExperimentResult() {
     )
   }
 
+  const matrixType: ExperimentMatrix = detail.matrix_type ?? 'clock'
+  const isTmode = matrixType === 't_mode'
+  const cellTitle = (c: ExperimentCell) => (isTmode ? TMODE_CELL_TITLE[c] : CELL_TITLE[c])
+
   const byKey = (cell: ExperimentCell, capital: number) =>
     detail.matrix.find((m) => m.cell === cell && m.capital === capital)
 
@@ -72,7 +85,7 @@ export default function ExperimentResult() {
   const matrixColumns: ColumnsType<{ capital: number; key: string }> = [
     { title: '资金档', dataIndex: 'capital', width: 110, render: (v: number) => `${v / 10000}万` },
     ...CELL_ORDER.filter((c) => detail.cells.includes(c)).map((c) => ({
-      title: CELL_TITLE[c],
+      title: cellTitle(c),
       key: c,
       width: 200,
       render: (_: unknown, row: { capital: number }) => {
@@ -115,106 +128,169 @@ export default function ExperimentResult() {
     sharpe: '夏普',
     max_drawdown: '最大回撤',
     t_pnl: 'T盈亏(元)',
+    t_pnl_closed: 'T已闭环盈亏(元)',
     commission_total: '手续费(元)'
   }
 
   const fmtDelta = (metric: string, v?: number | null): string => {
     if (v === null || v === undefined || Number.isNaN(v)) return '-'
     if (metric === 'sharpe') return v.toFixed(2)
-    if (metric === 't_pnl' || metric === 'commission_total') return Math.round(v).toLocaleString('zh-CN')
+    if (metric === 't_pnl' || metric === 't_pnl_closed' || metric === 'commission_total')
+      return Math.round(v).toLocaleString('zh-CN')
     return `${(v * 100).toFixed(2)}%`
   }
 
   const attrCards = attributionEntries.map(([cap, a]: [string, ExperimentCellAttribution]) => {
     const metricRows = Object.entries(a.metrics ?? {}).map(([k, v]) => ({ key: k, metric: k, ...v }))
-    const metricColumns: ColumnsType<(typeof metricRows)[number]> = [
-      { title: '指标', dataIndex: 'metric', width: 110, render: (k: string) => METRIC_LABELS[k] ?? k },
-      {
-        title: 'T边际 A−C',
-        dataIndex: 't_margin_ac',
-        align: 'right',
-        render: (v: number | null | undefined, r) => (
-          <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
-        )
-      },
-      {
-        title: 'T边际 B−D',
-        dataIndex: 't_margin_bd',
-        align: 'right',
-        render: (v: number | null | undefined, r) => (
-          <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
-        )
-      },
-      {
-        title: '时钟 A−B',
-        dataIndex: 'clock_ab',
-        align: 'right',
-        render: (v: number | null | undefined, r) => (
-          <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
-        )
-      },
-      {
-        title: '时钟 C−D',
-        dataIndex: 'clock_cd',
-        align: 'right',
-        render: (v: number | null | undefined, r) => (
-          <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
-        )
-      },
-      {
-        title: '交互',
-        dataIndex: 'interaction',
-        align: 'right',
-        render: (v: number | null | undefined, r) => (
-          <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
-        )
-      }
-    ]
+    const metricColumns: ColumnsType<(typeof metricRows)[number]> = isTmode
+      ? [
+          {
+            title: '指标',
+            dataIndex: 'metric',
+            width: 110,
+            render: (k: string) => METRIC_LABELS[k] ?? k
+          },
+          ...(
+            [
+              ['discipline_vs_grid', '纪律−网格'],
+              ['grid_vs_off', '网格−无T'],
+              ['time_vs_off', '时点−无T'],
+              ['time_vs_grid', '时点−网格']
+            ] as const
+          ).map(([dk, label]) => ({
+            title: label,
+            dataIndex: dk,
+            align: 'right' as const,
+            render: (v: number | null | undefined, r: (typeof metricRows)[number]) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          }))
+        ]
+      : [
+          { title: '指标', dataIndex: 'metric', width: 110, render: (k: string) => METRIC_LABELS[k] ?? k },
+          {
+            title: 'T边际 A−C',
+            dataIndex: 't_margin_ac',
+            align: 'right',
+            render: (v: number | null | undefined, r) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          },
+          {
+            title: 'T边际 B−D',
+            dataIndex: 't_margin_bd',
+            align: 'right',
+            render: (v: number | null | undefined, r) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          },
+          {
+            title: '时钟 A−B',
+            dataIndex: 'clock_ab',
+            align: 'right',
+            render: (v: number | null | undefined, r) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          },
+          {
+            title: '时钟 C−D',
+            dataIndex: 'clock_cd',
+            align: 'right',
+            render: (v: number | null | undefined, r) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          },
+          {
+            title: '交互',
+            dataIndex: 'interaction',
+            align: 'right',
+            render: (v: number | null | undefined, r) => (
+              <span style={{ color: pnlColor(v) }}>{fmtDelta(r.metric, v)}</span>
+            )
+          }
+        ]
     return (
       <Card key={cap} size="small" title={`资金档 ${Number(cap) / 10000}万 归因`} style={{ marginBottom: 16 }}>
         <Space size="large" wrap>
-          <Statistic
-            title="T 边际贡献 A−C"
-            value={a.t_margin_ac ?? undefined}
-            precision={2}
-            valueStyle={{ color: pnlColor(a.t_margin_ac) }}
-            suffix="%"
-          />
-          <Statistic
-            title="T 边际贡献 B−D"
-            value={a.t_margin_bd ?? undefined}
-            precision={2}
-            valueStyle={{ color: pnlColor(a.t_margin_bd) }}
-            suffix="%"
-          />
-          <Statistic
-            title="时钟效应 A−B"
-            value={a.clock_ab ?? undefined}
-            precision={2}
-            valueStyle={{ color: pnlColor(a.clock_ab) }}
-            suffix="%"
-          />
-          <Statistic
-            title="时钟效应 C−D"
-            value={a.clock_cd ?? undefined}
-            precision={2}
-            valueStyle={{ color: pnlColor(a.clock_cd) }}
-            suffix="%"
-          />
-          <Statistic
-            title="交互项 (A−C)−(B−D)"
-            value={a.interaction ?? undefined}
-            precision={2}
-            valueStyle={{ color: pnlColor(a.interaction) }}
-            suffix="%"
-          />
+          {isTmode ? (
+            <>
+              <Statistic
+                title="回补纪律 − 网格"
+                value={a.discipline_vs_grid ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.discipline_vs_grid) }}
+                suffix="%"
+              />
+              <Statistic
+                title="网格 − 无T（T层净价值）"
+                value={a.grid_vs_off ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.grid_vs_off) }}
+                suffix="%"
+              />
+              <Statistic
+                title="时点 − 无T"
+                value={a.time_vs_off ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.time_vs_off) }}
+                suffix="%"
+              />
+              <Statistic
+                title="时点 − 网格"
+                value={a.time_vs_grid ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.time_vs_grid) }}
+                suffix="%"
+              />
+            </>
+          ) : (
+            <>
+              <Statistic
+                title="T 边际贡献 A−C"
+                value={a.t_margin_ac ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.t_margin_ac) }}
+                suffix="%"
+              />
+              <Statistic
+                title="T 边际贡献 B−D"
+                value={a.t_margin_bd ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.t_margin_bd) }}
+                suffix="%"
+              />
+              <Statistic
+                title="时钟效应 A−B"
+                value={a.clock_ab ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.clock_ab) }}
+                suffix="%"
+              />
+              <Statistic
+                title="时钟效应 C−D"
+                value={a.clock_cd ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.clock_cd) }}
+                suffix="%"
+              />
+              <Statistic
+                title="交互项 (A−C)−(B−D)"
+                value={a.interaction ?? undefined}
+                precision={2}
+                valueStyle={{ color: pnlColor(a.interaction) }}
+                suffix="%"
+              />
+            </>
+          )}
         </Space>
-        <div style={{ marginTop: 8 }}>
-          {a.t_consistent === true && <Tag color="green">两列 T 估计同向 ✓</Tag>}
-          {a.t_consistent === false && <Tag color="orange">两列 T 估计异向 ⚠（T×时钟交互强）</Tag>}
-          {a.clock_consistent === true && <Tag color="green">两行时钟估计同向 ✓</Tag>}
-          {a.clock_consistent === false && <Tag color="orange">两行时钟估计异向 ⚠</Tag>}
-        </div>
+        {!isTmode && (
+          <div style={{ marginTop: 8 }}>
+            {a.t_consistent === true && <Tag color="green">两列 T 估计同向 ✓</Tag>}
+            {a.t_consistent === false && <Tag color="orange">两列 T 估计异向 ⚠（T×时钟交互强）</Tag>}
+            {a.clock_consistent === true && <Tag color="green">两行时钟估计同向 ✓</Tag>}
+            {a.clock_consistent === false && <Tag color="orange">两行时钟估计异向 ⚠</Tag>}
+          </div>
+        )}
         <Table
           size="small"
           pagination={false}
@@ -241,8 +317,13 @@ export default function ExperimentResult() {
           </Space>
         }
       >
-        <Descriptions size="small" column={4}>
+        <Descriptions size="small" column={5}>
           <Descriptions.Item label="实验ID">{detail.experiment_id}</Descriptions.Item>
+          <Descriptions.Item label="矩阵类型">
+            <Tag color={isTmode ? 'geekblue' : 'default'}>
+              {isTmode ? '做T四机制竞争' : '时钟×做T'}
+            </Tag>
+          </Descriptions.Item>
           <Descriptions.Item label="区间">
             {detail.start_date} ~ {detail.end_date}
           </Descriptions.Item>
@@ -288,7 +369,7 @@ export default function ExperimentResult() {
         </Card>
       )}
 
-      <Card title="归因分解">
+      <Card title={isTmode ? '机制竞争归因（总收益差值）' : '归因分解'}>
         {attrCards.length ? (
           <>
             {attrCards}
@@ -306,7 +387,9 @@ export default function ExperimentResult() {
         items={[
           {
             key: 'config',
-            label: '基座配置摘要（各格只差 trend_clock / max_t_times / initial_capital）',
+            label: isTmode
+              ? '基座配置摘要（各格只差 t_mode / initial_capital）'
+              : '基座配置摘要（各格只差 trend_clock / max_t_times / initial_capital）',
             children: (
               <pre
                 style={{

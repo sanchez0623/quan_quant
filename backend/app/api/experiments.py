@@ -30,6 +30,17 @@ CELL_LABELS = {"A": "日线时钟×T", "B": "盘中时钟×T",
 # E 格：纯日线、做T硬关、2010 起 15 年窗口的趋势层稳健性参考（不进 2×2 归因）
 E_START = "2010-01-01"
 
+# T_REFACTOR 机制竞争矩阵（L3）：t_mode 四机制（A/B/C/D）
+TMODE_CELLS = {
+    "A": {"t_mode": "grid"},         # L1 修好的网格（双止损）
+    "B": {"t_mode": "discipline"},   # L2 回补纪律
+    "C": {"t_mode": "off"},          # 无T基线
+    "D": {"t_mode": "time"},         # 时点规律T
+}
+TMODE_LABELS = {"A": "网格+双止损(L1)", "B": "回补纪律(L2)",
+                "C": "无T(C)", "D": "时点规律T(D)"}
+TMODE_METRICS = ("total_return", "sharpe", "max_drawdown", "t_pnl", "t_pnl_closed", "commission_total")
+
 
 class ExperimentRequest(BaseModel):
     name: str = "对比实验"
@@ -39,6 +50,7 @@ class ExperimentRequest(BaseModel):
     start_date: str
     end_date: str
     with_e: bool = False  # 是否附带 E 格（纯日线 15 年参考，默认关）
+    matrix: str = "clock"  # clock=趋势×T 2x2 / t_mode=四机制竞争（L3）
 
 
 def _metrics_for(task_id: str) -> dict | None:
@@ -132,11 +144,78 @@ def _decision(per_capital: dict) -> str:
     return "；".join(lines) if lines else "数据不足，无法给出归因结论"
 
 
+def _tmode_attribution_for(m: dict) -> dict:
+    "t_mode 机制矩阵归因：4 机制两两差值（B-A/A-C/D-C/D-A）+ 各指标分解"
+    def _g(cell, key):
+        mm = m.get(cell) or {}
+        v = mm.get(key)
+        return float(v) if isinstance(v, (int, float)) else None
+
+    def _diff(x, y):
+        return (x - y) if (x is not None and y is not None) else None
+
+    cells = {c: m.get(c) for c in m}
+    metrics = {}
+    for k in TMODE_METRICS:
+        metrics[k] = {
+            "grid": _g("A", k), "discipline": _g("B", k),
+            "off": _g("C", k), "time": _g("D", k),
+            "discipline_vs_grid": _diff(_g("B", k), _g("A", k)),
+            "grid_vs_off": _diff(_g("A", k), _g("C", k)),
+            "time_vs_off": _diff(_g("D", k), _g("C", k)),
+            "time_vs_grid": _diff(_g("D", k), _g("A", k)),
+        }
+    return {
+        "cells": cells, "metrics": metrics,
+        "discipline_vs_grid": _diff(_g("B", "total_return"), _g("A", "total_return")),
+        "grid_vs_off": _diff(_g("A", "total_return"), _g("C", "total_return")),
+        "time_vs_off": _diff(_g("D", "total_return"), _g("C", "total_return")),
+        "time_vs_grid": _diff(_g("D", "total_return"), _g("A", "total_return")),
+    }
+
+
+def _tmode_decision(per_capital: dict) -> str:
+    "t_mode 机制竞争决策：跨资金档取均值比较 + 综合最优"
+    from collections import defaultdict
+    lines = []
+
+    def _avg(key):
+        vals = [a.get(key) for a in per_capital.values() if a.get(key) is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    dg = _avg("discipline_vs_grid")
+    go = _avg("grid_vs_off")
+    to = _avg("time_vs_off")
+    tg = _avg("time_vs_grid")
+    if dg is not None:
+        lines.append(f"回补纪律 vs 网格：{dg:+.2%}" + ("，纪律更优" if dg > 1e-9 else ("，网格更优" if dg < -1e-9 else "，无差异")))
+    if go is not None:
+        lines.append(f"网格 vs 无T：{go:+.2%}" + ("，T层有净价值" if go > 1e-9 else ("，T层无净价值" if go < -1e-9 else "，无差异")))
+    if to is not None:
+        lines.append(f"时点T vs 无T：{to:+.2%}" + ("，时点规律有净价值" if to > 1e-9 else ("，无净价值" if to < -1e-9 else "，无差异")))
+    if tg is not None:
+        lines.append(f"时点T vs 智能网格：{tg:+.2%}" + ("，无脑时点胜过智能网格（重要证伪）" if tg > 1e-9 else ""))
+    agg = defaultdict(list)
+    for a in per_capital.values():
+        for cell in ("A", "B", "C", "D"):
+            v = (a.get("cells") or {}).get(cell, {}).get("total_return")
+            if isinstance(v, (int, float)):
+                agg[cell].append(float(v))
+    if agg:
+        best = max(agg, key=lambda c: sum(agg[c]) / len(agg[c]))
+        lines.append(f"综合最优：{TMODE_LABELS[best]}")
+    return "；".join(lines) if lines else "数据不足，无法给出归因结论"
+
+
 @router.post("")
 def create_experiment(req: ExperimentRequest, _user: str = Depends(get_current_user)):
-    bad = [c for c in req.cells if c not in CELLS]
+    if req.matrix not in ("clock", "t_mode"):
+        raise HTTPException(status_code=400, detail=f"matrix 需为 clock/t_mode，非法: {req.matrix}")
+    cell_defs = TMODE_CELLS if req.matrix == "t_mode" else CELLS
+    labels = TMODE_LABELS if req.matrix == "t_mode" else CELL_LABELS
+    bad = [c for c in req.cells if c not in cell_defs]
     if bad:
-        raise HTTPException(status_code=400, detail=f"cells 需为 {list(CELLS)} 的子集，非法: {bad}")
+        raise HTTPException(status_code=400, detail=f"cells 需为 {list(cell_defs)} 的子集，非法: {bad}")
     if not req.cells or not req.capitals:
         raise HTTPException(status_code=400, detail="cells 与 capitals 不能为空")
     if req.base_config.get("strategy_id") != "momentum_t":
@@ -146,12 +225,12 @@ def create_experiment(req: ExperimentRequest, _user: str = Depends(get_current_u
     for cell in req.cells:
         for cap in req.capitals:
             cfg = dict(req.base_config)
-            cfg["name"] = f"{req.name} · {CELL_LABELS[cell]} · {int(cap)}"
+            cfg["name"] = f"{req.name} · {labels[cell]} · {int(cap)}"
             cfg["start_date"] = req.start_date
             cfg["end_date"] = req.end_date
             cfg["initial_capital"] = float(cap)
             params = dict(cfg.get("params") or {})
-            params.update(CELLS[cell])
+            params.update(cell_defs[cell])
             cfg["params"] = params
             cfg = validate_backtest_config(cfg)
             tid = "bt_" + uuid.uuid4().hex[:12]
@@ -183,7 +262,8 @@ def create_experiment(req: ExperimentRequest, _user: str = Depends(get_current_u
         sub_ids.append(etid)
         stored_cells.append("E")
     db.create_experiment(exp_id, req.name, dict(req.base_config), stored_cells,
-                         req.capitals, sub_ids, req.start_date, req.end_date)
+                         req.capitals, sub_ids, req.start_date, req.end_date,
+                         matrix=req.matrix)
     return {"experiment_id": exp_id, "sub_task_ids": sub_ids, "status": "pending"}
 
 
@@ -209,6 +289,7 @@ def list_experiments(_user: str = Depends(get_current_user)):
         out.append({
             "experiment_id": e["experiment_id"], "name": e["name"],
             "cells": e["cells"], "capitals": e["capitals"],
+            "matrix_type": e.get("matrix") or "clock",
             "status": status, "progress": round(done / total * 100, 1),
             "error": err, "created_at": e["created_at"],
             "finished_at": e["finished_at"], "sub_count": len(e["sub_task_ids"]),
@@ -241,10 +322,15 @@ def get_experiment(exp_id: str, _user: str = Depends(get_current_user)):
             "status": t["status"], "progress": t["progress"], "message": t["message"],
             "error": t["error"], "metrics": m,
         })
-    attr_per_capital = {k: _attribution_for(v) for k, v in per_capital.items()}
+    if exp.get("matrix") == "t_mode":
+        attr_per_capital = {k: _tmode_attribution_for(v) for k, v in per_capital.items()}
+        decision = _tmode_decision(attr_per_capital) if attr_per_capital else "数据不足，无法给出归因结论"
+    else:
+        attr_per_capital = {k: _attribution_for(v) for k, v in per_capital.items()}
+        decision = _decision(attr_per_capital) if attr_per_capital else "数据不足，无法给出归因结论"
     attribution = {
         "per_capital": attr_per_capital,
-        "decision": _decision(attr_per_capital) if attr_per_capital else "数据不足，无法给出归因结论",
+        "decision": decision,
     }
     total = len(exp["sub_task_ids"]) or 1
     # 与列表一致的状态语义：有任一失败 -> failed，全部成功 -> success，未完成 -> running
@@ -267,6 +353,7 @@ def get_experiment(exp_id: str, _user: str = Depends(get_current_user)):
         "error": err, "created_at": exp["created_at"],
         "finished_at": exp["finished_at"],
         "sub_task_ids": exp["sub_task_ids"],
+        "matrix_type": exp.get("matrix") or "clock",
         "matrix": matrix, "attribution": attribution,
     }
 

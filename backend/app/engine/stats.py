@@ -36,6 +36,8 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
                   start_equity: float, end_equity: float,
                   commission_total: float,
                   t_cycle_pnls: Optional[list[float]] = None,
+                  t_cycle_records: Optional[list[dict]] = None,
+                  t_open_debts: Optional[list[dict]] = None,
                   withdrawn: Optional[dict] = None,
                   wd_base: float = 0.0,
                   completed_months: int = 0) -> dict:
@@ -102,11 +104,29 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
     t_pnl = 0.0
     t_count = 0
     t_wins = 0
+    t_pnl_closed = None
+    t_payoff = None
     open_pnl = add_pnl = reduce_pnl = stop_pnl = 0.0
-    if t_cycle_pnls:
-        # 做T贡献 = 已完成"卖旧买新"周期的价差（跨日持续至还清，独立于平仓盈亏口径）
+    records = t_cycle_records or []
+    open_debts = t_open_debts or []
+    if records or open_debts:
+        # 配对口径（T_REFACTOR）：t_pnl = 已闭环价差 + 期末未闭环浮亏计提（诚实口径，不再美化T层）
+        closed_pnl = sum(float(c["pnl"]) for c in records)
+        open_float = sum(float(o["float_pnl"]) for o in open_debts)
+        t_count = len(records)
+        t_wins = sum(1 for c in records if c["pnl"] > 0)
+        wins = [float(c["pnl"]) for c in records if c["pnl"] > 0]
+        losses = [float(c["pnl"]) for c in records if c["pnl"] < 0]
+        avg_win = (sum(wins) / len(wins)) if wins else 0.0
+        avg_loss = (sum(losses) / len(losses)) if losses else 0.0
+        t_payoff = _safe_div(avg_win, abs(avg_loss)) if losses and avg_loss != 0 else None
+        t_pnl = closed_pnl + open_float
+        t_pnl_closed = closed_pnl            # 旧周期口径（对照，仅已闭环）
+    elif t_cycle_pnls:
+        # 兼容：无配对明细但有旧周期合计（老调用方）
         t_count = len(t_cycle_pnls)
         t_pnl = sum(t_cycle_pnls)
+        t_pnl_closed = t_pnl
         t_wins = len([p for p in t_cycle_pnls if p > 0])
     for t in closes:
         pnl = t["pnl"]
@@ -114,14 +134,14 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         close_day = t["time"][:10]
         is_t = open_day == close_day  # 当日买当日卖 -> T交易（T+1下罕见）
         tag = t.get("tag") or "开仓"
-        if is_t and not t_cycle_pnls:
+        if is_t and not records and not open_debts:
             t_count += 1
             t_pnl += pnl
             if pnl > 0:
                 t_wins += 1
         elif t["type"] == "止损":
             stop_pnl += pnl
-        elif t["type"] == "减仓":
+        elif t["type"] == "减仓" or t.get("tag") == "减仓":
             reduce_pnl += pnl
         elif tag == "加仓":
             add_pnl += pnl
@@ -166,6 +186,8 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         "t_trade_count": t_count,
         "t_win_rate": round(t_wins / t_count, 6) if t_count else None,
         "t_pnl": round(t_pnl, 2),
+        "t_pnl_closed": round(t_pnl_closed, 2) if t_pnl_closed is not None else None,
+        "t_payoff": round(t_payoff, 4) if t_payoff is not None else None,
         "open_pnl": round(open_pnl, 2),
         "add_pnl": round(add_pnl, 2),
         "reduce_pnl": round(reduce_pnl, 2),

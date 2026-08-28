@@ -12,10 +12,12 @@ import {
   InputNumber,
   message,
   Popconfirm,
+  Radio,
   Row,
   Select,
   Space,
   Table,
+  Tag,
   Typography
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -34,6 +36,7 @@ import type {
   BacktestListItem,
   ExperimentCell,
   ExperimentListItem,
+  ExperimentMatrix,
   Strategy,
   UniverseMeta
 } from '../api/types'
@@ -49,6 +52,19 @@ const CELLS: Array<{ value: ExperimentCell; label: string; desc: string }> = [
   { value: 'D', label: 'D · 盘中时钟×无T', desc: '盘中时钟 + 做T关（max_t_times=0）' }
 ]
 
+/** t_mode 机制矩阵（T_REFACTOR L3）：cell -> 做T机制 */
+const TMODE_CELLS: Array<{ value: ExperimentCell; label: string; desc: string }> = [
+  { value: 'A', label: 'A · 网格+双止损（L1）', desc: '现有网格做T + 债务时间/价格双止损封右尾' },
+  { value: 'B', label: 'B · 回补纪律（L2）', desc: '价格回落到卖出价下方才限价回补，拒绝追高' },
+  { value: 'C', label: 'C · 无T基线', desc: '做T关闭，纯趋势持仓对照' },
+  { value: 'D', label: 'D · 时点规律T', desc: '每日 09:35 高抛 1/4 底仓、14:50 尾盘买回' }
+]
+
+const MATRIX_OPTIONS: Array<{ value: ExperimentMatrix; label: string }> = [
+  { value: 'clock', label: '时钟 × 做T（2×2）' },
+  { value: 't_mode', label: '做T四机制竞争（L3）' }
+]
+
 const CAPITAL_PRESETS = [
   { value: 400_000, label: '40万' },
   { value: 3_000_000, label: '300万' }
@@ -57,6 +73,7 @@ const CAPITAL_PRESETS = [
 interface ExperimentFormValues {
   name: string
   template?: string
+  matrix: ExperimentMatrix
   cells: ExperimentCell[]
   capitals: number[]
   custom_capital?: number | null
@@ -66,6 +83,7 @@ interface ExperimentFormValues {
 
 export default function ExperimentList() {
   const [form] = Form.useForm<ExperimentFormValues>()
+  const matrixWatch = Form.useWatch('matrix', form)
   const navigate = useNavigate()
   const [backtests, setBacktests] = useState<BacktestListItem[]>([])
   const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -174,7 +192,8 @@ export default function ExperimentList() {
         capitals,
         start_date: start.format('YYYY-MM-DD'),
         end_date: end.format('YYYY-MM-DD'),
-        with_e: values.with_e ?? false
+        with_e: values.matrix === 't_mode' ? false : (values.with_e ?? false),
+        matrix: values.matrix ?? 'clock'
       })
       message.success(`实验已创建，共 ${res.sub_task_ids.length} 个子回测任务`)
       navigate(`/experiments/${res.experiment_id}`)
@@ -197,6 +216,16 @@ export default function ExperimentList() {
 
   const columns: ColumnsType<ExperimentListItem> = [
     { title: '实验名', dataIndex: 'name', ellipsis: true },
+    {
+      title: '矩阵',
+      dataIndex: 'matrix_type',
+      width: 110,
+      render: (v?: ExperimentMatrix) => (
+        <Tag color={v === 't_mode' ? 'geekblue' : 'default'}>
+          {v === 't_mode' ? '做T四机制' : '时钟×做T'}
+        </Tag>
+      )
+    },
     {
       title: '格',
       dataIndex: 'cells',
@@ -248,12 +277,22 @@ export default function ExperimentList() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card title="新建对比实验（趋势×做T 2×2 矩阵 × 资金档）">
+      <Card
+        title={
+          matrixWatch === 't_mode'
+            ? '新建机制竞争实验（做T四机制 × 资金档）'
+            : '新建对比实验（趋势×做T 2×2 矩阵 × 资金档）'
+        }
+      >
         <Form<ExperimentFormValues>
           form={form}
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{ cells: ['A', 'B', 'C', 'D'], capitals: [400_000, 3_000_000] }}
+          initialValues={{
+            matrix: 'clock',
+            cells: ['A', 'B', 'C', 'D'],
+            capitals: [400_000, 3_000_000]
+          }}
         >
           <Row gutter={16}>
             <Col span={8}>
@@ -325,10 +364,31 @@ export default function ExperimentList() {
 
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="cells" label="实验矩阵（时钟 × 做T）">
+              <Form.Item
+                name="matrix"
+                label="实验矩阵类型"
+                rules={[{ required: true, message: '请选择矩阵类型' }]}
+              >
+                <Radio.Group
+                  optionType="button"
+                  buttonStyle="solid"
+                  options={MATRIX_OPTIONS}
+                  onChange={(e) => {
+                    const m = e.target.value as ExperimentMatrix
+                    form.setFieldsValue({
+                      cells: ['A', 'B', 'C', 'D'],
+                      ...(m === 't_mode' ? { with_e: false } : {})
+                    })
+                  }}
+                />
+              </Form.Item>
+              <Form.Item
+                name="cells"
+                label={matrixWatch === 't_mode' ? '机制格（做T四机制）' : '实验矩阵（时钟 × 做T）'}
+              >
                 <Checkbox.Group style={{ width: '100%' }}>
                   <Space direction="vertical">
-                    {CELLS.map((c) => (
+                    {(matrixWatch === 't_mode' ? TMODE_CELLS : CELLS).map((c) => (
                       <Checkbox key={c.value} value={c.value}>
                         <b>{c.label}</b>
                         <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
@@ -339,14 +399,16 @@ export default function ExperimentList() {
                   </Space>
                 </Checkbox.Group>
               </Form.Item>
-              <Form.Item name="with_e" valuePropName="checked" style={{ marginTop: -8 }}>
-                <Checkbox>
-                  <b>E · 纯日线15年参考</b>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                    单独子回测（period=daily，2010 起，仅趋势层），不进矩阵归因，跑得较久
-                  </Typography.Text>
-                </Checkbox>
-              </Form.Item>
+              {matrixWatch !== 't_mode' && (
+                <Form.Item name="with_e" valuePropName="checked" style={{ marginTop: -8 }}>
+                  <Checkbox>
+                    <b>E · 纯日线15年参考</b>
+                    <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                      单独子回测（period=daily，2010 起，仅趋势层），不进矩阵归因，跑得较久
+                    </Typography.Text>
+                  </Checkbox>
+                </Form.Item>
+              )}
             </Col>
             <Col span={6}>
               <Form.Item name="capitals" label="资金档（预设）">

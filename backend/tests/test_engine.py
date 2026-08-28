@@ -918,6 +918,7 @@ def test_momentum_grid_buy_rebuild_budget(tmp_path):
     from app.engine.strategies.momentum_t import MomentumTStrategy
     strat = MomentumTStrategy()
     p = {k["key"]: k["default"] for k in strat.param_schema}
+    p["grid_atr_mult"] = 0.5  # 固定旧阈值，聚焦网格买点预算契约
     base_min = float(p["base_pct_min"])
     base_max = float(p["base_pct_max"])
     df = pl.DataFrame({

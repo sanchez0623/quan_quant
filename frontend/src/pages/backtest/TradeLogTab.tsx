@@ -18,6 +18,14 @@ const TYPE_TAG_COLOR: Record<string, string> = {
   '清仓': 'default'
 }
 
+/** 做T机制标签（T_REFACTOR：t_mode 字段，仅做T相关交易携带） */
+const TMODE_LABEL: Record<string, string> = {
+  grid: '网格',
+  discipline: '纪律',
+  time: '时点',
+  off: '关'
+}
+
 export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [sideFilter, setSideFilter] = useState<string>('all')
@@ -57,7 +65,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   }, [trades])
 
   const exportCsv = () => {
-    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '剩余持仓', '金额', '手续费', '类型', '理由', '平仓盈亏']
+    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '剩余持仓', '金额', '手续费', '类型', 'T模式', '理由', '平仓盈亏']
     const rows = filtered.map((t) => [
       t.trade_id,
       t.time,
@@ -70,6 +78,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       t.amount,
       t.fee,
       t.type,
+      t.t_mode ?? '',
       t.reason ?? '',
       t.pnl ?? ''
     ])
@@ -139,8 +148,13 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
     {
       title: '类型',
       dataIndex: 'type',
-      width: 80,
-      render: (v: string) => <Tag color={TYPE_TAG_COLOR[v] ?? 'default'}>{v}</Tag>
+      width: 110,
+      render: (v: string, t) => (
+        <Space size={4} wrap>
+          <Tag color={TYPE_TAG_COLOR[v] ?? 'default'}>{v}</Tag>
+          {t.t_mode && <Tag color="geekblue">{TMODE_LABEL[t.t_mode] ?? t.t_mode}</Tag>}
+        </Space>
+      )
     },
     {
       title: '理由',

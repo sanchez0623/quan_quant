@@ -30,6 +30,9 @@ class GridTStrategy(Strategy):
         mult = float(params.get("grid_atr_mult") or 1.5)
         atr_n = int(params.get("atr_period") or 14)
         max_t = int(params.get("max_t_times") or 4)
+        # T_REFACTOR：t_mode=off 关闭做T（C 基线）；time 模式对网格策略回退为普通网格
+        if str(params.get("t_mode") or "grid") == "off":
+            max_t = 0
 
         out: dict[str, pl.DataFrame] = {}
         for code, df in data.items():

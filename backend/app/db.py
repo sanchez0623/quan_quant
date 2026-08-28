@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS experiments(
   base_config TEXT NOT NULL,
   cells TEXT NOT NULL,
   capitals TEXT NOT NULL,
+  matrix TEXT DEFAULT 'clock',   -- clock=趋势×T 2x2 / t_mode=四机制竞争
   sub_task_ids TEXT NOT NULL,
   start_date TEXT,
   end_date TEXT,
@@ -134,6 +135,9 @@ def _migrate(c: sqlite3.Connection) -> None:
     cols = {r[1] for r in c.execute("PRAGMA table_info(ai_analyses)")}
     if "suggestions" not in cols:
         c.execute("ALTER TABLE ai_analyses ADD COLUMN suggestions TEXT")  # AI结构化建议 JSON
+    ecols = {r[1] for r in c.execute("PRAGMA table_info(experiments)")}
+    if "matrix" not in ecols:
+        c.execute("ALTER TABLE experiments ADD COLUMN matrix TEXT DEFAULT 'clock'")
 
 
 # ---------------- users ----------------
@@ -465,14 +469,15 @@ def delete_template(template_id: int, username: str,
 
 def create_experiment(exp_id: str, name: str, base_config: dict, cells: list,
                       capitals: list, sub_task_ids: list, start_date: str,
-                      end_date: str, db_path: Optional[str] = None) -> None:
+                      end_date: str, matrix: str = "clock",
+                      db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
-            "INSERT INTO experiments(id,name,base_config,cells,capitals,sub_task_ids,"
-            "start_date,end_date,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO experiments(id,name,base_config,cells,capitals,matrix,sub_task_ids,"
+            "start_date,end_date,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (exp_id, name, json.dumps(base_config, ensure_ascii=False),
              json.dumps(cells, ensure_ascii=False),
-             json.dumps(capitals, ensure_ascii=False),
+             json.dumps(capitals, ensure_ascii=False), matrix,
              json.dumps(sub_task_ids, ensure_ascii=False),
              start_date, end_date, "running", _now()))
 
@@ -481,7 +486,7 @@ def get_experiment(exp_id: str, db_path: Optional[str] = None) -> Optional[dict]
     with conn(db_path) as c:
         row = c.execute(
             "SELECT id,name,base_config,cells,capitals,sub_task_ids,start_date,end_date,"
-            "status,progress,error,created_at,finished_at FROM experiments WHERE id=?",
+            "status,progress,error,created_at,finished_at,matrix FROM experiments WHERE id=?",
             (exp_id,)).fetchone()
     if not row:
         return None
@@ -492,6 +497,7 @@ def get_experiment(exp_id: str, db_path: Optional[str] = None) -> Optional[dict]
         "start_date": row[6], "end_date": row[7], "status": row[8],
         "progress": row[9], "error": row[10], "created_at": row[11],
         "finished_at": row[12],
+        "matrix": row[13] or "clock",
     }
 
 
@@ -499,7 +505,7 @@ def list_experiments(db_path: Optional[str] = None) -> list[dict]:
     with conn(db_path) as c:
         rows = c.execute(
             "SELECT id,name,cells,capitals,sub_task_ids,status,progress,error,created_at,"
-            "finished_at FROM experiments ORDER BY created_at DESC, rowid DESC").fetchall()
+            "finished_at,matrix FROM experiments ORDER BY created_at DESC, rowid DESC").fetchall()
     out = []
     for r in rows:
         out.append({
@@ -507,6 +513,7 @@ def list_experiments(db_path: Optional[str] = None) -> list[dict]:
             "capitals": _jload(r[3]) or [], "sub_task_ids": _jload(r[4]) or [],
             "status": r[5], "progress": r[6], "error": r[7], "created_at": r[8],
             "finished_at": r[9],
+            "matrix": r[10] or "clock",
         })
     return out
 
