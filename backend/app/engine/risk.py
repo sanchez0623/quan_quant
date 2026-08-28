@@ -8,17 +8,17 @@ class RiskConfig:
         self.max_position_pct_per_stock = float(cfg.get("max_position_pct_per_stock", 30))
         self.max_total_position_pct = float(cfg.get("max_total_position_pct", 100))
         self.stop_loss_mode = cfg.get("stop_loss_mode", "fixed")  # fixed | atr | trailing
-        self.stop_loss_pct = float(cfg.get("stop_loss_pct", 8.0))
+        self.stop_loss_pct = float(cfg.get("stop_loss_pct", 12.0))
         self.atr_period = int(cfg.get("atr_period", 14))
         # 默认组面向"做T+动量"风格：ATR 2.0 在高波动票上反复扫损，放宽至 2.5（建议 2.5~3）
         self.atr_multiplier = float(cfg.get("atr_multiplier", 2.5))
         self.take_profit_pct = float(cfg.get("take_profit_pct", 0) or 0)
-        self.trailing_stop_pct = float(cfg.get("trailing_stop_pct", 0) or 0)
+        self.trailing_stop_pct = float(cfg.get("trailing_stop_pct", 5.0) or 0)
         self.max_drawdown_breaker = float(cfg.get("max_drawdown_breaker", 30))
         # max_intraday_trades 语义：单只股票每日最大交易次数（None/缺失 -> 默认 4）
         self.max_intraday_trades = int(cfg.get("max_intraday_trades") or 4)
         self.max_holdings = int(cfg.get("max_holdings", 0) or 0)  # 最大持仓只数，0=不限
-        self.cash_reserve_pct = float(cfg.get("cash_reserve_pct", 0) or 0)  # 现金缓冲比例
+        self.cash_reserve_pct = float(cfg.get("cash_reserve_pct", 1.5) or 0)  # 现金缓冲比例
 
 
 class RiskManager:

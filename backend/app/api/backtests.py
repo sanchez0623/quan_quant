@@ -21,15 +21,15 @@ class RiskConfigModel(BaseModel):
     max_position_pct_per_stock: float = 30
     max_total_position_pct: float = 100
     stop_loss_mode: str = "fixed"
-    stop_loss_pct: float = 8.0
+    stop_loss_pct: float = 12.0
     atr_period: int = 14
     atr_multiplier: float = 2.5
     take_profit_pct: float = 0
-    trailing_stop_pct: float = 0
+    trailing_stop_pct: float = 5.0
     max_drawdown_breaker: float = 30
     max_intraday_trades: int | None = None  # 未传时自动对齐策略 max_t_times
     max_holdings: int = 0              # 最大持仓只数，0=不限
-    cash_reserve_pct: float = 0        # 现金缓冲比例（永不进场的资金）
+    cash_reserve_pct: float = 1.5      # 现金缓冲比例（永不进场的资金）
 
 
 class BacktestRequest(BaseModel):
@@ -38,6 +38,8 @@ class BacktestRequest(BaseModel):
     params: dict = Field(default_factory=dict)
     risk_config: RiskConfigModel = Field(default_factory=RiskConfigModel)
     universe: list[str]
+    # 条件选股溯源（UNIVERSE_PICKER §7）：池子的来历与 seed，模板载入/实验复现可审计
+    universe_meta: dict | None = None
     start_date: str
     end_date: str
     period: str = "daily"

@@ -34,7 +34,7 @@ class MaCrossStrategy(Strategy):
         {"key": "fast", "label": "快线周期", "type": "int", "default": 5, "min": 2, "max": 60},
         {"key": "slow", "label": "慢线周期", "type": "int", "default": 20, "min": 5, "max": 250},
         {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 10},
-        {"key": "stop_loss_pct", "label": "止损比例", "type": "float", "default": 8.0,
+        {"key": "stop_loss_pct", "label": "止损比例", "type": "float", "default": 12.0,
          "min": 1, "max": 50, "step": 0.5, "unit": "%"},
     ]
 

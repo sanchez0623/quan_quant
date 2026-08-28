@@ -19,13 +19,13 @@ export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
   max_position_pct_per_stock: 100,
   max_total_position_pct: 100,
   max_holdings: 3,
-  cash_reserve_pct: 7.5,
+  cash_reserve_pct: 1.5,
   stop_loss_mode: 'atr',
-  stop_loss_pct: 8,
+  stop_loss_pct: 12,
   atr_period: 14,
   atr_multiplier: 2.5,
   take_profit_pct: 0,
-  trailing_stop_pct: 0,
+  trailing_stop_pct: 5,
   max_drawdown_breaker: 30
 }
 
