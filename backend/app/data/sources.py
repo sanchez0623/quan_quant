@@ -113,6 +113,19 @@ def derive_board(code: str) -> Optional[str]:
     return None
 
 
+def _is_a_stock(raw: str) -> bool:
+    """按带前缀代码（sh./sz./bj.）判断是否 A 股股票（排除指数/B股）。
+    不能用纯数字 derive_board：sh.000001(上证指数) 与 sz.000001(平安银行) 纯数字相同。"""
+    head, _, tail = raw.partition(".")
+    if head == "sh":
+        return tail.startswith(("600", "601", "603", "605", "688", "689"))
+    if head == "sz":
+        return tail.startswith(("000", "001", "002", "003", "300", "301"))
+    if head == "bj":
+        return tail.startswith(("4", "8", "9", "92"))
+    return False
+
+
 BOARD_LABELS = {
     BOARD_MAIN: "主板",
     BOARD_CHINEXT: "创业板",
@@ -337,6 +350,46 @@ class BaostockSource(DataSource):
                 "code": code,
                 "name": r[i_name] if i_name < len(r) else "",
                 "update_date": r[i_date] if i_date < len(r) else "",
+            })
+        return out or None
+
+    def get_all_stocks(self, day: str) -> Optional[list[dict]]:
+        """拉取指定交易日全部在市证券（baostock query_all_stock，秒级）。
+
+        返回 [{code(纯数字), name, st, trade_status}]——只保留 A 股（板块可识别），
+        用于刷新 stock_basic：识别当前在市集合（反向标记退市）与 ST（名称含 ST）。
+        """
+        if not self._ok:
+            return None
+
+        def _q():
+            rs = self._bs.query_all_stock(day=day)
+            rows = []
+            while rs.error_code == "0" and rs.next():
+                rows.append(rs.get_row_data())
+            return rs, (rs.fields, rows)
+
+        res = self._run_query(_q)
+        if res is None:
+            return None
+        fields, rows = res
+        if not rows:
+            return None
+        i_code = fields.index("code")
+        i_name = fields.index("code_name")
+        i_status = fields.index("tradeStatus")
+        out = []
+        for r in rows:
+            raw = r[i_code] if i_code < len(r) else ""
+            if not _is_a_stock(raw):
+                continue  # 跳过指数/B股/无法识别
+            code = _norm_code(raw)
+            name = r[i_name] if i_name < len(r) else ""
+            out.append({
+                "code": code,
+                "name": name,
+                "st": "ST" in name.upper(),
+                "trade_status": r[i_status] if i_status < len(r) else "",
             })
         return out or None
 

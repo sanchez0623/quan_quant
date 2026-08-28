@@ -113,6 +113,9 @@ def read_stock_basic(data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:
     # 历史文件可能是 sh.600000 格式：读取时归一化为纯数字（与 daily/minute5 一致）
     if df.height and "." in str(df["code"][0]):
         df = df.with_columns(pl.col("code").str.replace(r"^(sh|sz|bj)\.", "").alias("code"))
+    # 兼容旧 schema（无 delisted 列）：补齐默认 False
+    if "delisted" not in df.columns:
+        df = df.with_columns(pl.lit(False).alias("delisted"))
     return df
 
 
@@ -236,6 +239,17 @@ def parquet_stats_industry(data_dir: Optional[str] = None) -> Optional[dict]:
             "l3_count": int(df["sw_code"].n_unique()),
             "snapshot_date": str(df["snapshot_date"].max()),
             "updated_at": _mtime(p)}
+
+
+def parquet_stats_stock_basic(data_dir: Optional[str] = None) -> Optional[dict]:
+    """股票列表统计：总数 / ST 数 / 退市数（供数据管理页展示）"""
+    df = read_stock_basic(data_dir)
+    if df is None or df.height == 0:
+        return None
+    return {"total": int(df.height),
+            "st_count": int(df.filter(pl.col("st")).height) if "st" in df.columns else 0,
+            "delisted_count": int(df.filter(pl.col("delisted")).height),
+            "updated_at": _mtime(data_root(data_dir) / "stock_basic.parquet")}
 
 
 def _mtime(p: Path) -> str:

@@ -274,7 +274,7 @@ export async function getDataStatus(): Promise<DataStatus> {
 }
 
 export async function updateData(
-  scope: 'daily' | 'minute5' | 'all' | 'industry',
+  scope: 'daily' | 'minute5' | 'all' | 'industry' | 'stock_basic',
   stocks?: string[],
   dateRange?: { startDate?: string; endDate?: string }
 ): Promise<TaskCreateResponse> {

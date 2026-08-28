@@ -166,14 +166,97 @@ def update_industry(data_dir: Optional[str] = None,
     return stats
 
 
+def update_stock_basic(data_dir: Optional[str] = None,
+                       progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
+    """刷新股票元数据（scope=stock_basic）：用 baostock query_all_stock 拉"当前在市"全部 A 股，
+    重写 stock_basic 的 name/st，并新增 delisted 标记（不在当日在市集合 = 已退市/暂停）。
+
+    依赖：baostock 可用；stock_basic.parquet 已存在（保留旧 list_date，合并写入）。
+    """
+    from . import sources, store
+
+    def report(p: float, msg: str) -> None:
+        if progress_cb:
+            progress_cb(p, msg)
+
+    stats: dict = {"scope": "stock_basic"}
+
+    basic = store.read_stock_basic(data_dir)
+    if basic is None:
+        raise UpdateError("本地 stock_basic.parquet 不存在，无法刷新股票列表。"
+                          "请先初始化数据或使用 POST /api/data/demo")
+
+    # 用最近一个交易日查询（baostock 需要有效交易日，非交易日返回空）
+    day = time.strftime("%Y-%m-%d")
+    src = None
+    for s in sources.SOURCES:
+        if s.available() and isinstance(s, sources.BaostockSource):
+            src = s
+            break
+    if src is None:
+        raise UpdateError("baostock 不可用，无法刷新股票列表（需要 query_all_stock）")
+
+    report(5, f"拉取 {day} 全市场在市证券...")
+    rows = src.get_all_stocks(day)
+    if not rows:
+        # 尝试交易日历最近开市日
+        cal = store.read_calendar(data_dir)
+        if cal is not None and cal.height:
+            open_days = (cal.filter(pl.col("is_open") == 1)
+                         .filter(pl.col("date") <= day)["date"].sort().to_list())
+            if open_days:
+                rows = src.get_all_stocks(str(open_days[-1]))
+                if rows:
+                    report(5, f"当日无数据，改用最近交易日 {open_days[-1]}")
+    if not rows:
+        raise UpdateError(f"query_all_stock({day}) 返回为空，无法刷新股票列表")
+
+    in_market = pl.DataFrame(rows)
+    in_codes = set(in_market["code"].to_list())
+    report(20, f"在市 A 股 {len(in_codes)} 只，合并到本地股票列表...")
+
+    # 合并：以本地 basic 为主键，用在市快照覆盖 name/st，标记 delisted
+    basic = basic.with_columns(
+        pl.col("code").cast(pl.Utf8))
+    merged = (basic.join(
+        in_market.select(["code", "name", "st"]),
+        on="code", how="left",
+        suffix="_new")
+        .with_columns([
+            pl.col("name_new").fill_null(pl.col("name")).alias("name"),
+            pl.col("st_new").fill_null(pl.col("st")).alias("st"),
+            (~pl.col("code").is_in(sorted(in_codes))).alias("delisted"),
+        ])
+        .drop(["name_new", "st_new"])
+        .sort("code"))
+    # 保证列序稳定：code,name,st,list_date,delisted
+    cols = [c for c in ("code", "name", "st", "list_date", "delisted") if c in merged.columns]
+    merged = merged.select(cols)
+
+    store.write_stock_basic(merged, data_dir)
+    report(90, "写回 stock_basic.parquet...")
+    st_n = int(merged.filter(pl.col("st")).height)
+    delisted_n = int(merged.filter(pl.col("delisted")).height)
+    stats.update({
+        "total": merged.height,
+        "st_count": st_n,
+        "delisted_count": delisted_n,
+        "snapshot": day,
+        "in_market": len(in_codes),
+    })
+    report(100, "股票列表更新完成")
+    return stats
+
+
 def update(scope: str = "daily", codes: Optional[list[str]] = None,
            data_dir: Optional[str] = None,
            progress_cb: Optional[Callable[[float, str], None]] = None,
            start_date: str = "1990-01-01",
            end_date: str = "2099-12-31") -> dict:
-    """scope: daily | minute5 | industry | all。返回统计。无可用源抛 UpdateError。
+    """scope: daily | minute5 | industry | stock_basic | all。返回统计。无可用源抛 UpdateError。
     start_date/end_date: 拉取区间（默认全历史；5分钟线受通达信服务器约2年深度限制）。
-    industry scope 独立分支：更新指数成分 + 申万三级行业，不需 stock_basic / 日线源。"""
+    industry scope 独立分支：更新指数成分 + 申万三级行业，不需 stock_basic / 日线源。
+    stock_basic scope 独立分支：刷新股票元数据（ST/退市标记），不需日线源。"""
 
     def report(p: float, msg: str) -> None:
         if progress_cb:
@@ -182,6 +265,10 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
     # ---- industry scope：指数成分 + 申万三级（不走日线健康检查/stock_basic） ----
     if scope == "industry":
         return update_industry(data_dir=data_dir, progress_cb=progress_cb)
+
+    # ---- stock_basic scope：刷新股票元数据（ST/退市标记） ----
+    if scope == "stock_basic":
+        return update_stock_basic(data_dir=data_dir, progress_cb=progress_cb)
 
     installed_srcs = [s for s in sources.SOURCES if s.available()]
     _hi = {"i": 0}

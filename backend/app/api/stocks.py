@@ -21,6 +21,8 @@ def search_stocks(keyword: str = Query(default=""), limit: int = Query(default=2
     basic = store.read_stock_basic()
     if basic is None or basic.height == 0:
         return []
+    # 股票池排除 ST 股与退市股（前端手动选择也不展示）
+    basic = basic.filter((~pl.col("st")) & (~pl.col("delisted")))
     if keyword:
         kw = keyword.strip()
         basic = basic.filter(pl.col("code").str.contains(kw, literal=True)
@@ -49,7 +51,8 @@ def stocks_by_codes(codes: str = Query(default=""),
             wanted.append(raw)
     if not wanted:
         return []
-    df = basic.filter(pl.col("code").is_in(wanted))
+    df = basic.filter(pl.col("code").is_in(wanted)
+                      & (~pl.col("st")) & (~pl.col("delisted")))
     rows = df.select(["code", "name", "st"]).to_dicts()
     order = {c: i for i, c in enumerate(wanted)}
     rows.sort(key=lambda r: order.get(r["code"], 10**9))
@@ -146,12 +149,16 @@ class PickRequest(BaseModel):
 
 
 def _pick_matched(filters: PickFilters) -> tuple[list[str], dict[str, str]]:
-    """按过滤条件求命中股票（维度间 AND、维度内 OR），返回 (codes, name_map)。"""
+    """按过滤条件求命中股票（维度间 AND、维度内 OR），返回 (codes, name_map)。
+    始终排除退市股；ST 按 exclude_st 开关（默认开）。"""
     basic = store.read_stock_basic()
     if basic is None or basic.height == 0:
         return [], {}
     codes: set[str] = set(basic["code"].to_list())
     name_map = {r["code"]: r["name"] for r in basic.select(["code", "name"]).to_dicts()}
+
+    # 退市股（delisted）无条件排除
+    codes -= set(basic.filter(pl.col("delisted"))["code"].to_list())
 
     if filters.index:
         idx = store.read_index_constituents()

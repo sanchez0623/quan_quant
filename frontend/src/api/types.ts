@@ -673,6 +673,13 @@ export interface DataIndustryStatus {
   updated_at?: string | null
 }
 
+export interface DataStockBasicStatus {
+  total: number
+  st_count: number
+  delisted_count: number
+  updated_at?: string | null
+}
+
 export interface DataSourceHealth {
   name: string
   role: string
@@ -690,6 +697,8 @@ export interface DataStatus {
   index: DataIndexStatus | null
   /** 申万行业快照（未更新时为 null） */
   industry: DataIndustryStatus | null
+  /** 股票列表（ST/退市标记，未更新时为 null） */
+  stock_basic: DataStockBasicStatus | null
   sources: DataSourceHealth[]
 }
 

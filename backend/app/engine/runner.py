@@ -102,13 +102,18 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
 # ------------------------------------------------------------------
 
 def _filter_st(universe: list[str], exclude_st: bool, data_dir) -> list[str]:
-    if not exclude_st:
-        return universe
+    """剔除 ST 股与退市股（ST 按 exclude_st 开关；退市股无条件剔除）"""
     basic = store.read_stock_basic(data_dir)
     if basic is None:
         return universe
-    st_codes = set(basic.filter(pl.col("st")).select("code").to_series().to_list())
-    filtered = [c for c in universe if c not in st_codes]
+    excluded = set()
+    if exclude_st:
+        excluded |= set(basic.filter(pl.col("st")).select("code").to_series().to_list())
+    if "delisted" in basic.columns:
+        excluded |= set(basic.filter(pl.col("delisted")).select("code").to_series().to_list())
+    if not excluded:
+        return universe
+    filtered = [c for c in universe if c not in excluded]
     return filtered or universe
 
 

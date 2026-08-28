@@ -250,3 +250,118 @@ def test_update_industry_writes_new(tmp_path, monkeypatch):
     stats = updater.update_industry(data_dir=str(tmp_path))
     assert stats["kept_old"] == {}
     assert stats["index_rows"] == 1 and stats["industry_rows"] == 1
+
+
+# ---------------- 股票列表刷新（scope=stock_basic：ST / 退市标记） ----------------
+
+class _FakeRs:
+    def __init__(self, error_code, rows=(), fields=()):
+        self.error_code = error_code
+        self._rows = list(rows)
+        self._fields = list(fields)
+
+    @property
+    def fields(self):
+        return self._fields
+
+    def next(self):
+        return bool(self._rows)
+
+    def get_row_data(self):
+        return self._rows.pop(0) if self._rows else []
+
+
+class _FakeBs:
+    """假 baostock：query_all_stock 返回 4 只在市证券（含 1 只 ST、1 只指数应被跳过）"""
+    def __init__(self):
+        self.logged_in = False
+        self.rows = [
+            ["sh.000001", "1", "上证指数"],       # 指数：derive_board 无法识别 -> 跳过
+            ["sh.600000", "1", "浦发银行"],       # 在市
+            ["sz.000001", "1", "平安银行"],       # 在市
+            ["sz.300139", "1", "*ST晓程"],        # 在市 + ST（名称含 ST）
+            ["sh.600036", "0", "招商银行"],       # tradeStatus=0（停牌）仍算在市集合
+        ]
+
+    def login(self):
+        self.logged_in = True
+        return _FakeRs("0")
+
+    def logout(self):
+        self.logged_in = False
+
+    def query_all_stock(self, day=""):
+        return _FakeRs("0", rows=[list(r) for r in self.rows],
+                       fields=["code", "tradeStatus", "code_name"])
+
+
+def test_update_stock_basic_marks_st_and_delisted(tmp_path, monkeypatch):
+    """scope=stock_basic：用 query_all_stock 重写 st、标记 delisted"""
+    monkeypatch.setattr(store.config, "DATA_DIR", tmp_path)
+    store.write_stock_basic(pl.DataFrame({
+        "code": ["600000", "000001", "300139", "600036", "600999"],
+        "name": ["浦发银行", "平安银行", "晓程科技", "招商银行", "退市老股"],
+        "st": [False, False, False, False, False],
+        "list_date": ["2010-01-01"] * 5,
+    }), str(tmp_path))
+
+    src = sources.BaostockSource()
+    src._bs = _FakeBs()
+    src._ok = True
+    sources.BaostockSource._bs_logged_in = False
+    monkeypatch.setattr(updater.sources, "SOURCES", [src])
+    monkeypatch.setattr(updater, "time", type("T", (), {"strftime": staticmethod(lambda *a: "2026-08-28")})())
+
+    stats = updater.update_stock_basic(data_dir=str(tmp_path))
+    assert stats["total"] == 5
+    assert stats["st_count"] == 1          # 300139（*ST晓程）
+    assert stats["delisted_count"] == 1    # 600999 不在在市集合
+
+    out = store.read_stock_basic(str(tmp_path))
+    m = {r["code"]: r for r in out.to_dicts()}
+    assert m["300139"]["st"] is True
+    assert m["600999"]["delisted"] is True
+    assert m["600000"]["delisted"] is False
+    assert m["600000"]["st"] is False
+    assert "delisted" in out.columns
+
+
+def test_read_stock_basic_legacy_without_delisted(tmp_path, monkeypatch):
+    """旧 schema（无 delisted 列）读取时补齐 False"""
+    monkeypatch.setattr(store.config, "DATA_DIR", tmp_path)
+    store.write_stock_basic(pl.DataFrame({
+        "code": ["600000"], "name": ["浦发银行"], "st": [False],
+        "list_date": [None],
+    }), str(tmp_path))
+    out = store.read_stock_basic(str(tmp_path))
+    assert "delisted" in out.columns
+    assert out["delisted"].to_list() == [False]
+
+
+def test_search_bycodes_pick_exclude_st_and_delisted(pick_env):
+    """搜索/批量/条件选股均排除 ST 与退市股"""
+    # 给 pick_env 补充退市股：600036 之外再加一只在市 + 一只退市
+    store.write_stock_basic(pl.DataFrame({
+        "code": ["600000", "000001", "300139", "688146", "830799", "600036", "600999"],
+        "name": ["浦发银行", "平安银行", "晓程科技", "某科创", "某北交所", "招商银行", "退市老股"],
+        "st": [False, False, False, False, True, False, False],
+        "delisted": [False, False, False, False, False, False, True],
+        "list_date": ["2010-01-01"] * 7,
+    }), str(pick_env))
+
+    # 搜索：排除 ST 与退市
+    rows = stocks_api.search_stocks(keyword="", limit=100, _user="test")
+    codes = {r["code"] for r in rows}
+    assert "830799" not in codes, "ST 股不应出现在搜索结果"
+    assert "600999" not in codes, "退市股不应出现在搜索结果"
+    assert "600000" in codes
+
+    # 批量 by-codes：退市/ST 不应返回
+    rows = stocks_api.stocks_by_codes(codes="600000,830799,600999", _user="test")
+    assert [r["code"] for r in rows] == ["600000"]
+
+    # 条件选股：无条件排除退市（ST 按开关）
+    res = _pick({"filters": {"boards": ["bse"], "exclude_st": False}})
+    assert "600999" not in res["codes"], "退市股无条件排除"
+    res = _pick({"filters": {"boards": ["bse"], "exclude_st": False}})
+    assert res["codes"] == ["830799"], "ST 开关关时 ST 可入选、退市不可"

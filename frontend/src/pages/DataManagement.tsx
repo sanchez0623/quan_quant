@@ -115,6 +115,17 @@ export default function DataManagement() {
     }
   }
 
+  /** 更新股票列表（ST/退市标记）：baostock query_all_stock 拉当前在市集合 */
+  const onUpdateStockBasic = async () => {
+    try {
+      const res = await updateData('stock_basic')
+      setTask({ id: res.task_id, label: '股票列表更新' })
+      message.info('股票列表更新任务已提交（拉取全市场在市证券，秒级）')
+    } catch (err) {
+      message.error(errDetail(err, '提交更新失败'))
+    }
+  }
+
   const onDemo = () => {
     Modal.confirm({
       title: '确认生成演示数据？',
@@ -297,6 +308,47 @@ export default function DataManagement() {
               </div>
             </div>
           )}
+        </Space>
+      </Card>
+
+      <Card size="small" title="股票列表（ST / 退市标记）">
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Space size="large" wrap>
+            <Statistic
+              title="股票总数"
+              value={fmtInt(status?.stock_basic?.total)}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="ST 股"
+              value={fmtInt(status?.stock_basic?.st_count)}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="退市股"
+              value={fmtInt(status?.stock_basic?.delisted_count)}
+              valueStyle={{ fontSize: 16 }}
+            />
+            <Statistic
+              title="更新于"
+              value={status?.stock_basic?.updated_at ?? '未更新'}
+              valueStyle={{ fontSize: 16 }}
+            />
+          </Space>
+          <Space>
+            <Button
+              type="primary"
+              icon={<SyncOutlined />}
+              disabled={!!task}
+              loading={!!task}
+              onClick={onUpdateStockBasic}
+            >
+              更新股票列表
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              拉取 baostock 全市场在市证券（秒级），标记 ST 与退市股。搜索/选股时自动剔除。
+            </Typography.Text>
+          </Space>
         </Space>
       </Card>
 
