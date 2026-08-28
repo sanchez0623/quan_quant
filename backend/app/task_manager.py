@@ -34,12 +34,12 @@ def backtest_task(task_id: str, backtest_config: dict, db_path: str, data_dir: s
                    db_path=db_path)
 
 
-def optimize_task(task_id: str, backtest_config: dict, param_space: dict, n_trials: int,
-                  metric: str, db_path: str, data_dir: str, optuna_dir: str,
+def optimize_task(task_id: str, backtest_config: dict, groups: list, objective: dict,
+                  rounds: int, db_path: str, data_dir: str, optuna_dir: str,
                   reports_dir: str) -> None:
     from .optimizer import run_optimize
     summary = run_optimize(
-        task_id, backtest_config, param_space, n_trials, metric,
+        task_id, backtest_config, groups=groups, objective=objective, rounds=rounds,
         db_path=db_path, data_dir=data_dir, optuna_dir=optuna_dir,
         progress_cb=lambda p, m: db.update_progress(task_id, p, m, db_path))
     path = Path(reports_dir) / f"{task_id}.json"
@@ -49,7 +49,7 @@ def optimize_task(task_id: str, backtest_config: dict, param_space: dict, n_tria
                    payload={"report_path": str(path),
                             "best_value": summary.get("best_value"),
                             "best_params": summary.get("best_params"),
-                            "n_trials": n_trials},
+                            "n_trials": summary.get("n_trials")},
                    db_path=db_path)
 
 
@@ -85,9 +85,12 @@ def data_demo_task(task_id: str, stocks: Optional[list], days: int,
 
 
 def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str,
-                     codes: Optional[list[str]] = None) -> None:
+                     codes: Optional[list[str]] = None,
+                     start_date: str = "1990-01-01",
+                     end_date: str = "2099-12-31") -> None:
     from .data.updater import update_task
-    update_task(task_id, scope, codes=codes, db_path=db_path, data_dir=data_dir)
+    update_task(task_id, scope, codes=codes, db_path=db_path, data_dir=data_dir,
+                start_date=start_date, end_date=end_date)
 
 
 _TASK_FUNCS = {

@@ -81,6 +81,21 @@ CREATE TABLE IF NOT EXISTS backtest_templates(
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_templates_user ON backtest_templates(username, updated_at);
+CREATE TABLE IF NOT EXISTS experiments(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_config TEXT NOT NULL,
+  cells TEXT NOT NULL,
+  capitals TEXT NOT NULL,
+  sub_task_ids TEXT NOT NULL,
+  start_date TEXT,
+  end_date TEXT,
+  status TEXT DEFAULT 'running',
+  progress REAL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
 """
 
 
@@ -276,6 +291,13 @@ def finish_task(task_id: str, status: str, error: Optional[str] = None,
         c.execute(f"UPDATE tasks SET {','.join(cols)} WHERE id=?", (*fields.values(), task_id))
 
 
+def reset_task(task_id: str, db_path: Optional[str] = None) -> None:
+    """把任务重置为 pending 并清空进度/错误，用于断点续传重新提交"""
+    with conn(db_path) as c:
+        c.execute("UPDATE tasks SET status='pending', progress=0, message='', "
+                  "error=NULL, finished_at=NULL WHERE id=?", (task_id,))
+
+
 def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
     with conn(db_path) as c:
         row = c.execute(
@@ -437,3 +459,80 @@ def delete_template(template_id: int, username: str,
         cur = c.execute("DELETE FROM backtest_templates WHERE id=? AND username=?",
                         (template_id, username))
     return cur.rowcount > 0
+
+
+# ---------------- experiments（对比实验） ----------------
+
+def create_experiment(exp_id: str, name: str, base_config: dict, cells: list,
+                      capitals: list, sub_task_ids: list, start_date: str,
+                      end_date: str, db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO experiments(id,name,base_config,cells,capitals,sub_task_ids,"
+            "start_date,end_date,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (exp_id, name, json.dumps(base_config, ensure_ascii=False),
+             json.dumps(cells, ensure_ascii=False),
+             json.dumps(capitals, ensure_ascii=False),
+             json.dumps(sub_task_ids, ensure_ascii=False),
+             start_date, end_date, "running", _now()))
+
+
+def get_experiment(exp_id: str, db_path: Optional[str] = None) -> Optional[dict]:
+    with conn(db_path) as c:
+        row = c.execute(
+            "SELECT id,name,base_config,cells,capitals,sub_task_ids,start_date,end_date,"
+            "status,progress,error,created_at,finished_at FROM experiments WHERE id=?",
+            (exp_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        "experiment_id": row[0], "name": row[1],
+        "base_config": _jload(row[2]) or {}, "cells": _jload(row[3]) or [],
+        "capitals": _jload(row[4]) or [], "sub_task_ids": _jload(row[5]) or [],
+        "start_date": row[6], "end_date": row[7], "status": row[8],
+        "progress": row[9], "error": row[10], "created_at": row[11],
+        "finished_at": row[12],
+    }
+
+
+def list_experiments(db_path: Optional[str] = None) -> list[dict]:
+    with conn(db_path) as c:
+        rows = c.execute(
+            "SELECT id,name,cells,capitals,sub_task_ids,status,progress,error,created_at,"
+            "finished_at FROM experiments ORDER BY created_at DESC, rowid DESC").fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "experiment_id": r[0], "name": r[1], "cells": _jload(r[2]) or [],
+            "capitals": _jload(r[3]) or [], "sub_task_ids": _jload(r[4]) or [],
+            "status": r[5], "progress": r[6], "error": r[7], "created_at": r[8],
+            "finished_at": r[9],
+        })
+    return out
+
+
+def update_experiment(exp_id: str, db_path: Optional[str] = None, **fields: Any) -> None:
+    if not fields:
+        return
+    cols, vals = [], []
+    for k, v in fields.items():
+        cols.append(f"{k}=?")
+        vals.append(v)
+    vals.append(exp_id)
+    with conn(db_path) as c:
+        c.execute(f"UPDATE experiments SET {','.join(cols)} WHERE id=?", vals)
+
+
+def delete_experiment(exp_id: str, db_path: Optional[str] = None) -> bool:
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
+    return cur.rowcount > 0
+
+
+def _jload(s: Optional[str]) -> Any:
+    if not s:
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return None

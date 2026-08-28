@@ -21,7 +21,7 @@ export interface LoginResponse {
 export interface ParamSchema {
   key: string
   label: string
-  type: 'int' | 'float' | 'str' | 'bool' | 'select'
+  type: 'int' | 'float' | 'str' | 'bool' | 'select' | 'categorical'
   default?: ParamValue
   min?: number
   max?: number
@@ -281,15 +281,33 @@ export interface ParamSpaceItem {
   type: 'int' | 'float' | 'select'
   low?: number
   high?: number
+  step?: number
   choices?: string[]
+}
+
+export interface OptimizeGroupInput {
+  name: string
+  n_trials: number
+  params: Record<string, ParamSpaceItem>
+}
+
+export interface OptimizeObjectiveInput {
+  metric: OptimizeMetric
+  n_windows: number
+  variance_penalty: number
+  dd_floor?: number | null
 }
 
 export interface OptimizeCreateRequest {
   name: string
   backtest_config: BacktestCreateRequest
-  param_space: Record<string, ParamSpaceItem>
-  n_trials: number
-  metric: OptimizeMetric
+  param_space?: Record<string, ParamSpaceItem>
+  n_trials?: number
+  metric?: OptimizeMetric
+  /** 方案A：分组坐标轮换（提供时忽略 param_space 平铺搜索） */
+  groups?: OptimizeGroupInput[]
+  objective?: OptimizeObjectiveInput
+  rounds?: number
 }
 
 export interface OptimizeListItem {
@@ -309,6 +327,9 @@ export interface TrialItem {
   state: string
   in_sample_value?: number | null
   out_sample_value?: number | null
+  /** 方案A：分组坐标轮换时标记所属组/轮 */
+  group?: string
+  round?: number
 }
 
 export interface OosMetrics {
@@ -321,6 +342,32 @@ export interface OosValidation {
   in_sample: OosMetrics
   out_sample: OosMetrics
   overfit_risk: 'high' | 'medium' | 'low'
+}
+
+export interface RobustnessCheck {
+  verdict: 'robust' | 'fragile' | 'unknown'
+  reason?: string | null
+  skipped?: string | null
+  avg_annual_return_cross_pool?: number | null
+  avg_sharpe_cross_pool?: number | null
+  avg_annual_return_cross_period?: number | null
+  cross_pool?: Array<{
+    name: string
+    universe: string[]
+    annual_return?: number | null
+    total_return?: number | null
+    max_drawdown?: number | null
+    sharpe?: number | null
+    skipped?: string | null
+  }>
+  cross_period?: Array<{
+    label: string
+    annual_return?: number | null
+    total_return?: number | null
+    max_drawdown?: number | null
+    sharpe?: number | null
+    skipped?: string | null
+  }>
 }
 
 export interface OptimizeDetail {
@@ -336,9 +383,110 @@ export interface OptimizeDetail {
   trials: TrialItem[]
   param_importance?: Record<string, number> | null
   oos_validation?: OosValidation | null
+  /** P0 护栏：跨池/跨时段稳健性验证 */
+  robustness?: RobustnessCheck | null
   /** 契约未显式列出，但“用最优参数重跑回测”需要，后端若返回则使用 */
   backtest_config?: BacktestCreateRequest | null
   error?: string | null
+  // ---- 方案A 分组坐标轮换 ----
+  groups_schedule?: Array<{ name: string; n_trials: number; params: Record<string, ParamSpaceItem> }> | null
+  objective?: {
+    metric: string
+    n_windows: number
+    variance_penalty: number
+    dd_floor?: number | null
+  } | null
+  rounds_history?: Array<{
+    round: number
+    best_value: number
+    improved: boolean
+    groups: Record<string, number>
+  }> | null
+  per_group_best?: Array<{
+    group: string
+    round: number
+    n_trials: number
+    best_value: number
+    params: Record<string, ParamValue>
+  }> | null
+}
+
+// ---- 对比实验（TREN_T_COMPARISON） ----
+export type ExperimentCell = 'A' | 'B' | 'C' | 'D' | 'E'
+
+export interface ExperimentCreateRequest {
+  name: string
+  base_config: BacktestCreateRequest
+  cells: ExperimentCell[]
+  capitals: number[]
+  start_date: string
+  end_date: string
+  /** 附带 E 格（纯日线 15 年参考，默认关） */
+  with_e?: boolean
+}
+
+export interface ExperimentMatrixItem {
+  task_id: string
+  cell: ExperimentCell
+  capital: number
+  status: TaskStatus
+  progress: number
+  message?: string | null
+  error?: string | null
+  metrics?: Record<string, number> | null
+}
+
+export interface ExperimentCellAttribution {
+  cells?: Record<string, Record<string, number>>
+  t_margin_ac?: number | null
+  t_margin_bd?: number | null
+  clock_ab?: number | null
+  clock_cd?: number | null
+  interaction?: number | null
+  t_consistent?: boolean | null
+  clock_consistent?: boolean | null
+  /** 各指标（sharpe/回撤/t_pnl/手续费等）的 2×2 差值分解 */
+  metrics?: Record<string, {
+    t_margin_ac?: number | null
+    t_margin_bd?: number | null
+    clock_ab?: number | null
+    clock_cd?: number | null
+    interaction?: number | null
+  }>
+}
+
+export interface ExperimentDetail {
+  experiment_id: string
+  name: string
+  status: TaskStatus
+  progress: number
+  error?: string | null
+  created_at: string
+  finished_at?: string | null
+  base_config?: BacktestCreateRequest | null
+  cells: ExperimentCell[]
+  capitals: number[]
+  start_date?: string | null
+  end_date?: string | null
+  sub_task_ids: string[]
+  matrix: ExperimentMatrixItem[]
+  attribution: {
+    per_capital: Record<string, ExperimentCellAttribution>
+    decision: string
+  }
+}
+
+export interface ExperimentListItem {
+  experiment_id: string
+  name: string
+  cells: ExperimentCell[]
+  capitals: number[]
+  status: TaskStatus
+  progress: number
+  error?: string | null
+  created_at: string
+  finished_at?: string | null
+  sub_count: number
 }
 
 // ---- AI 分析 ----

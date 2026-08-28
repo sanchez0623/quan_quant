@@ -6,8 +6,12 @@ import type {
   BacktestCreateRequest,
   BacktestListItem,
   BacktestReport,
+  BacktestTemplateItem,
   DataDemoRequest,
   DataStatus,
+  ExperimentCreateRequest,
+  ExperimentDetail,
+  ExperimentListItem,
   KeyCreateRequest,
   KeyTestResult,
   KeyUpdateRequest,
@@ -23,7 +27,6 @@ import type {
   TaskCreateResponse,
   TaskStatusResponse,
   TemplateCreateRequest,
-  BacktestTemplateItem,
   UserCreateRequest,
   UserItem
 } from './types'
@@ -151,6 +154,35 @@ export async function getOptimizeDetail(taskId: string): Promise<OptimizeDetail>
   return res.data
 }
 
+/** 断点续传：同一 task_id 重提，Optuna 载入既有 trial 续跑 */
+export async function resumeOptimize(taskId: string): Promise<TaskCreateResponse> {
+  const res = await api.post<TaskCreateResponse>(`/optimize/${taskId}/resume`)
+  return res.data
+}
+
+// ---- 对比实验 ----
+export async function createExperiment(
+  data: ExperimentCreateRequest
+): Promise<{ experiment_id: string; sub_task_ids: string[]; status: string }> {
+  const res = await api.post('/experiments', data)
+  return res.data
+}
+
+export async function getExperimentList(): Promise<ExperimentListItem[]> {
+  const res = await api.get<ExperimentListItem[]>('/experiments')
+  return res.data
+}
+
+export async function getExperimentDetail(expId: string): Promise<ExperimentDetail> {
+  const res = await api.get<ExperimentDetail>(`/experiments/${expId}`)
+  return res.data
+}
+
+export async function deleteExperiment(expId: string): Promise<{ ok: boolean }> {
+  const res = await api.delete(`/experiments/${expId}`)
+  return res.data
+}
+
 // ---- AI 分析 ----
 export async function getAiProfiles(): Promise<AiProfilesResponse> {
   const res = await api.get<AiProfilesResponse>('/ai/profiles')
@@ -227,9 +259,15 @@ export async function getDataStatus(): Promise<DataStatus> {
 
 export async function updateData(
   scope: 'daily' | 'minute5' | 'all',
-  stocks?: string[]
+  stocks?: string[],
+  dateRange?: { startDate?: string; endDate?: string }
 ): Promise<TaskCreateResponse> {
-  const res = await api.post<TaskCreateResponse>('/data/update', { scope, stocks })
+  const res = await api.post<TaskCreateResponse>('/data/update', {
+    scope,
+    stocks,
+    start_date: dateRange?.startDate ?? null,
+    end_date: dateRange?.endDate ?? null
+  })
   return res.data
 }
 

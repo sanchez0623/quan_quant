@@ -8,6 +8,7 @@ import {
   Descriptions,
   Empty,
   message,
+  Popconfirm,
   Progress,
   Row,
   Space,
@@ -16,9 +17,14 @@ import {
   Tag,
   Typography
 } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, RedoOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { createBacktest, errDetail, getOptimizeDetail } from '../api/client'
+import {
+  createBacktest,
+  errDetail,
+  getOptimizeDetail,
+  resumeOptimize
+} from '../api/client'
 import type { OptimizeDetail, TrialItem } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import TaskStatusTag from '../components/TaskStatusTag'
@@ -50,12 +56,34 @@ const TRIAL_STATE: Record<string, { color: string; text: string }> = {
 const RISK_COLOR: Record<string, string> = { high: 'red', medium: 'gold', low: 'green' }
 const RISK_TEXT: Record<string, string> = { high: '高', medium: '中', low: '低' }
 
+const ROBUST_COLOR: Record<string, string> = { robust: 'green', fragile: 'red', unknown: 'default' }
+const ROBUST_TEXT: Record<string, string> = {
+  robust: '稳健（跨池/换时段均达标）',
+  fragile: '不稳健（依赖特定股票池/时段）',
+  unknown: '无法判定（数据不足）'
+}
+
 export default function OptimizeDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [detail, setDetail] = useState<OptimizeDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [rerunning, setRerunning] = useState(false)
+  const [resuming, setResuming] = useState(false)
+
+  const doResume = async () => {
+    if (!id) return
+    setResuming(true)
+    try {
+      await resumeOptimize(id)
+      message.success('已重新提交续跑，Optuna 将载入已有 trial 继续')
+      load()
+    } catch (err) {
+      message.error(errDetail(err, '续跑失败'))
+    } finally {
+      setResuming(false)
+    }
+  }
 
   const load = useCallback(async () => {
     if (!id) return
@@ -111,6 +139,11 @@ export default function OptimizeDetail() {
 
   const trialColumns: ColumnsType<TrialItem> = [
     { title: '#', dataIndex: 'number', width: 60 },
+    {
+      title: '组 / 轮',
+      width: 110,
+      render: (_, r) => (r.group ? `${r.group} · R${r.round}` : '-')
+    },
     {
       title: '参数',
       dataIndex: 'params',
@@ -206,6 +239,18 @@ export default function OptimizeDetail() {
           <Typography.Text type="secondary">
             指标：{METRIC_LABEL[detail.metric] ?? detail.metric} · 试验数 {detail.n_trials}
           </Typography.Text>
+          {detail.status !== 'success' && (
+            <Popconfirm
+              title="确认断点续传？"
+              description="用同一任务ID重新提交，Optuna 载入已有 trial，只补跑剩余部分。"
+              onConfirm={doResume}
+              disabled={resuming}
+            >
+              <Button icon={<RedoOutlined />} loading={resuming} type="primary" danger>
+                断点续传
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
         {active && (
           <div style={{ marginTop: 16 }}>
@@ -285,6 +330,221 @@ export default function OptimizeDetail() {
               </Card>
             </Col>
           </Row>
+
+          {detail.robustness && (
+            <Card
+              size="small"
+              title="稳健性验证（跨池 / 换时段）"
+              extra={
+                <Tag color={ROBUST_COLOR[detail.robustness.verdict] ?? 'default'}>
+                  {ROBUST_TEXT[detail.robustness.verdict] ?? detail.robustness.verdict}
+                </Tag>
+              }
+            >
+              {detail.robustness.reason && (
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+                  {detail.robustness.reason}
+                </Typography.Paragraph>
+              )}
+              {(detail.robustness.cross_pool ?? []).length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  style={{ marginBottom: 16 }}
+                  rowKey={(r) => r.name}
+                  dataSource={(detail.robustness.cross_pool ?? []).map((r, i) => ({ key: i, ...r }))}
+                  columns={[
+                    { title: '换池样本', dataIndex: 'name' },
+                    {
+                      title: '池规模',
+                      width: 80,
+                      render: (_, r) => r.universe?.length ?? '-'
+                    },
+                    {
+                      title: '年化',
+                      dataIndex: 'annual_return',
+                      width: 110,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '总收益',
+                      dataIndex: 'total_return',
+                      width: 100,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '回撤',
+                      dataIndex: 'max_drawdown',
+                      width: 100,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '夏普',
+                      dataIndex: 'sharpe',
+                      width: 90,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtNum(v, 2))
+                    },
+                    {
+                      title: '说明',
+                      dataIndex: 'skipped',
+                      width: 120,
+                      render: (v: string | null | undefined) => (v ? <Tag>{v}</Tag> : '')
+                    }
+                  ]}
+                  title={() => '换池（同窗口 · 另选创业板/科创板）'}
+                />
+              )}
+              {(detail.robustness.cross_period ?? []).length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  dataSource={(detail.robustness.cross_period ?? []).map((r, i) => ({ key: i, ...r }))}
+                  columns={[
+                    { title: '换时段样本', dataIndex: 'label' },
+                    {
+                      title: '年化',
+                      dataIndex: 'annual_return',
+                      width: 110,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '总收益',
+                      dataIndex: 'total_return',
+                      width: 100,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '回撤',
+                      dataIndex: 'max_drawdown',
+                      width: 100,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtPct(v))
+                    },
+                    {
+                      title: '夏普',
+                      dataIndex: 'sharpe',
+                      width: 90,
+                      align: 'right',
+                      render: (v: number | null | undefined) => (v == null ? '-' : fmtNum(v, 2))
+                    },
+                    {
+                      title: '说明',
+                      dataIndex: 'skipped',
+                      width: 120,
+                      render: (v: string | null | undefined) => (v ? <Tag>{v}</Tag> : '')
+                    }
+                  ]}
+                  title={() => '换时段（同池 · 最近两个完整年度）'}
+                />
+              )}
+            </Card>
+          )}
+
+          {detail.groups_schedule && detail.groups_schedule.length > 0 && (
+            <Card
+              size="small"
+              title="分组坐标轮换（方案A）"
+              extra={
+                detail.objective ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    目标 {METRIC_LABEL[detail.objective.metric] ?? detail.objective.metric} ·
+                    切窗 {detail.objective.n_windows} · λ {detail.objective.variance_penalty}
+                    {detail.objective.dd_floor != null
+                      ? ` · 回撤熔断 ${detail.objective.dd_floor}`
+                      : ''}
+                  </Typography.Text>
+                ) : null
+              }
+            >
+              <Table
+                size="small"
+                pagination={false}
+                style={{ marginBottom: 16 }}
+                dataSource={(detail.groups_schedule ?? []).map((g, i) => ({
+                  key: i,
+                  ...g,
+                  param_count: Object.keys(g.params ?? {}).length
+                }))}
+                columns={[
+                  { title: '组', dataIndex: 'name' },
+                  { title: '每轮试验数', dataIndex: 'n_trials', width: 110, align: 'right' },
+                  { title: '搜索参数数', dataIndex: 'param_count', width: 110, align: 'right' }
+                ]}
+                title={() => '分组计划'}
+              />
+              {detail.rounds_history && detail.rounds_history.length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  style={{ marginBottom: 16 }}
+                  dataSource={detail.rounds_history}
+                  columns={[
+                    { title: '轮次', dataIndex: 'round', width: 60 },
+                    {
+                      title: '最优目标值',
+                      dataIndex: 'best_value',
+                      width: 120,
+                      align: 'right',
+                      render: (v: number) => fmtNum(v, 4)
+                    },
+                    {
+                      title: '是否有提升',
+                      dataIndex: 'improved',
+                      width: 100,
+                      render: (v: boolean) => (v ? <Tag color="green">是</Tag> : <Tag>否</Tag>)
+                    },
+                    {
+                      title: '各组最优',
+                      render: (_, r) => (
+                        <Typography.Text style={{ fontSize: 12 }}>
+                          {Object.entries(r.groups ?? {})
+                            .map(([k, v]) => `${k}=${fmtNum(v, 4)}`)
+                            .join('  ')}
+                        </Typography.Text>
+                      )
+                    }
+                  ]}
+                  title={() => '轮次历史'}
+                />
+              )}
+              {detail.per_group_best && detail.per_group_best.length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  dataSource={detail.per_group_best}
+                  columns={[
+                    { title: '组', dataIndex: 'group' },
+                    { title: '轮次', dataIndex: 'round', width: 60 },
+                    { title: '试验数', dataIndex: 'n_trials', width: 80, align: 'right' },
+                    {
+                      title: '组内最优',
+                      dataIndex: 'best_value',
+                      width: 110,
+                      align: 'right',
+                      render: (v: number) => fmtNum(v, 4)
+                    },
+                    {
+                      title: '参数',
+                      dataIndex: 'params',
+                      ellipsis: true,
+                      render: (v: Record<string, string | number | boolean>) => (
+                        <Typography.Text code style={{ fontSize: 12 }}>
+                          {JSON.stringify(v)}
+                        </Typography.Text>
+                      )
+                    }
+                  ]}
+                  title={() => '各组最优参数'}
+                />
+              )}
+            </Card>
+          )}
 
           <Card size="small" title="参数重要性">
             <ImportanceBar data={detail.param_importance ?? {}} />
