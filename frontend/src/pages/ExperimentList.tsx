@@ -6,7 +6,6 @@ import {
   Card,
   Checkbox,
   Col,
-  DatePicker,
   Form,
   Input,
   InputNumber,
@@ -37,8 +36,7 @@ import type {
   Strategy
 } from '../api/types'
 import TaskStatusTag from '../components/TaskStatusTag'
-
-const { RangePicker } = DatePicker
+import BacktestRangePicker from '../components/BacktestRangePicker'
 
 /** 实验矩阵：cell -> (时钟, T开关) 与标签 */
 const CELLS: Array<{ value: ExperimentCell; label: string; desc: string }> = [
@@ -269,7 +267,7 @@ export default function ExperimentList() {
             </Col>
             <Col span={6}>
               <Form.Item name="range" label="回测区间">
-                <RangePicker style={{ width: '100%' }} />
+                <BacktestRangePicker />
               </Form.Item>
             </Col>
           </Row>

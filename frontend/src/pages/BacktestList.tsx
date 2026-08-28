@@ -5,7 +5,6 @@ import {
   Card,
   Col,
   Collapse,
-  DatePicker,
   Divider,
   Form,
   Input,
@@ -51,8 +50,7 @@ import type {
 import TaskStatusTag from '../components/TaskStatusTag'
 import ParamSchemaForm from '../components/ParamSchemaForm'
 import RiskConfigForm, { DEFAULT_RISK_CONFIG } from '../components/RiskConfigForm'
-
-const { RangePicker } = DatePicker
+import BacktestRangePicker from '../components/BacktestRangePicker'
 
 interface BacktestFormValues {
   name: string
@@ -594,22 +592,7 @@ export default function BacktestList() {
                 label="回测区间"
                 rules={[{ required: true, message: '请选择时间区间' }]}
               >
-                <RangePicker
-                  style={{ width: '100%' }}
-                  presets={[
-                    { label: '最近一季', value: [dayjs().subtract(3, 'month'), dayjs()] },
-                    { label: '最近半年', value: [dayjs().subtract(6, 'month'), dayjs()] },
-                    { label: '最近一年', value: [dayjs().subtract(1, 'year'), dayjs()] },
-                    { label: '今年', value: [dayjs().startOf('year'), dayjs()] },
-                    {
-                      label: '去年',
-                      value: [
-                        dayjs().subtract(1, 'year').startOf('year'),
-                        dayjs().subtract(1, 'year').endOf('year')
-                      ]
-                    }
-                  ]}
-                />
+                <BacktestRangePicker />
               </Form.Item>
             </Col>
             <Col span={6}>
