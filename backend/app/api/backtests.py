@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 
 
 class RiskConfigModel(BaseModel):
-    max_position_pct_per_stock: float = 30
+    max_position_pct_per_stock: float = 40
     max_total_position_pct: float = 100
     stop_loss_mode: str = "fixed"
     stop_loss_pct: float = 12.0

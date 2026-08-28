@@ -16,7 +16,7 @@ export const RISK_FIELDS: Array<{ key: string; label: string; hint: string }> = 
 ]
 
 export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
-  max_position_pct_per_stock: 100,
+  max_position_pct_per_stock: 40,
   max_total_position_pct: 100,
   max_holdings: 3,
   cash_reserve_pct: 1.5,

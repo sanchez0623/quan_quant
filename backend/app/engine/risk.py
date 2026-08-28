@@ -5,7 +5,7 @@
 class RiskConfig:
     def __init__(self, cfg: dict | None = None):
         cfg = cfg or {}
-        self.max_position_pct_per_stock = float(cfg.get("max_position_pct_per_stock", 30))
+        self.max_position_pct_per_stock = float(cfg.get("max_position_pct_per_stock", 40))
         self.max_total_position_pct = float(cfg.get("max_total_position_pct", 100))
         self.stop_loss_mode = cfg.get("stop_loss_mode", "fixed")  # fixed | atr | trailing
         self.stop_loss_pct = float(cfg.get("stop_loss_pct", 12.0))

@@ -59,7 +59,7 @@ class MomentumTStrategy(Strategy):
         # ---- 底仓（动态） ----
         {"key": "base_pct_min", "label": "试仓资金占比", "type": "float", "default": 10,
          "min": 5, "max": 40, "step": 1, "unit": "%"},
-        {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 70,
+        {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 50,
          "min": 30, "max": 90, "step": 1, "unit": "%"},
         # ---- 金字塔加仓 ----
         {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 4},
