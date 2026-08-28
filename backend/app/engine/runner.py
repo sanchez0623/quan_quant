@@ -39,6 +39,9 @@ DEFAULTS = {
     # 策略未传 t_ratio/reduce_pct 时的引擎兜底比例（%）：参数化，不再写死 1/3
     "t_ratio_fallback": 33.3333,
     "reduce_pct_fallback": 33.3333,
+    # 止损成交口径：next_open = bar收盘判定、次bar开盘成交（诚实化，缺5分钟缺口）；
+    # close = 旧口径，同bar收盘判定+同bar收盘成交（仅用于泄漏量对照）
+    "stop_fill": "next_open",
 }
 
 
@@ -80,8 +83,10 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
     risk_cfg_dict = dict(cfg.get("risk_config") or {})
     if "stop_loss_pct" in params and "stop_loss_pct" not in risk_cfg_dict:
         risk_cfg_dict["stop_loss_pct"] = params["stop_loss_pct"]
-    # 日内交易次数默认对齐策略 max_t_times（未显式配置时），避免引擎兜底值 4 与策略上限脱节
-    if not risk_cfg_dict.get("max_intraday_trades") and "max_t_times" in params:
+    # 日内交易次数默认对齐策略 max_t_times（未显式配置时），避免引擎兜底值 4 与策略上限脱节；
+    # max_t_times=0（关闭做T）时不对齐，保留风控默认值，避免误拦趋势交易
+    if (not risk_cfg_dict.get("max_intraday_trades")
+            and params.get("max_t_times", 0) and int(params["max_t_times"]) > 0):
         risk_cfg_dict["max_intraday_trades"] = int(params["max_t_times"])
     risk_cfg = RiskConfig(risk_cfg_dict)
 
@@ -176,6 +181,8 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     snapshots: list[dict] = []
     price_map: dict[str, float] = {}
     pending: dict[str, dict] = {}      # code -> 下一bar执行的单
+    pending_stops: dict[str, list] = {}  # code -> 待执行的止损/止盈单（next_open，一字跌停顺延）
+    stop_fill = str(cfg.get("stop_fill") or "next_open")
     t_state: dict[str, dict] = {}      # code -> 做T债务 {sold, bought, sell_amt, buy_amt}（跨日保留直至还清/清仓作废）
     adds_count: dict[str, int] = {}    # code -> 当前持仓期内加仓次数
     max_adds = int(params.get("max_adds") or 0)
@@ -404,7 +411,9 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                              order.get("reason", "卖出信号"), bar["open"])
 
     def check_stops(code, bar):
-        """止损/止盈/移动止损：本bar收盘判定、收盘价成交（受跌停约束）"""
+        """止损/止盈/移动止损：本bar收盘判定。
+        next_open 口径：判定后写入 pending_stops，次bar开盘成交（一字跌停顺延）；
+        close 口径（旧）：同bar收盘判定、同bar收盘成交，仅用于泄漏量对照。"""
         day = bar["date"][:10]
         for pos in list(portfolio.positions_of(code)):
             if not (pos.sellable_date and day >= pos.sellable_date):
@@ -415,7 +424,31 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             if hit:
                 action, reason = hit
                 ttype = "止损" if action == "stop_loss" else "止盈"
-                execute_sell(code, bar, pos.volume, ttype, reason, bar["close"])
+                if stop_fill == "next_open":
+                    pending_stops.setdefault(code, []).append(
+                        {"code": code, "pos": pos, "volume": pos.volume,
+                         "ttype": ttype, "reason": reason})
+                else:
+                    execute_sell(code, bar, pos.volume, ttype, reason, bar["close"])
+
+    def execute_pending_stops(code, bar):
+        """执行上一bar挂起的止损单（本bar开盘成交，优先级高于策略信号）。
+        一字跌停无法成交 -> 顺延到下一bar；仓位已被其它单清掉 -> 作废。"""
+        queued = pending_stops.get(code)
+        if not queued:
+            return
+        kept = []
+        for o in queued:
+            if not any(o["pos"] is p for p in portfolio.positions):
+                continue  # 该仓位已平（策略/其它止损），作废
+            sold, _ = execute_sell(code, bar, o["volume"], o["ttype"], o["reason"],
+                                   bar["open"])
+            if sold <= 0:
+                kept.append(o)  # 一字跌停未成交 -> 顺延
+        if kept:
+            pending_stops[code] = kept
+        else:
+            pending_stops.pop(code, None)
 
     def drawdown_now(adj_equity: float) -> float:
         peak = max([p["adjusted_equity"] for p in equity_curve], default=adj_equity)
@@ -489,10 +522,12 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             if in_warmup:
                 continue
 
+            # 0) 执行上一bar挂起的止损（本bar开盘成交；一字跌停顺延至下一bar）
+            execute_pending_stops(code, bar)
             # 1) 执行上一bar信号（本bar开盘价成交，避免未来函数）
             if code in pending:
                 execute_order(pending.pop(code), code, bar)
-            # 2) 风控：止损/止盈/移动止损（本bar收盘判定）
+            # 2) 风控：止损/止盈/移动止损（本bar收盘判定 -> next_open 挂起次bar成交）
             check_stops(code, bar)
             # 3) 生成本bar信号 -> 下一bar执行
             sig = bar.get("signal") or 0

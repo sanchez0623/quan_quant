@@ -1,5 +1,6 @@
 import { Layout, Dropdown, Avatar, Menu, MenuProps, Space } from 'antd'
 import {
+  ApartmentOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   KeyOutlined,
@@ -23,6 +24,7 @@ export default function MainLayout() {
   const menuItems: MenuProps['items'] = [
     { key: '/backtests', icon: <LineChartOutlined />, label: '回测中心' },
     { key: '/optimize', icon: <ExperimentOutlined />, label: '参数寻优' },
+    { key: '/experiments', icon: <ApartmentOutlined />, label: '对比实验' },
     { key: '/ai', icon: <RobotOutlined />, label: 'AI 分析' },
     { key: '/data', icon: <DatabaseOutlined />, label: '数据管理' },
     { key: '/keys', icon: <KeyOutlined />, label: 'Key 管理' },

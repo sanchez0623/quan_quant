@@ -7,6 +7,8 @@ import BacktestList from './pages/BacktestList'
 import BacktestResult from './pages/BacktestResult'
 import OptimizeList from './pages/OptimizeList'
 import OptimizeDetail from './pages/OptimizeDetail'
+import ExperimentList from './pages/ExperimentList'
+import ExperimentResult from './pages/ExperimentResult'
 import AiAnalysis from './pages/AiAnalysis'
 import DataManagement from './pages/DataManagement'
 import KeyManagement from './pages/KeyManagement'
@@ -47,6 +49,8 @@ export default function App() {
           <Route path="backtests/:id" element={<BacktestResult />} />
           <Route path="optimize" element={<OptimizeList />} />
           <Route path="optimize/:id" element={<OptimizeDetail />} />
+          <Route path="experiments" element={<ExperimentList />} />
+          <Route path="experiments/:id" element={<ExperimentResult />} />
           <Route path="ai" element={<AiAnalysis />} />
           <Route path="data" element={<DataManagement />} />
           <Route path="keys" element={<KeyManagement />} />

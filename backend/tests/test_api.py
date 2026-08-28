@@ -210,6 +210,79 @@ def test_report_before_finish(client, token):
     assert any(t["task_id"] == opt_id for t in r.json())
 
 
+def test_optimize_budget_guard(client, token):
+    """方案A 预算护栏：Σ(组trials×轮次) 超 2000 -> 400"""
+    r = client.post("/api/optimize", headers=H(token), json={
+        "name": "超预算", "backtest_config": {
+            "strategy_id": "ma_cross", "universe": ["600000", "000001", "600036"],
+            "start_date": "2024-01-01", "end_date": "2030-12-31",
+            "period": "daily", "params": {"fast": 5, "slow": 10}},
+        "groups": [{"name": "g", "n_trials": 1000,
+                    "params": {"fast": {"type": "int", "low": 3, "high": 8}}}],
+        "rounds": 10})
+    assert r.status_code == 400, r.text
+    assert "2000" in r.json()["detail"]
+
+
+def test_optimize_grouped_flow(client, token):
+    """方案A 分组坐标轮换端到端（API）：summary 含 objective/groups_schedule/rounds_history"""
+    r = client.post("/api/optimize", headers=H(token), json={
+        "name": "分组寻优冒烟", "backtest_config": {
+            "strategy_id": "ma_cross", "universe": ["600000", "000001", "600036"],
+            "start_date": "2024-01-01", "end_date": "2030-12-31",
+            "period": "daily", "params": {"fast": 5, "slow": 10}},
+        "groups": [
+            {"name": "快线", "n_trials": 3,
+             "params": {"fast": {"type": "int", "low": 3, "high": 8}}},
+            {"name": "慢线", "n_trials": 3,
+             "params": {"slow": {"type": "int", "low": 12, "high": 30}}},
+        ],
+        "objective": {"metric": "calmar", "n_windows": 3,
+                      "variance_penalty": 0.5, "dd_floor": -0.4},
+        "rounds": 2})
+    assert r.status_code == 200, r.text
+    opt_id = r.json()["task_id"]
+    st = _wait_task(client, opt_id, timeout=600, token=token)
+    assert st["status"] == "success", st
+    d = client.get(f"/api/optimize/{opt_id}", headers=H(token)).json()
+    assert d["objective"] and d["objective"]["metric"] == "calmar"
+    assert len(d["groups_schedule"]) == 2
+    assert d["rounds_history"] and d["rounds_history"][0]["round"] == 1
+    assert d["per_group_best"] and "fast" in d["best_params"]
+
+
+def test_optimize_resume(client, token):
+    """断点续传：resume 用同一 task_id 续跑，trial 数不翻倍"""
+    r = client.post("/api/optimize", headers=H(token), json={
+        "name": "续传冒烟", "backtest_config": {
+            "strategy_id": "ma_cross", "universe": ["600000", "000001", "600036"],
+            "start_date": "2024-01-01", "end_date": "2030-12-31",
+            "period": "daily", "params": {"fast": 5, "slow": 10}},
+        "groups": [
+            {"name": "快线", "n_trials": 2,
+             "params": {"fast": {"type": "int", "low": 3, "high": 8}}},
+            {"name": "慢线", "n_trials": 2,
+             "params": {"slow": {"type": "int", "low": 12, "high": 30}}},
+        ],
+        "objective": {"metric": "calmar", "n_windows": 3,
+                      "variance_penalty": 0.5, "dd_floor": -0.4},
+        "rounds": 1})
+    assert r.status_code == 200, r.text
+    opt_id = r.json()["task_id"]
+    st = _wait_task(client, opt_id, timeout=600, token=token)
+    assert st["status"] == "success", st
+    n1 = len(client.get(f"/api/optimize/{opt_id}", headers=H(token)).json()["trials"])
+    assert n1 == 4
+
+    r = client.post(f"/api/optimize/{opt_id}/resume", headers=H(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "pending"
+    st = _wait_task(client, opt_id, timeout=600, token=token)
+    assert st["status"] == "success", st
+    n2 = len(client.get(f"/api/optimize/{opt_id}", headers=H(token)).json()["trials"])
+    assert n2 == n1, "续传不应重复执行已完成 trial"
+
+
 # ---------------- AI 分析（无 key 环境） ----------------
 
 def test_ai_no_key_fails_with_friendly_error(client, token):
@@ -261,3 +334,86 @@ def test_data_update_no_source_friendly_error(monkeypatch):
         st = _wait_task(client, task_id, token=token)
         assert st["status"] == "failed"
         assert "demo" in (st["error"] or "") or "数据源" in (st["error"] or "")
+
+
+# ---------------- 对比实验（experiments） ----------------
+
+def test_experiment_attribution_logic():
+    """归因分解：T边际(A−C/B−D) + 时钟效应(A−B/C−D) + 交互 + 决策规则"""
+    from app.api.experiments import _attribution_for, _decision
+    m = {"A": {"total_return": 0.30}, "B": {"total_return": 0.25},
+         "C": {"total_return": 0.05}, "D": {"total_return": 0.02}}
+    a = _attribution_for(m)
+    assert a["t_margin_ac"] == pytest.approx(0.25)
+    assert a["t_margin_bd"] == pytest.approx(0.23)
+    assert a["clock_ab"] == pytest.approx(0.05)
+    assert a["clock_cd"] == pytest.approx(0.03)
+    assert a["interaction"] == pytest.approx(0.02)
+    assert a["t_consistent"] is True
+    # 多指标差值分解
+    assert "metrics" in a and "sharpe" in a["metrics"]
+    assert a["metrics"]["sharpe"]["t_margin_ac"] is not None or a["metrics"]["sharpe"]["t_margin_ac"] is None
+    dec = _decision({"400000": a})
+    assert "T层有真实增强" in dec
+
+    # T 为负 → 建议砍 T
+    m2 = {"A": {"total_return": 0.05}, "B": {"total_return": 0.06},
+          "C": {"total_return": 0.10}, "D": {"total_return": 0.11}}
+    a2 = _attribution_for(m2)
+    assert a2["t_margin_ac"] < 0 and a2["t_margin_bd"] < 0
+    assert "砍掉做T层" in _decision({"400000": a2})
+
+    # 两列 T 估计方向不一致 → 交互强
+    m3 = {"A": {"total_return": 0.10}, "B": {"total_return": 0.02},
+          "C": {"total_return": 0.05}, "D": {"total_return": 0.08}}
+    a3 = _attribution_for(m3)
+    assert a3["t_consistent"] is False
+    assert "交互显著" in _decision({"400000": a3})
+
+
+def test_experiment_flow(client, token):
+    """创建 2格×1资金档 实验 -> 子任务完成 -> 详情含矩阵与归因 -> 删除"""
+    r = client.post("/api/experiments", headers=H(token), json={
+        "name": "实验冒烟",
+        "base_config": {
+            "strategy_id": "momentum_t",
+            "universe": ["600000", "000001", "600036"],
+            "period": "minute5",
+            "params": {"top_n": 2, "max_t_times": 4},
+            "risk_config": {"max_holdings": 2, "max_position_pct_per_stock": 40,
+                            "stop_loss_mode": "none"}},
+        "cells": ["A", "B"],
+        "capitals": [400000],
+        "start_date": "2024-01-01", "end_date": "2030-12-31",
+        "with_e": True})
+    assert r.status_code == 200, r.text
+    exp_id = r.json()["experiment_id"]
+    sub_ids = r.json()["sub_task_ids"]
+    assert exp_id.startswith("exp_") and len(sub_ids) == 3  # A + B + E（纯日线15年参考）
+    for tid in sub_ids:
+        st = _wait_task(client, tid, timeout=300, token=token)
+        assert st["status"] == "success", st
+    r = client.get(f"/api/experiments/{exp_id}", headers=H(token))
+    assert r.status_code == 200
+    detail = r.json()
+    assert detail["status"] == "success"
+    assert detail["progress"] == 100
+    assert "per_capital" in detail["attribution"] and "decision" in detail["attribution"]
+    assert "400000" in detail["attribution"]["per_capital"]
+    pc = detail["attribution"]["per_capital"]["400000"]
+    assert "t_margin_ac" in pc and "t_margin_bd" in pc
+    # E 格进矩阵（reference），差值分解只按 A-D 计算、不受 E 影响
+    assert any(m["cell"] == "E" for m in detail["matrix"])
+    assert len(detail["matrix"]) == 3
+    # 非法 cells
+    r = client.post("/api/experiments", headers=H(token), json={
+        "name": "x", "base_config": {"strategy_id": "momentum_t",
+                                     "universe": ["600000"], "period": "minute5"},
+        "cells": ["Z"], "capitals": [400000],
+        "start_date": "2024-01-01", "end_date": "2025-01-01"})
+    assert r.status_code == 400
+    # 列表 + 删除
+    r = client.get("/api/experiments", headers=H(token))
+    assert any(e["experiment_id"] == exp_id for e in r.json())
+    r = client.delete(f"/api/experiments/{exp_id}", headers=H(token))
+    assert r.status_code == 200

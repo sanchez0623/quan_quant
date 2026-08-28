@@ -102,6 +102,216 @@ def test_t_plus_1_sellable_date_blocks_sale(demo_env):
         assert (t.get("open_time") or "")[:10] != t["time"][:10]
 
 
+# ---------------- P0-3：止损 next_open 口径 ----------------
+
+def _write_stop_series(tmp_path, up_days=20, up_ret=0.01, tail_days=12, tail_ret=0.005,
+                       crash_day=None, crash_bar=47, crash_pct=0.20,
+                       limit_down_day=None):
+    """构造确定性分钟序列（600000）：
+    - 前段 up_days 天上涨 -> 触发 ma_cross 买入；
+    - 可选 crash_day 的 crash_bar 单根暴跌 crash_pct（触发止损）；
+    - 可选 limit_down_day 全天然一字跌停（-10%，测试顺延）；
+    - 尾段 tail_days 天 normal。
+    返回 (start, end, dates)"""
+    import numpy as np  # noqa: F401
+    n = up_days + tail_days
+    if limit_down_day is not None and limit_down_day >= n:
+        n = limit_down_day + 1 + 3
+    dates = synthetic.trade_dates(n)
+    rows = []
+    prev = 10.0
+    rng = np.random.default_rng(7)
+    for di, d in enumerate(dates):
+        if limit_down_day is not None and di == limit_down_day:
+            c = round(prev * 0.90, 2)
+            for hhmm in synthetic.BAR_TIMES:
+                rows.append({"code": "600000", "date": f"{d} {hhmm}",
+                             "open": c, "high": c, "low": c, "close": c,
+                             "volume": 100_000, "amount": round(c * 100_000, 2)})
+            prev = c
+            continue
+        for k, hhmm in enumerate(synthetic.BAR_TIMES):
+            if crash_day is not None and di == crash_day and k == crash_bar:
+                c = round(prev * (1 - crash_pct), 4)
+            elif di < up_days:
+                # 上涨段加噪声，保证 ma_cross 出现上穿交叉（否则单调序列无交叉不买入）
+                c = round(prev * (1 + up_ret / 48 + float(rng.normal(0, 0.0005))), 4)
+            else:
+                c = round(prev * (1 + tail_ret / 48), 4)
+            o = prev
+            rows.append({"code": "600000", "date": f"{d} {hhmm}",
+                         "open": round(o, 4), "high": round(max(o, c) * 1.0005, 4),
+                         "low": round(min(o, c) * 0.9995, 4), "close": c,
+                         "volume": 100_000, "amount": round(c * 100_000, 2)})
+            prev = c
+    mdf = pl.DataFrame(rows)
+    ddf = (mdf.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
+           .group_by("day").agg(
+               pl.col("open").first().alias("open"),
+               pl.col("high").max().alias("high"),
+               pl.col("low").min().alias("low"),
+               pl.col("close").last().alias("close"),
+               pl.col("volume").sum().alias("volume"),
+               pl.col("amount").sum().alias("amount"),
+               pl.lit("600000").alias("code"))
+           .with_columns(pl.col("day").alias("date")).drop("day")
+           .select(["code", "date", "open", "high", "low", "close", "volume", "amount"]))
+    store.write_minute5("600000", mdf, str(tmp_path))
+    store.write_daily(ddf, str(tmp_path))
+    dates_all = sorted(ddf["date"].to_list())
+    store.write_calendar(pl.DataFrame({"date": dates_all, "is_open": [1] * len(dates_all)}),
+                         str(tmp_path))
+    store.write_adj_factor(pl.DataFrame({
+        "code": ["600000"] * len(rows), "date": mdf["date"].to_list(),
+        "adj_factor": [1.0] * len(rows)}), str(tmp_path))
+    store.write_stock_basic(pl.DataFrame({
+        "code": ["600000"], "name": ["止损序列600000"], "st": [False],
+        "list_date": ["20100101"]}), str(tmp_path))
+    return dates_all[0], dates_all[-1], dates_all
+
+
+def _ma_stop_cfg(start, end, stop_pct=5.0):
+    return {
+        "name": "stop-next-open", "strategy_id": "ma_cross",
+        "params": {"fast": 5, "slow": 40, "max_adds": 0},
+        "risk_config": {"max_position_pct_per_stock": 100, "max_total_position_pct": 100,
+                        "stop_loss_mode": "fixed", "stop_loss_pct": stop_pct,
+                        "take_profit_pct": 0, "trailing_stop_pct": 0,
+                        "max_drawdown_breaker": 100, "max_intraday_trades": 8},
+        "universe": ["600000"], "start_date": start, "end_date": end,
+        "period": "minute5", "initial_capital": 400_000,
+        "slippage_pct": 0.001, "exclude_st": False,
+    }
+
+
+def test_stop_loss_next_open_fills_next_bar(tmp_path):
+    """next_open 止损：触发bar收盘判定 -> 次一bar开盘成交（不吃同bar收盘缺口）"""
+    from app.engine import datafeed
+    start, end, _ = _write_stop_series(tmp_path, up_days=20, tail_days=12,
+                                       crash_day=20, crash_bar=47, crash_pct=0.20)
+    cfg = _ma_stop_cfg(start, end, stop_pct=5.0)
+    cfg["stop_fill"] = "next_open"
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    stops = [t for t in report["trade_log"] if t["side"] == "sell" and t["type"] == "止损"]
+    assert stops, "应触发止损"
+    buy = next(t for t in report["trade_log"] if t["side"] == "buy" and t["type"] == "开仓")
+    cost = buy["hfq_price"]
+    df = datafeed.load_minute5(["600000"], start, end, str(tmp_path))["600000"]
+    recs = df.to_dicts()
+    buy_idx = next(i for i, r in enumerate(recs) if r["date"] == buy["time"])
+    trig = next(i for i in range(buy_idx + 1, len(recs))
+                if recs[i]["close"] <= cost * 0.95)
+    s = stops[0]
+    exec_bar = recs[trig + 1]
+    assert s["time"] == exec_bar["date"], \
+        f"止损应在触发bar({recs[trig]['date']})后的次bar({exec_bar['date']})成交，实际={s['time']}"
+    assert s["price"] == pytest.approx(exec_bar["open"] * 0.999, rel=0.002), \
+        "成交价应为次bar开盘价（含0.1%卖出滑点）"
+
+
+def test_stop_loss_close_mode_fills_same_bar(tmp_path):
+    """close 口径（旧，仅对照）：触发bar收盘判定 + 同bar收盘成交"""
+    from app.engine import datafeed
+    start, end, _ = _write_stop_series(tmp_path, up_days=20, tail_days=12,
+                                       crash_day=20, crash_bar=47, crash_pct=0.20)
+    cfg = _ma_stop_cfg(start, end, stop_pct=5.0)
+    cfg["stop_fill"] = "close"
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    stops = [t for t in report["trade_log"] if t["side"] == "sell" and t["type"] == "止损"]
+    assert stops, "应触发止损"
+    buy = next(t for t in report["trade_log"] if t["side"] == "buy" and t["type"] == "开仓")
+    cost = buy["hfq_price"]
+    df = datafeed.load_minute5(["600000"], start, end, str(tmp_path))["600000"]
+    recs = df.to_dicts()
+    buy_idx = next(i for i, r in enumerate(recs) if r["date"] == buy["time"])
+    trig = next(i for i in range(buy_idx + 1, len(recs))
+                if recs[i]["close"] <= cost * 0.95)
+    s = stops[0]
+    assert s["time"] == recs[trig]["date"], "close口径应在触发bar收盘成交"
+    assert s["price"] == pytest.approx(recs[trig]["close"] * 0.999, rel=0.002)
+
+
+def test_stop_loss_next_open_requeues_on_limit_down(tmp_path):
+    """next_open 止损 + 一字跌停顺延：触发后遇整日一字跌停 -> 顺延至下一交易日开盘成交"""
+    from app.engine import datafeed
+    # 20天上涨触发买入；第20天15:00单根-20%暴跌触发止损；第21天整日一字跌停；之后正常
+    start, end, dates = _write_stop_series(tmp_path, up_days=20, tail_days=12,
+                                           crash_day=20, crash_bar=47, crash_pct=0.20,
+                                           limit_down_day=21)
+    cfg = _ma_stop_cfg(start, end, stop_pct=5.0)
+    cfg["stop_fill"] = "next_open"
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    stops = [t for t in report["trade_log"] if t["side"] == "sell" and t["type"] == "止损"]
+    assert stops, "应触发止损"
+    ld_day = dates[21]
+    sell_day = dates[22]  # 一字跌停次日
+    s = stops[0]
+    assert s["time"][:10] == sell_day, \
+        f"一字跌停日({ld_day})无法成交，止损应顺延到次日({sell_day})，实际={s['time']}"
+    df = datafeed.load_minute5(["600000"], start, end, str(tmp_path))["600000"]
+    recs = df.to_dicts()
+    exec_bar = next(r for r in recs if r["date"] == s["time"])
+    assert s["price"] == pytest.approx(exec_bar["open"] * 0.999, rel=0.002)
+
+
+# ---------------- Phase 1：trend_clock 时钟门控 ----------------
+
+def _is_eod(rows, date):
+    """date 是否为 rows 中当日的最后一根 bar"""
+    day = date[:10]
+    return all(r["date"][:10] != day for r in rows if r["date"] > date)
+
+
+def test_momentum_trend_clock_daily_gates_to_eod(tmp_path):
+    """trend_clock=daily：趋势类信号(开仓/加仓/减仓/清仓)只在当日最后一根bar评估；做T不受限"""
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.006, seed=11)
+    from app.engine import datafeed
+    data = datafeed.load_minute5(["600000"], start, end, str(tmp_path))
+    sig = strat.prepare(data, {"trend_clock": "daily", "max_t_times": 8},
+                        start_date=start)["600000"]
+    rows = sig.to_dicts()
+    trend_sigs = [r for r in rows if r["signal"] != 0 and r["tag"] != "做T"]
+    assert trend_sigs, "daily时钟下仍应有趋势信号"
+    for r in trend_sigs:
+        assert _is_eod(rows, r["date"]), f"趋势信号应在当日末bar评估: {r['date']}"
+    t_sigs = [r for r in rows if r["tag"] == "做T"]
+    if t_sigs:
+        assert any(not _is_eod(rows, r["date"]) for r in t_sigs), "做T应可盘中触发"
+
+
+def test_momentum_trend_clock_intraday_unchanged(tmp_path):
+    """trend_clock=intraday（默认）：趋势信号可在盘中任意bar出现"""
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.006, seed=11)
+    from app.engine import datafeed
+    data = datafeed.load_minute5(["600000"], start, end, str(tmp_path))
+    sig = strat.prepare(data, {}, start_date=start)["600000"]
+    rows = sig.to_dicts()
+    trend_sigs = [r for r in rows if r["signal"] != 0 and r["tag"] != "做T"]
+    assert any(not _is_eod(rows, r["date"]) for r in trend_sigs), \
+        "intraday时钟下趋势信号应可出现于盘中bar"
+
+
+def test_momentum_t_daily_period_runs(tmp_path):
+    """E格：momentum_t 纯日线周期可运行（做T被硬关）"""
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.006, seed=11)
+    cfg = {
+        "name": "mt-daily-e", "strategy_id": "momentum_t", "period": "daily",
+        "params": {"top_n": 1},
+        "risk_config": {"stop_loss_mode": "none", "max_position_pct_per_stock": 100,
+                        "max_total_position_pct": 100, "max_intraday_trades": 8,
+                        "max_holdings": 1},
+        "universe": ["600000"], "start_date": start, "end_date": end,
+        "initial_capital": 400_000, "slippage_pct": 0.001, "exclude_st": False,
+    }
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    assert "metrics" in report
+    assert not any(t["type"] == "做T" for t in report["trade_log"]), "日线模式应无做T交易"
+
+
 # ---------------- 3. 手续费 ----------------
 
 def test_fee_calculation():
@@ -620,6 +830,45 @@ def test_momentum_crash_guard_sigma_adaptive():
     assert all(s is None for s in crash), "连续暴涨末段动量分应被崩溃保护置空"
 
 
+def test_momentum_crash_guard_absolute_cap():
+    """崩溃绝对上限：高波股 σ 大 -> σ自适应阈值放宽放行，但近5日涨幅超绝对上限仍被硬性禁入"""
+    import numpy as np
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    dates = synthetic.trade_dates(160)
+    n_days = len(dates)
+    rows = []
+    rng = np.random.default_rng(9)
+    prev = 10.0
+    # 全程日噪声 8%（σ 很大），末段 7 天连续 +6%：近5日涨幅 ≈ 33.8%
+    # σ 阈值 = 2 × 8% × √5 ≈ 35.8% > 33.8% -> σ 自适应不触发，只能靠绝对上限兜底
+    for di, d in enumerate(dates):
+        ret = 0.06 if di >= n_days - 7 else 0.001 + float(rng.normal(0, 0.08))
+        for hhmm in synthetic.BAR_TIMES:
+            o = prev
+            c = o * (1 + ret / 48)
+            rows.append({"code": "600000", "date": f"{d} {hhmm}",
+                         "open": round(o, 4), "high": round(max(o, c) * 1.0005, 4),
+                         "low": round(min(o, c) * 0.9995, 4), "close": round(c, 4),
+                         "volume": 100_000, "amount": round(c * 100_000, 2)})
+            prev = c
+    df = pl.DataFrame(rows)
+
+    p_default = {k["key"]: k["default"] for k in strat.param_schema}
+    feats_def = strat._daily_features(df, p_default)
+    crash_def = [s for d, s in zip(feats_def["day"].to_list(), feats_def["score"].to_list())
+                 if d >= dates[n_days - 3]]
+    assert all(s is None for s in crash_def), "默认绝对上限30%应把暴涨末段动量分置空"
+
+    # 放宽绝对上限到 60%：σ 阈值(35.8%)也未触发 -> 放行
+    p_loose = dict(p_default)
+    p_loose["crash_abs_cap"] = 60.0
+    feats_loose = strat._daily_features(df, p_loose)
+    crash_loose = [s for d, s in zip(feats_loose["day"].to_list(), feats_loose["score"].to_list())
+                   if d >= dates[n_days - 3]]
+    assert any(s is not None for s in crash_loose), "放宽绝对上限后（σ未达阈值）应放行"
+
+
 def test_momentum_t_full_backtest(tmp_path):
     """momentum_t 完整回测：报告结构完整、生命周期交易类型合法"""
     start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.005, seed=33)
@@ -659,3 +908,96 @@ def test_momentum_t_warmup_no_trades_before_start(tmp_path):
     assert "metrics" in report
     for t in report["trade_log"]:
         assert t["time"][:10] >= end
+
+
+def test_momentum_grid_buy_rebuild_budget(tmp_path):
+    """网格做T买点信号必须携带 base_pct_min（试仓档）预算：
+    引擎遇到空仓重建底仓时据此封顶，避免走完整风控预算满仓重建。
+    构造：首bar满配建仓 -> 同日内连续下探触发下网格买回"""
+    import polars as pl
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    p = {k["key"]: k["default"] for k in strat.param_schema}
+    base_min = float(p["base_pct_min"])
+    base_max = float(p["base_pct_max"])
+    df = pl.DataFrame({
+        "date": ["2026-01-05"] * 3,
+        "close": [10.0, 9.8, 9.6],
+        "atr_pct": [0.02, 0.02, 0.02], "bias": [0.0, 0.0, 0.0],
+        "vol_pos": [0.5, 0.5, 0.5], "breakout": [False, False, False],
+        "dif": [1.0, 1.0, 1.0], "dea": [0.0, 0.0, 0.0],
+        "ma_slow": [9.0, 9.0, 9.0], "slope": [1.0, 1.0, 1.0],
+        "day_idx": [0, 1, 2],
+    })
+    out = {s.name: s.to_list() for s in strat._walk(df, p, {df["date"][0]}, None)}
+    # 首bar满配开仓（预算=base_max），确认状态机进入持仓态
+    opens = [i for i, t in enumerate(out["tag"]) if t == "开仓"]
+    assert opens and out["budget_pct"][opens[0]] == base_max
+    # 网格买回信号：预算必须封顶为 base_pct_min
+    grid_buys = [i for i in range(len(out["signal"]))
+                 if out["signal"][i] == 1 and out["tag"][i] == "做T"]
+    assert grid_buys, "下探应触发网格做T买点信号"
+    for i in grid_buys:
+        assert out["budget_pct"][i] == base_min, \
+            f"网格买点预算应封顶为 base_pct_min={base_min}，实际 {out['budget_pct'][i]}"
+
+
+def test_momentum_point_in_time_consistency(tmp_path):
+    """A4 截断测试（未来函数哨兵，特征级）：
+    每根 bar 关联的日线特征不得因"该时点之后的数据"而变化。
+    对多个盘中截断点验证：A1 修复后通过；旧代码（当日全天特征注入当日早盘）必红。
+    """
+    start, end = _write_noisy_minute_data(tmp_path, n_days=160, drift=0.005, seed=41)
+    from app.engine import datafeed
+    from app.engine.strategies.momentum_t import MomentumTStrategy
+    strat = MomentumTStrategy()
+    full_df = datafeed.load_minute5(["600000"], start, end, str(tmp_path))["600000"]
+    days = sorted({r["date"][:10] for r in full_df.to_dicts()})
+    sig_full = strat.prepare({"600000": full_df}, {}, start_date=start)["600000"]
+    feat_cols = ["date", "dif", "dea", "ma_slow", "slope", "atr_pct",
+                 "bias", "score", "vol_pos", "breakout", "day_idx"]
+
+    for idx in (len(days) // 4, len(days) // 2, 3 * len(days) // 4):
+        cut_at = f"{days[idx]} 10:30"   # 盘中截断：暴露"当日全天特征注入早盘"的泄漏
+        cut_df = full_df.filter(pl.col("date") <= cut_at)
+        sig_cut = strat.prepare({"600000": cut_df}, {}, start_date=start)["600000"]
+        f_full = sig_full.filter(pl.col("date") <= cut_at).select(feat_cols).sort("date")
+        f_cut = sig_cut.filter(pl.col("date") <= cut_at).select(feat_cols).sort("date")
+        assert f_cut.equals(f_full), \
+            f"截断点 {cut_at} 之前 bar 的特征不得因后续数据而变（未来函数）"
+
+
+# ---------------- select_trend（动态加速启动选股） ----------------
+
+def test_select_trend_prepare_signals(demo_env):
+    """select_trend prepare：产出 signal/tag/budget_pct 列，且存在买/卖信号"""
+    data_dir, start, end = demo_env
+    from app.engine.strategies.select_trend import SelectTrendStrategy
+    from app.engine import datafeed
+    strat = SelectTrendStrategy()
+    data = datafeed.load_daily(["600000", "000001", "600036"], start, end, data_dir)
+    out = strat.prepare(data, {"entry_need": 1, "rps_top": 1.0, "ma_slow": 20},
+                        start_date=start)
+    for code, df in out.items():
+        assert {"signal", "tag", "reason", "budget_pct"} <= set(df.columns)
+        assert df["signal"].dtype == pl.Int32
+    sigs = pl.concat([df.select("signal") for df in out.values()])
+    assert (sigs["signal"] == 1).any(), "应存在买入信号"
+    assert (sigs["signal"] == -1).any(), "应存在卖出信号"
+
+
+def test_select_trend_backtest(demo_env):
+    """select_trend 完整回测：报告结构完整且有交易"""
+    data_dir, start, end = demo_env
+    cfg, _ = make_config(demo_env)
+    cfg.update({
+        "strategy_id": "select_trend",
+        "params": {"entry_need": 1, "rps_top": 1.0, "ma_slow": 20,
+                   "breakout_n": 10, "base_pct": 40, "max_adds": 1},
+        "risk_config": {"max_holdings": 3, "max_position_pct_per_stock": 40,
+                        "stop_loss_mode": "atr", "atr_period": 14, "atr_multiplier": 3.0},
+    })
+    report = run_backtest(cfg, data_dir=data_dir)
+    assert report["metrics"]["total_trades"] > 0, "动态选股应有交易"
+    for k in METRIC_KEYS:
+        assert k in report["metrics"], f"缺少指标 {k}"

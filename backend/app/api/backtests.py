@@ -101,9 +101,14 @@ def validate_backtest_config(cfg: dict) -> dict:
     cfg = dict(cfg)
     cfg["params"] = apply_param_defaults(cfg["strategy_id"], cfg.get("params") or {})
     risk = dict(cfg.get("risk_config") or RiskConfigModel().model_dump())
-    # 日内交易次数默认对齐策略 max_t_times（未显式配置时）；无该参数策略兜底 4
+    # 日内交易次数默认对齐策略 max_t_times（未显式配置时）；max_t_times=0（关闭做T）时
+    # 移除该键，让 RiskConfig 落到默认值 4，避免 None 进入 int() 或误拦趋势交易
     if not risk.get("max_intraday_trades"):
-        risk["max_intraday_trades"] = int(cfg["params"].get("max_t_times") or 4)
+        mt = int(cfg["params"].get("max_t_times") or 0)
+        if mt > 0:
+            risk["max_intraday_trades"] = mt
+        else:
+            risk.pop("max_intraday_trades", None)
     cfg["risk_config"] = risk
     return cfg
 

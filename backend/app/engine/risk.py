@@ -15,8 +15,8 @@ class RiskConfig:
         self.take_profit_pct = float(cfg.get("take_profit_pct", 0) or 0)
         self.trailing_stop_pct = float(cfg.get("trailing_stop_pct", 0) or 0)
         self.max_drawdown_breaker = float(cfg.get("max_drawdown_breaker", 30))
-        # max_intraday_trades 语义：单只股票每日最大交易次数
-        self.max_intraday_trades = int(cfg.get("max_intraday_trades", 4))
+        # max_intraday_trades 语义：单只股票每日最大交易次数（None/缺失 -> 默认 4）
+        self.max_intraday_trades = int(cfg.get("max_intraday_trades") or 4)
         self.max_holdings = int(cfg.get("max_holdings", 0) or 0)  # 最大持仓只数，0=不限
         self.cash_reserve_pct = float(cfg.get("cash_reserve_pct", 0) or 0)  # 现金缓冲比例
 

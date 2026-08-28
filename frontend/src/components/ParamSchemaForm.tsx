@@ -35,7 +35,7 @@ export default function ParamSchemaForm({ schema }: Props) {
         let control
         if (p.type === 'bool') {
           control = <Switch />
-        } else if (p.type === 'select') {
+        } else if (p.type === 'select' || p.type === 'categorical') {
           control = <Select options={(p.choices ?? []).map((c) => ({ value: c, label: c }))} allowClear />
         } else if (p.type === 'str') {
           control = <Input />
