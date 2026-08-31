@@ -369,15 +369,19 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             "tag": tag, "open_time": open_time, "t_mode": t_mode or None,
         })
 
-    def execute_sell(code, bar, volume_wanted, ttype, reason, basis_price):
+    def execute_sell(code, bar, volume_wanted, ttype, reason, basis_price,
+                     only_group: Optional[int] = None):
         """FIFO 平仓；只卖 sellable（T+1）仓位；一字跌停不成交；卖出允许零股。
-        basis_price 为原始成交价基准（open/close），滑点与成交量约束在此统一计算。"""
+        basis_price 为原始成交价基准（open/close），滑点与成交量约束在此统一计算。
+        only_group: 指定后只平该 group 的仓位（止损/止盈挂单按 group 隔离，
+        避免同一股票多 group 同时触发时互相误清、量被拆分）。"""
         day = bar["date"][:10]
         pc = prev_daily_close[code].get(day)
         if broker.is_limit_down(bar, pc, _lpct(code, day)):
             return 0, 0.0
         positions = sorted([p for p in portfolio.positions_of(code)
-                            if p.sellable_date and day >= p.sellable_date],
+                            if p.sellable_date and day >= p.sellable_date
+                            and (only_group is None or p.group_id == only_group)],
                            key=lambda p: p.open_time)
         if not positions:
             return 0, 0.0
@@ -613,11 +617,14 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                         {"code": code, "pos": pos, "volume": pos.volume,
                          "ttype": ttype, "reason": reason})
                 else:
-                    execute_sell(code, bar, pos.volume, ttype, reason, bar["close"])
+                    execute_sell(code, bar, pos.volume, ttype, reason, bar["close"],
+                                 only_group=pos.group_id)
 
     def execute_pending_stops(code, bar):
         """执行上一bar挂起的止损单（本bar开盘成交，优先级高于策略信号）。
-        一字跌停无法成交 -> 顺延到下一bar；仓位已被其它单清掉 -> 作废。"""
+        一字跌停无法成交 -> 顺延到下一bar；仓位已被其它单清掉 -> 作废。
+        按挂单记录的 group 隔离平仓：同一股票多 group 同时触发止损/止盈时，
+        每张单只清自己对应 group，避免 FIFO 误清其它 group、量被拆分。"""
         queued = pending_stops.get(code)
         if not queued:
             return
@@ -626,7 +633,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             if not any(o["pos"] is p for p in portfolio.positions):
                 continue  # 该仓位已平（策略/其它止损），作废
             sold, _ = execute_sell(code, bar, o["volume"], o["ttype"], o["reason"],
-                                   bar["open"])
+                                   bar["open"], only_group=o["pos"].group_id)
             if sold <= 0:
                 kept.append(o)  # 一字跌停未成交 -> 顺延
         if kept:
