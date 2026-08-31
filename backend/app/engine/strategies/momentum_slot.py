@@ -21,7 +21,7 @@ t_ratio（做T比例%）/ reduce_pct（减仓比例%）。
 """
 import polars as pl
 
-from ..indicators import _rolling_params, add_atr, add_macd, add_ma
+from .. import momentum_core as mc
 from .ma_cross import Strategy
 
 
@@ -246,126 +246,19 @@ class MomentumSlotStrategy(Strategy):
 
         return out
 
-    # ---------------- 日线特征 ----------------
+    # ---------------- 日线特征（公式收敛于 momentum_core，与选股器同口径） ----------------
 
     @staticmethod
     def _daily_features(df: pl.DataFrame, p: dict) -> pl.DataFrame:
         """聚合日线并计算趋势/波动/加速动量特征，返回按 day 的特征表"""
-        daily = (df.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
-                 .group_by("day").agg(pl.col("close").last().alias("d_close"),
-                                      pl.col("high").max().alias("d_high"),
-                                      pl.col("low").min().alias("d_low"))
-                 .sort("day"))
-        daily = add_macd(daily, int(p["macd_fast"]), int(p["macd_slow"]),
-                         int(p["macd_signal"]), col="d_close")
-        daily = add_ma(daily, int(p["ma_fast"]), col="d_close", name="ma_fast")
-        daily = (add_atr(daily.rename({"d_close": "close", "d_high": "high",
-                                       "d_low": "low"}),
-                         int(p["atr_period"]), name="d_atr")
-                 .rename({"close": "d_close", "high": "d_high", "low": "d_low"}))
-        daily = daily.with_columns([
-            (pl.col("ma_fast") - pl.col("ma_fast").shift(int(p["slope_n"]))).alias("slope"),
-            (pl.col("d_atr") / pl.col("d_close")).alias("atr_pct"),
-        ])
-        slope_n = int(p["slope_n"])
-        mom_s, mom_m, mom_l = int(p["mom_short"]), int(p["mom_mid"]), int(p["mom_long"])
-        w_s, w_m = float(p["w_short"]), float(p["w_mid"])
-        w_l = max(0.0, 1.0 - w_s - w_m)  # 长周期权重 = 1 - 短 - 中
-        w_a = float(p["w_accel"])
-        crash_sigma = float(p["crash_sigma"])
-        crash_n = int(p["crash_vol_n"])
-        crash_abs = float(p["crash_abs_cap"]) / 100.0
-        vol_n = int(p["vol_window"])
-        vol_q_hi = float(p["vol_q_hi"])
-        vol_q_lo = float(p["vol_q_lo"])
-        brk_n = int(p["add_breakout_n"])
-
-        # 日收益率（风险调整与崩溃保护的公共输入）
-        daily_ret = pl.col("d_close") / pl.col("d_close").shift(1) - 1
-        # 日波动绝对下限：真实市场日 σ 最低约 0.5%（低波银行股），低于此视为无波动，
-        # 防止恒定收益序列导致 std 浮点下溢后除零/误触发
-        _vol_floor = 0.005
-
-        def _risk_adj(n: int):
-            """风险调整动量：N日涨幅 / N日波动（横截面可比，防高波动假强势）"""
-            ret = pl.col("d_close") / pl.col("d_close").shift(n) - 1
-            vol = daily_ret.rolling_std(n, **_rolling_params(n)) * (n ** 0.5)
-            return pl.when(vol > _vol_floor * (n ** 0.5)).then(ret / vol).otherwise(ret)
-
-        mom_s_expr = _risk_adj(mom_s)
-        mom_m_expr = _risk_adj(mom_m)
-        mom_l_expr = _risk_adj(mom_l)
-        # 加速度项：短周期跑赢中周期 = 处于加速段（启动期），仅取正向
-        accel = (mom_s_expr - mom_m_expr).clip(lower_bound=0.0)
-        # 多周期混合 + 加速项：分数越高越接近"加速启动期强势"
-        score_expr = (w_s * mom_s_expr + w_m * mom_m_expr + w_l * mom_l_expr
-                      + w_a * accel)
-        # σ自适应崩溃保护：近5日涨幅 > crash_sigma × 自身σ√5 -> 动量分作废不入榜
-        # 绝对上限：近5日涨幅 > crash_abs_cap 硬性禁入（σ 阈值作第二道）
-        ret5 = pl.col("d_close") / pl.col("d_close").shift(5) - 1
-        vol5 = (daily_ret.rolling_std(crash_n, **_rolling_params(crash_n))
-                .clip(lower_bound=_vol_floor) * (5 ** 0.5))
-
-        daily = daily.with_columns([
-            # 乖离（以 ATR 为单位）：>0 强上行（做T非对称用）
-            pl.when(pl.col("d_atr") > 0)
-              .then((pl.col("d_close") - pl.col("ma_fast")) / pl.col("d_atr"))
-              .otherwise(None).alias("bias"),
-            score_expr.alias("score"),
-            ret5.alias("ret5"),
-            vol5.alias("vol5"),
-        ])
-        # 波动位置 vol_pos ∈ [0,1]：ATR% 相对滚动分位数定档（每只票自适应）。
-        daily = daily.with_columns([
-            pl.col("atr_pct").rolling_quantile(vol_q_hi, window_size=vol_n,
-                                                **_rolling_params(1)).alias("vq_hi"),
-            pl.col("atr_pct").rolling_quantile(vol_q_lo, window_size=vol_n,
-                                                **_rolling_params(1)).alias("vq_lo"),
-        ])
-        daily = daily.with_columns(
-            pl.when(pl.col("vq_hi") > pl.col("vq_lo"))
-              .then(((pl.col("atr_pct") - pl.col("vq_lo"))
-                     / (pl.col("vq_hi") - pl.col("vq_lo"))).clip(0.0, 1.0))
-              .otherwise(None).alias("vol_pos"))
-        daily = daily.with_columns(
-            pl.when(((pl.col("vol5") > 0) & (pl.col("ret5") > crash_sigma * pl.col("vol5")))
-                    | (pl.col("ret5") > crash_abs))
-              .then(pl.lit(None)).otherwise(pl.col("score")).alias("score"))
-        daily = daily.with_columns([
-            # 突破 N 日新高（金字塔加仓条件）
-            (pl.col("d_close") >= pl.col("d_close")
-             .rolling_max(brk_n, **_rolling_params(1)).shift(1)).alias("breakout"),
-        ])
-        return daily.with_row_index("day_idx").select(
-            ["day", "day_idx", "dif", "dea", "ma_fast", "slope", "atr_pct",
-             "bias", "score", "vol_pos", "breakout"])
+        return mc.daily_feature_core(mc.aggregate_daily(df), p,
+                                     anchor_key="ma_fast", anchor_name="ma_fast",
+                                     with_accel=True)
 
     @staticmethod
     def _rank_days(feats: dict[str, pl.DataFrame], pool_n: int) -> dict[str, set]:
-        """每日按加速动量分排名，返回 code -> 可建仓日集合（A1 T-1 语义）。
-
-        day D 的动量分在 D 收盘后才可知，因此 D 的 pool_n 名次只决定
-        D 的**下一交易日**（全局交易日并集的次日）是否可建仓。
-        """
-        rows: list[tuple[str, str, float]] = []
-        for code, f in feats.items():
-            for day, score in zip(f["day"].to_list(), f["score"].to_list()):
-                if score is not None:
-                    rows.append((day, code, float(score)))
-        by_day: dict[str, list] = {}
-        for day, code, score in rows:
-            by_day.setdefault(day, []).append((score, code))
-        cal = sorted(by_day)
-        next_day = {cal[i]: cal[i + 1] for i in range(len(cal) - 1)}
-        out: dict[str, set] = {c: set() for c in feats}
-        for day, items in by_day.items():
-            nd = next_day.get(day)
-            if nd is None:
-                continue
-            items.sort(reverse=True)
-            for _s, code in items[:max(1, pool_n)]:
-                out.setdefault(code, set()).add(nd)
-        return out
+        """每日按加速动量分排名，返回 code -> 可建仓日集合（T-1 语义，见 momentum_core.rank_days）"""
+        return mc.rank_days(feats, pool_n)
 
     # ---------------- 逐bar状态机 ----------------
 

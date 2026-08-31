@@ -129,6 +129,14 @@ def pick_options(_user: str = Depends(get_current_user)):
     }
 
 
+class MomentumPick(BaseModel):
+    """动量趋势预筛（MOMENTUM_CORE 同口径：门槛 -> RPS -> 排序 -> 取前 x）"""
+    top_x: int = Field(default=30, ge=1, le=500)      # 排序后取前 x 只
+    above_ma: int = Field(default=60, ge=5, le=120)   # 站上均线锚周期（60/20 对齐两策略）
+    with_accel: bool = False                          # 动量分叠加加速度项（对齐 momentum_slot）
+    min_rps: Optional[float] = Field(default=None, ge=0, le=100)  # 全市场分位下限
+
+
 class PickFilters(BaseModel):
     index: Optional[str] = None               # 单选：sz50|hs300|zz500|csi800
     industry_l1: list[str] = Field(default_factory=list)
@@ -136,6 +144,7 @@ class PickFilters(BaseModel):
     industry_l3: list[str] = Field(default_factory=list)
     boards: list[str] = Field(default_factory=list)
     exclude_st: bool = True
+    momentum: Optional[MomentumPick] = None   # 动量趋势预筛（需配合 as_of）
 
 
 class PickRandom(BaseModel):
@@ -146,6 +155,7 @@ class PickRandom(BaseModel):
 class PickRequest(BaseModel):
     filters: PickFilters = Field(default_factory=PickFilters)
     random: Optional[PickRandom] = None
+    as_of: Optional[str] = None               # 动量预筛基准日（传回测开始日，取其前一交易日）
 
 
 def _pick_matched(filters: PickFilters) -> tuple[list[str], dict[str, str]]:
@@ -203,8 +213,11 @@ def _pick_matched(filters: PickFilters) -> tuple[list[str], dict[str, str]]:
 
 @router.post("/pick")
 def pick_stocks(req: PickRequest, _user: str = Depends(get_current_user)):
-    """条件选股（即时查询）：过滤 + 可复现随机抽样。
+    """条件选股（即时查询）：过滤 + 可复现随机抽样 / 动量趋势预筛。
     同 seed 必然同池子（sorted(codes) 后 np.random.default_rng(seed).choice）。"""
+    mo = req.filters.momentum
+    if mo:
+        return _pick_momentum(req, mo)
     codes, name_map = _pick_matched(req.filters)
     total_matched = len(codes)
     n = req.random.n if req.random else None
@@ -241,5 +254,77 @@ def pick_stocks(req: PickRequest, _user: str = Depends(get_current_user)):
         "total_picked": total_picked,
         "seed_used": seed_used,
         "truncated": truncated,
+        "meta": meta,
+    }
+
+
+def _pick_momentum(req: PickRequest, mo: MomentumPick) -> dict:
+    """动量趋势预筛：全市场（或静态过滤域内）按 MOMENTUM_CORE 同口径
+    「门槛 -> RPS -> 排序 -> 取前 x」。
+
+    无后视镜：as_of 传回测开始日，实际基准日 = 严格早于它的最近交易日，
+    只使用该日收盘信息（与策略 T-1 建仓语义一致）。
+    静态维度（指数/行业/板块）作为候选域叠加；RPS 分位恒为全市场口径。
+    """
+    from ..engine import momentum_core as mc
+
+    if not req.as_of:
+        raise HTTPException(status_code=400,
+                            detail="动量预筛需先确认回测时间范围（as_of=回测开始日）")
+    try:
+        datetime.strptime(req.as_of, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="as_of 需为 YYYY-MM-DD 格式")
+    # 静态过滤域（可选）：指数/行业/板块/ST 命中集
+    domain: set | None = None
+    f = req.filters
+    has_static = bool(f.index or f.industry_l1 or f.industry_l2 or f.industry_l3
+                      or f.boards)
+    if has_static:
+        static_codes, _ = _pick_matched(f)
+        if not static_codes:
+            raise HTTPException(status_code=400, detail="静态过滤条件下无候选股票")
+        domain = set(static_codes)
+
+    # 特征窗口：基准日前推约 280 个交易日（自然日近似），覆盖最长回看参数
+    win_start = (datetime.strptime(req.as_of, "%Y-%m-%d").toordinal() - 427)
+    win_start = datetime.fromordinal(win_start).strftime("%Y-%m-%d")
+    pp = mc.pick_params(above_ma=mo.above_ma, with_accel=mo.with_accel)
+    try:
+        mf = mc.market_features(window_start=win_start, window_end=req.as_of, p=pp)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    as_of = mc.as_of_before(mf, req.as_of)
+    if as_of is None:
+        raise HTTPException(status_code=400,
+                            detail=f"基准日缺失：{req.as_of} 之前无行情数据，请先更新日线")
+    picked = mc.select_top(mf, as_of, mo.top_x, mo.min_rps, domain=domain)
+    basic = store.read_stock_basic()
+    name_map = ({r["code"]: r["name"] for r in basic.select(["code", "name"]).to_dicts()}
+                if basic is not None and basic.height else {})
+    codes = picked["code"].to_list()
+    items = [{"rank": int(r["rank"]), "code": r["code"],
+              "name": name_map.get(r["code"], r["code"]),
+              "score": round(float(r["score"]), 4),
+              "rps": (round(float(r["rps"]) * 100, 1)
+                      if r.get("rps") is not None else None)}
+             for r in picked.to_dicts()]
+    meta = {
+        "source": "momentum_pick",
+        "as_of_requested": req.as_of,
+        "snapshot_date": as_of,          # 实际基准日（无后视镜）
+        "momentum": mo.model_dump(),
+        "domain": sorted(domain) if domain else None,
+        "total_matched": int(picked.height),
+        "picked_at": datetime.now().strftime("%Y-%m-%d"),
+    }
+    return {
+        "codes": codes,
+        "name_map": {c: name_map.get(c, "") for c in codes},
+        "total_matched": int(picked.height),
+        "total_picked": int(picked.height),
+        "seed_used": None,
+        "truncated": False,
+        "items": items,
         "meta": meta,
     }

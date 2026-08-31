@@ -50,9 +50,17 @@ class BacktestRequest(BaseModel):
     strategy_id: str
     params: dict = Field(default_factory=dict)
     risk_config: RiskConfigModel = Field(default_factory=RiskConfigModel)
-    universe: list[str]
+    # universe_auto=True 时留空（池子由动量预筛自动生成并滚动重选）
+    universe: list[str] = Field(default_factory=list)
     # 条件选股溯源（UNIVERSE_PICKER §7）：池子的来历与 seed，模板载入/实验复现可审计
     universe_meta: dict | None = None
+    # ---- 动态选股（universe_auto，仅 momentum_t/momentum_slot）----
+    universe_auto: bool = False
+    auto_idle_days: int = 5        # 全空仓持续 N 个交易日 -> 重选
+    auto_top_x: int = 30           # 每次预筛取前 x 只
+    auto_above_ma: int = 60        # 站上均线锚周期（60=momentum_t / 20=momentum_slot）
+    auto_with_accel: bool = False  # 动量分叠加加速度项（对齐 momentum_slot）
+    auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
     start_date: str
     end_date: str
     end_date_today: bool = False
@@ -136,7 +144,28 @@ def validate_backtest_config(cfg: dict) -> dict:
     if strategy is None:
         raise HTTPException(status_code=400, detail=f"策略不存在: {cfg.get('strategy_id')}")
     universe = _norm_universe(cfg.get("universe") or [])
-    if not universe:
+    auto_mode = bool(cfg.get("universe_auto"))
+    if auto_mode:
+        if cfg.get("strategy_id") not in ("momentum_t", "momentum_slot"):
+            raise HTTPException(status_code=400,
+                                detail="动态选股（universe_auto）仅支持 momentum_t / momentum_slot")
+        if universe:
+            raise HTTPException(status_code=400,
+                                detail="动态选股开启时 universe 应留空（池子由动量预筛自动生成）")
+        idle_n = cfg.get("auto_idle_days")
+        if idle_n is not None and (not isinstance(idle_n, int) or idle_n < 1 or idle_n > 60):
+            raise HTTPException(status_code=400, detail="auto_idle_days 需为 1~60 的整数")
+        top_x = cfg.get("auto_top_x")
+        if top_x is not None and (not isinstance(top_x, int) or top_x < 1 or top_x > 500):
+            raise HTTPException(status_code=400, detail="auto_top_x 需为 1~500 的整数")
+        above_ma = cfg.get("auto_above_ma")
+        if above_ma is not None and (not isinstance(above_ma, int) or above_ma < 5 or above_ma > 120):
+            raise HTTPException(status_code=400, detail="auto_above_ma 需为 5~120 的整数")
+        min_rps = cfg.get("auto_min_rps")
+        if min_rps is not None and (not isinstance(min_rps, (int, float))
+                                    or not 0 <= float(min_rps) <= 100):
+            raise HTTPException(status_code=400, detail="auto_min_rps 需为 0~100 的数值")
+    elif not universe:
         raise HTTPException(status_code=400, detail="universe 不能为空")
     cfg = dict(cfg)
     cfg["universe"] = universe

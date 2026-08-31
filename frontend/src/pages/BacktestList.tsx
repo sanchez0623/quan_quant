@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Button,
   Card,
+  Checkbox,
   Col,
   Collapse,
   Divider,
@@ -69,6 +70,13 @@ interface BacktestFormValues {
   t_profit_withdraw_pct?: number
   min_t_amount?: number
   exclude_st?: boolean
+  // ---- 动态选股（universe_auto）：分段滚动重选 ----
+  universe_auto?: boolean
+  auto_idle_days?: number
+  auto_top_x?: number
+  auto_above_ma?: number
+  auto_with_accel?: boolean
+  auto_min_rps?: number
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
   capital_preset?: string
@@ -144,6 +152,10 @@ export default function BacktestList() {
   const prefillApplied = useRef(false)
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
+  // 动态选股开关与开始日期联动（StockPicker 动量预筛需要 startDate，无后视镜）
+  const universeAuto = Form.useWatch('universe_auto', form)
+  const dateRangeWatch = Form.useWatch('dateRange', form)
+  const startDate = dateRangeWatch?.[0] ? (dateRangeWatch[0] as Dayjs).format('YYYY-MM-DD') : undefined
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -186,8 +198,15 @@ export default function BacktestList() {
       strategy_id: values.strategy_id,
       params: pickSchemaParams(schema, values.params),
       risk_config: pickRiskConfig(values.risk_config) as RiskConfig,
-      universe: values.universe ?? [],
+      // 动态选股：池子由后端动量预筛自动生成，universe 留空
+      universe: values.universe_auto ? [] : (values.universe ?? []),
       universe_meta: universeMeta ?? null,
+      universe_auto: values.universe_auto ?? false,
+      auto_idle_days: values.auto_idle_days ?? 5,
+      auto_top_x: values.auto_top_x ?? 30,
+      auto_above_ma: values.auto_above_ma ?? 60,
+      auto_with_accel: values.auto_with_accel ?? false,
+      auto_min_rps: values.auto_min_rps ?? null,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
       period: (values.period as 'daily' | 'minute5') ?? 'daily',
@@ -222,7 +241,13 @@ export default function BacktestList() {
         period: cfg.period,
         universe: cfg.universe ?? [],
         initial_capital: cfg.initial_capital ?? 400000,
-        exclude_st: cfg.exclude_st ?? true
+        exclude_st: cfg.exclude_st ?? true,
+        universe_auto: cfg.universe_auto ?? false,
+        auto_idle_days: cfg.auto_idle_days ?? 5,
+        auto_top_x: cfg.auto_top_x ?? 30,
+        auto_above_ma: cfg.auto_above_ma ?? 60,
+        auto_with_accel: cfg.auto_with_accel ?? false,
+        ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {})
       }
       if (cfg.start_date && cfg.end_date) {
         values.dateRange = [dayjs(cfg.start_date), dayjs(cfg.end_date)]
@@ -510,6 +535,11 @@ export default function BacktestList() {
             t_profit_withdraw_pct: 10,
             min_t_amount: 20000,
             exclude_st: true,
+            universe_auto: false,
+            auto_idle_days: 5,
+            auto_top_x: 30,
+            auto_above_ma: 60,
+            auto_with_accel: false,
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
           }}
         >
@@ -554,14 +584,69 @@ export default function BacktestList() {
             <Col span={12}>
               <Form.Item
                 name="universe"
-                label="股票池（手动选择 / 条件选股）"
-                rules={[{ required: true, message: '请选择至少一只股票' }]}
+                label={universeAuto ? '股票池（动态选股：留空，自动生成）' : '股票池（手动选择 / 条件选股 / 动量趋势）'}
+                rules={[{ required: !universeAuto, message: '请选择股票，或开启动态选股' }]}
               >
                 <StockPicker
                   meta={universeMeta}
                   onMetaChange={(m) => setUniverseMeta(m ?? null)}
+                  startDate={startDate}
+                  disabled={universeAuto}
                 />
               </Form.Item>
+              <Form.Item name="universe_auto" valuePropName="checked" style={{ marginBottom: 8 }}>
+                <Checkbox>
+                  动态选股（滚动重选）：全空仓 N 个交易日后自动重跑动量趋势预筛换池
+                  {strategyId && !['momentum_t', 'momentum_slot'].includes(strategyId)
+                    ? '（仅支持 momentum_t / momentum_slot）' : ''}
+                </Checkbox>
+              </Form.Item>
+              {universeAuto && (
+                <Space size="large" wrap style={{ marginBottom: 8 }}>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>空仓触发（交易日）：</Typography.Text>
+                    <Form.Item name="auto_idle_days" noStyle>
+                      <InputNumber size="small" min={1} max={60} />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>池子大小：</Typography.Text>
+                    <Form.Item name="auto_top_x" noStyle>
+                      <InputNumber size="small" min={1} max={500} />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>均线锚：</Typography.Text>
+                    <Form.Item name="auto_above_ma" noStyle>
+                      <Select
+                        size="small" style={{ width: 118 }}
+                        options={[
+                          { value: 20, label: 'MA20（slot）' },
+                          { value: 60, label: 'MA60（t）' },
+                          { value: 120, label: 'MA120' }
+                        ]}
+                      />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>加速项：</Typography.Text>
+                    <Form.Item name="auto_with_accel" noStyle valuePropName="checked">
+                      <Switch size="small" />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>RPS≥：</Typography.Text>
+                    <Form.Item name="auto_min_rps" noStyle>
+                      <InputNumber size="small" min={0} max={100} placeholder="不限" style={{ width: 70 }} />
+                    </Form.Item>
+                  </Space>
+                </Space>
+              )}
+              {universeAuto && (
+                <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+                  每段池子以「段首前一交易日」收盘的动量预筛生成（无后视镜）；全市场无票过门槛时保持空仓，绝不硬买。
+                </Typography.Text>
+              )}
             </Col>
             <Col span={6}>
               <Form.Item

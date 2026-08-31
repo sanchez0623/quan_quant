@@ -11,6 +11,7 @@ from typing import Callable, Optional
 import polars as pl
 
 from . import datafeed
+from . import momentum_core as mc
 from .broker import Broker
 from .indicators import add_atr
 from .portfolio import Portfolio
@@ -47,7 +48,17 @@ DEFAULTS = {
     "t_debt_max_days": 2,      # 债务时限（交易日）：超过未回补 -> 作废转正式减仓
     "t_max_chase_pct": 3.0,    # 追回价格上限（%）：买回价 > 卖出均价×(1+N%) -> 不追
     "reentry_discount": 1.0,   # 回补限价折让（%）：discipline 模式下卖出价下方 N% 才回补
+    # ---- 动态选股（universe_auto）：分段滚动重选 ----
+    "universe_auto": False,    # 开启后 universe 留空，池子由动量预筛自动生成并按需重选
+    "auto_idle_days": 5,       # 全空仓持续 N 个交易日 -> 触发重选
+    "auto_top_x": 30,          # 每次预筛取前 x 只
+    "auto_above_ma": 60,       # 站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot）
+    "auto_with_accel": False,  # 动量分叠加加速度项（对齐 momentum_slot）
+    "auto_min_rps": None,      # 全市场 RPS 分位下限（0~100，None=不启用）
 }
+
+# universe_auto 仅对动量系策略开放（其建仓门槛与预筛口径同源）
+AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
 
 
 def _shift_back(d: str, trading_days: int) -> str:
@@ -128,6 +139,16 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
     """config: 契约 POST /api/backtests 请求体（params 已填默认值）。返回完整 report dict。"""
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in (config or {}).items() if v is not None})
+    if cfg.get("universe_auto"):
+        return _run_auto_segments(cfg, data_dir, progress_cb)
+    return _run_one(cfg, data_dir, progress_cb)
+
+
+def _run_one(cfg: dict, data_dir: Optional[str] = None,
+             progress_cb: Optional[Callable[[float, str], None]] = None,
+             init_withdraw: Optional[dict] = None) -> dict:
+    """单段静态股票池回测（cfg 已合并 DEFAULTS；init_withdraw 用于分段续跑时
+    继承月度出金记账状态，保证跨段出金护栏与当月已提额连续）。"""
     strategy_id = cfg["strategy_id"]
     strategy = REGISTRY[strategy_id]
     params = apply_param_defaults(strategy_id, cfg.get("params") or {})
@@ -171,7 +192,276 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
     if risk_cfg.stop_loss_mode == "atr_trailing" and risk_cfg.adaptive != "off":
         prepared = _add_adaptive_cols(prepared, risk_cfg)
 
-    return _simulate(cfg, prepared, params, risk_cfg, data_dir, progress_cb)
+    return _simulate(cfg, prepared, params, risk_cfg, data_dir, progress_cb,
+                     init_withdraw=init_withdraw)
+
+
+# ------------------------------------------------------------------
+# 动态选股（universe_auto）：分段滚动重选
+# ------------------------------------------------------------------
+
+def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
+    """动态股票池分段滚动重选。
+
+    触发条件：全空仓持续 auto_idle_days 个交易日 -> 以触发日收盘为基准（T-1，
+    无后视镜）重跑动量预筛；旧池退役、新池自次一交易日起接管。
+    触发时必然无持仓，段间只需传递现金与月度出金记账状态；每段即一次普通
+    静态池回测，触发日之后旧池的交易按语义丢弃（重选即退役）。
+    空池（全市场无票过门槛，如熊市底部）保持空仓现金推进，直到市场重新出现
+    符合门槛的股票再开新段；绝不硬买。
+    """
+    if cfg["strategy_id"] not in AUTO_STRATEGIES:
+        raise RuntimeError(
+            f"universe_auto 仅支持策略 {AUTO_STRATEGIES}，当前: {cfg['strategy_id']}")
+    start, end = cfg["start_date"], cfg["end_date"]
+    idle_n = max(1, int(cfg.get("auto_idle_days") or 5))
+    top_x = max(1, int(cfg.get("auto_top_x") or 30))
+    min_rps = cfg.get("auto_min_rps")
+    wd_base = float(cfg.get("monthly_withdraw_base") or 0)
+    pick_p = mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 60),
+                            with_accel=bool(cfg.get("auto_with_accel")))
+
+    # ---- 1) 全市场日线特征：一次构建，全部段共用（窗口含特征最长回看）----
+    if progress_cb:
+        progress_cb(2.0, "计算全市场动量特征…")
+    mf = mc.market_features(data_dir=data_dir, window_start=_shift_back(start, 280),
+                            window_end=end, p=pick_p)
+    as_of = mc.as_of_before(mf, start)
+    if as_of is None:
+        raise RuntimeError(f"无后视镜基准日缺失：{start} 之前无行情数据")
+    picked = mc.select_top(mf, as_of, top_x, min_rps)
+    if picked.height == 0:
+        raise RuntimeError(f"初始池为空：基准日 {as_of} 全市场无符合动量趋势条件的股票")
+
+    # ---- 2) 段循环 ----
+    acc: dict = {"trades": [], "equity": [], "snaps": [], "cycles": [],
+                 "rejects": [], "wlog": [], "commission": 0.0}
+    seg_infos: list[dict] = []
+    seg_no, seg_start = 0, start
+    seg_universe = picked["code"].to_list()
+    carry_cash = float(cfg["initial_capital"])
+    carry_w: Optional[dict] = None
+    final_debts: list[dict] = []
+
+    while True:
+        seg_no += 1
+        seg_cfg = dict(cfg)
+        seg_cfg["universe"] = list(seg_universe)
+        seg_cfg["start_date"] = seg_start
+        seg_cfg["initial_capital"] = carry_cash
+        seg_cfg["name"] = f"{cfg.get('name') or '回测'}·段{seg_no}"
+        if progress_cb:
+            progress_cb(max(3.0, min(95.0, 100.0 * _day_ratio(seg_start, start, end))),
+                        f"段{seg_no}：{seg_start} 起 {len(seg_universe)} 只")
+        rep = _run_one(seg_cfg, data_dir, None, init_withdraw=carry_w)
+        trig = _find_refresh_point(rep, idle_n)
+        info = {"seg": seg_no, "start": seg_start, "as_of": as_of,
+                "universe": list(seg_universe),
+                "picked": _picked_rows(picked, data_dir)}
+        if trig is None:
+            _accumulate_segment(acc, rep, seg_no, cutoff=None)
+            info["end"] = end
+            final_debts = rep.get("t_open_debts") or []
+            seg_infos.append(info)
+            break
+        # 触发重选：本段截断到触发日（其后旧池交易丢弃），旧池退役
+        _accumulate_segment(acc, rep, seg_no, cutoff=trig)
+        carry_cash = _equity_at(rep, trig)
+        carry_w = _summarize_withdraw(
+            [e for e in ((rep.get("withdrawal") or {}).get("log") or [])
+             if e.get("date", "") <= trig], wd_base)
+        as_of = trig
+        info["end"] = trig
+        info["trigger_day"] = trig
+        info["trigger_reason"] = f"全空仓持续{idle_n}个交易日"
+        picked = mc.select_top(mf, as_of, top_x, min_rps)
+        info["next_picked"] = _picked_rows(picked, data_dir)
+        seg_infos.append(info)
+        nxt = mc.next_after(mf, trig)
+        if nxt is None:
+            break
+        if picked.height == 0:
+            # 空池：现金推进到下一个能选出票的交易日（或回测结束）
+            resume = _next_pickable_day(mf, nxt, end, top_x, min_rps)
+            _fill_idle(acc, mf, nxt, resume, carry_cash,
+                       float(carry_w.get("total") or 0.0))
+            if resume is None:
+                break
+            as_of = resume
+            picked = mc.select_top(mf, as_of, top_x, min_rps)
+            seg_start = mc.next_after(mf, resume)
+            if seg_start is None or seg_start >= end:
+                break
+            seg_universe = picked["code"].to_list()
+            continue
+        seg_start = nxt
+        seg_universe = picked["code"].to_list()
+
+    # ---- 3) 拼接最终 report：重排 trade_id / 重算 drawdown / 重算 metrics ----
+    for i, t in enumerate(acc["trades"], 1):
+        t["trade_id"] = i
+    peak = None
+    for e in acc["equity"]:
+        adj = e.get("adjusted_equity", e["equity"])
+        peak = adj if peak is None else max(peak, adj)
+        e["drawdown"] = round(adj / peak - 1, 6) if peak > 0 else 0.0
+    w_summary = _summarize_withdraw(acc["wlog"], wd_base)
+    initial = float(cfg["initial_capital"])
+    end_equity = acc["equity"][-1]["equity"] if acc["equity"] else carry_cash
+    metrics = build_metrics(acc["trades"], acc["equity"], initial, end_equity,
+                            acc["commission"],
+                            t_cycle_pnls=[float(c["pnl"]) for c in acc["cycles"]],
+                            t_cycle_records=acc["cycles"],
+                            t_open_debts=final_debts, withdrawn=w_summary,
+                            wd_base=wd_base,
+                            completed_months=len({e["date"][:7] for e in acc["equity"]}))
+    if progress_cb:
+        progress_cb(100, "回测完成（动态选股）")
+    report = {
+        "name": cfg.get("name", ""),
+        "config": cfg,
+        "engine_version": "t_refactor_v1",
+        "universe_auto": True,
+        "auto_segments": seg_infos,
+        "metrics": metrics,
+        "equity_curve": acc["equity"],
+        "monthly_returns": monthly_returns(acc["equity"], initial),
+        "trade_log": acc["trades"],
+        "position_snapshots": acc["snaps"],
+        "withdrawal": w_summary,
+        "t_open_debts": final_debts,
+        "t_reject_events": acc["rejects"],
+    }
+    if cfg.get("task_id"):
+        report["task_id"] = cfg["task_id"]
+    return report
+
+
+def _find_refresh_point(rep: dict, idle_n: int) -> Optional[str]:
+    """扫描段内持仓快照，返回第一个「连续空仓达 idle_n 个交易日」的触发日；
+    触发日之后段内已无交易日（回测自然结束）时返回 None。"""
+    snaps = rep.get("position_snapshots") or []
+    idle = 0
+    for s in snaps:
+        if not s.get("positions"):
+            idle += 1
+            if idle >= idle_n:
+                return s["date"] if s["date"] < snaps[-1]["date"] else None
+        else:
+            idle = 0
+    return None
+
+
+def _accumulate_segment(acc: dict, rep: dict, seg_no: int,
+                        cutoff: Optional[str]) -> None:
+    """把单段结果并入累积器；cutoff 给定时截断到该日（丢弃其后交易）。"""
+    trades = rep.get("trade_log") or []
+    if cutoff:
+        trades = [t for t in trades if t["time"][:10] <= cutoff]
+    for t in trades:
+        t = dict(t)
+        t["seg"] = seg_no
+        t["group_id"] = (t.get("group_id") or 0) + (seg_no - 1) * 10000  # 跨段隔离建仓组
+        acc["trades"].append(t)
+    acc["commission"] += sum(float(t.get("fee") or 0.0) for t in trades)
+    equity = rep.get("equity_curve") or []
+    snaps = rep.get("position_snapshots") or []
+    if cutoff:
+        equity = [e for e in equity if e["date"] <= cutoff]
+        snaps = [s for s in snaps if s["date"] <= cutoff]
+    acc["equity"].extend(equity)
+    acc["snaps"].extend(snaps)
+    cycles = rep.get("t_cycle_records") or []
+    if cutoff:
+        cycles = [c for c in cycles if c.get("buy_date", "") <= cutoff]
+    acc["cycles"].extend(cycles)
+    rejects = rep.get("t_reject_events") or []
+    if cutoff:
+        rejects = [r for r in rejects if r.get("date", "") <= cutoff]
+    acc["rejects"].extend(rejects)
+
+
+def _equity_at(rep: dict, day: str) -> float:
+    """触发日收盘的总资产（触发时全空仓，即现金）"""
+    eq = [e for e in (rep.get("equity_curve") or []) if e["date"] <= day]
+    return float(eq[-1]["equity"]) if eq else 0.0
+
+
+def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
+    """按出金流水重建汇总（total/months 等），供跨段传递与最终报告"""
+    months: dict[str, float] = {}
+    total = t_profit = topup = shortfall = recover = 0.0
+    for e in log:
+        a = float(e.get("amount") or 0.0)
+        m = e.get("month") or (e.get("date") or "")[:7]
+        months[m] = months.get(m, 0.0) + a
+        total += a
+        t = e.get("type")
+        if t == "t_profit":
+            t_profit += a
+        elif t == "month_topup":
+            topup += a
+        elif t == "shortfall":
+            shortfall += a
+        elif t == "shortfall_recover":
+            recover += a
+    return {"monthly_base": round(wd_base, 2), "total": round(total, 2),
+            "t_profit": round(t_profit, 2), "month_topup": round(topup, 2),
+            "shortfall": round(shortfall, 2), "recover": round(recover, 2),
+            "months": {m: round(v, 2) for m, v in months.items()},
+            "log": log}
+
+
+def _next_pickable_day(mf, from_day: str, end: str, top_x: int,
+                       min_rps) -> Optional[str]:
+    """from_day 起第一个能选出票的交易日（空池段的恢复日）；找不到返回 None"""
+    for d in mf.calendar:
+        if d < from_day:
+            continue
+        if d > end:
+            return None
+        if mc.select_top(mf, d, top_x, min_rps).height:
+            return d
+    return None
+
+
+def _fill_idle(acc: dict, mf, from_day: str, to_day: Optional[str],
+               cash: float, w_total: float) -> None:
+    """空池段：现金恒定推进净值/快照曲线（drawdown 由拼接层统一重算）"""
+    d = from_day
+    while d and (to_day is None or d <= to_day):
+        acc["equity"].append({"date": d, "equity": round(cash, 2),
+                              "adjusted_equity": round(cash + w_total, 2),
+                              "drawdown": 0.0, "position_ratio": 0.0})
+        acc["snaps"].append({"date": d, "cash": round(cash, 2),
+                             "market_value": 0.0, "positions": []})
+        d = mc.next_after(mf, d)
+
+
+def _picked_rows(picked: pl.DataFrame, data_dir) -> list[dict]:
+    """预筛结果 -> [{rank, code, name, score, rps}]（报告/选股详情展示用）"""
+    if picked is None or picked.height == 0:
+        return []
+    codes = picked["code"].to_list()
+    names = _stock_names(codes, data_dir)
+    return [{"rank": int(r["rank"]), "code": r["code"],
+             "name": names.get(r["code"], r["code"]),
+             "score": round(float(r["score"]), 4),
+             "rps": (round(float(r["rps"]) * 100, 1)
+                     if r.get("rps") is not None else None)}
+            for r in picked.to_dicts()]
+
+
+def _day_ratio(d: str, start: str, end: str) -> float:
+    """自然日进度占比（分段进度显示用）"""
+    try:
+        s = datetime.strptime(start, "%Y-%m-%d")
+        e = datetime.strptime(end, "%Y-%m-%d")
+        c = datetime.strptime(d, "%Y-%m-%d")
+        span = max(1, (e - s).days)
+        return max(0.0, min(1.0, (c - s).days / span))
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 # ------------------------------------------------------------------
@@ -210,7 +500,8 @@ def _st_map(codes: list[str], data_dir) -> dict[str, bool]:
 
 
 def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
-              risk_cfg: RiskConfig, data_dir, progress_cb) -> dict:
+              risk_cfg: RiskConfig, data_dir, progress_cb,
+              init_withdraw: Optional[dict] = None) -> dict:
     broker = Broker(cfg["slippage_pct"], cfg["commission_rate"], cfg["commission_min"],
                     cfg["stamp_tax"], cfg["transfer_fee"],
                     cfg.get("handling_fee", 0.0), cfg.get("regulatory_fee", 0.0),
@@ -237,8 +528,16 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
     wd_pct = float(cfg.get("t_profit_withdraw_pct") or 0)
     min_t_amount = float(cfg.get("min_t_amount") or 0)
-    w_state = {"total": 0.0, "t_profit": 0.0, "topup": 0.0,
-               "shortfall": 0.0, "recover": 0.0, "months": {}, "log": []}
+    # 分段续跑：继承此前各段的出金记账（months 当月已提额 / 累计缺口等），
+    # 保证跨段月度出金护栏连续；log 由各段自记，最终拼接合并。
+    _iw = init_withdraw or {}
+    w_state = {"total": float(_iw.get("total") or 0.0),
+               "t_profit": float(_iw.get("t_profit") or 0.0),
+               "topup": float(_iw.get("topup") or 0.0),
+               "shortfall": float(_iw.get("shortfall") or 0.0),
+               "recover": float(_iw.get("recover") or 0.0),
+               "months": dict(_iw.get("months") or {}),
+               "log": []}
 
     # bars: code -> list[dict]；index: code -> {date: idx}
     bars, index = {}, {}
@@ -827,6 +1126,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         "trade_log": trade_log,
         "position_snapshots": snapshots,
         "withdrawal": withdrawn_summary,
+        "t_cycle_records": t_cycle_records,   # 配对口径周期明细（分段拼接重算 metrics 用）
         "t_open_debts": t_open_debts,
         "t_reject_events": t_reject_events,
     }

@@ -21,7 +21,7 @@ import {
   Typography
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import dayjs from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import {
   createExperiment,
   deleteExperiment,
@@ -84,6 +84,9 @@ interface ExperimentFormValues {
 export default function ExperimentList() {
   const [form] = Form.useForm<ExperimentFormValues>()
   const matrixWatch = Form.useWatch('matrix', form)
+  // 动量趋势预筛需要开始日期（StockPicker 无后视镜基准日）
+  const rangeWatch = Form.useWatch('range', form)
+  const startDate = rangeWatch?.[0] ? (rangeWatch[0] as Dayjs).format('YYYY-MM-DD') : undefined
   const navigate = useNavigate()
   const [backtests, setBacktests] = useState<BacktestListItem[]>([])
   const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -346,7 +349,7 @@ export default function ExperimentList() {
                   key: 'override',
                   label: (
                     <Typography.Text type="secondary">
-                      条件选股覆盖股票池（可选，用筛选/随机池替换基座 universe）
+                      条件选股 / 动量趋势覆盖股票池（可选，用筛选池或动量预筛替换基座 universe）
                     </Typography.Text>
                   ),
                   children: (
@@ -355,6 +358,7 @@ export default function ExperimentList() {
                       onChange={(c) => setUniverseOverride((prev) => ({ codes: c, meta: prev.meta }))}
                       meta={universeOverride.meta}
                       onMetaChange={(m) => setUniverseOverride((prev) => ({ codes: prev.codes, meta: m }))}
+                      startDate={startDate}
                     />
                   )
                 }

@@ -109,6 +109,13 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
         v === 'buy' ? <Tag color="red">买入</Tag> : <Tag color="green">卖出</Tag>
     },
     {
+      title: '段',
+      dataIndex: 'seg',
+      width: 56,
+      render: (v: number | undefined) =>
+        v != null ? <Tooltip title="动态选股段号（滚动重选）"><Tag color="geekblue">S{v}</Tag></Tooltip> : '-'
+    },
+    {
       title: '价格',
       dataIndex: 'price',
       width: 90,

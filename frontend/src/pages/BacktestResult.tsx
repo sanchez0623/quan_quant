@@ -10,6 +10,7 @@ import KLineTab from './backtest/KLineTab'
 import MetricsTab from './backtest/MetricsTab'
 import TradeLogTab from './backtest/TradeLogTab'
 import PositionTab from './backtest/PositionTab'
+import AutoSegmentsTab from './backtest/AutoSegmentsTab'
 import EquityChart from '../components/EquityChart'
 
 export default function BacktestResult() {
@@ -139,7 +140,14 @@ export default function BacktestResult() {
                   key: 'positions',
                   label: '持仓快照',
                   children: <PositionTab snapshots={report.position_snapshots ?? []} />
-                }
+                },
+                ...(report.universe_auto && report.auto_segments?.length
+                  ? [{
+                      key: 'segments',
+                      label: `动态选股（${report.auto_segments.length}段）`,
+                      children: <AutoSegmentsTab segments={report.auto_segments} />
+                    }]
+                  : [])
               ]}
             />
           </Card>

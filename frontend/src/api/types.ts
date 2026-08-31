@@ -69,6 +69,12 @@ export interface UniverseMeta {
   total_matched?: number
   total_picked?: number
   picked_at?: string
+  /** 动量预筛：请求的基准日（=回测开始日） */
+  as_of_requested?: string
+  /** 动量预筛：实际基准日（严格早于开始日的最近交易日，无后视镜） */
+  snapshot_date?: string
+  /** 动量预筛参数（与动态选股 universe_auto 同构） */
+  momentum?: MomentumPickInput
 }
 
 export interface PickIndexOption {
@@ -98,6 +104,28 @@ export interface PickOptions {
   index_snapshot: string | null
 }
 
+/** 动量趋势预筛参数（选股器与动态选股 universe_auto 同一套口径） */
+export interface MomentumPickInput {
+  /** 排序后取前 x 只 */
+  top_x: number
+  /** 站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot） */
+  above_ma: number
+  /** 动量分叠加加速度项（对齐 momentum_slot） */
+  with_accel: boolean
+  /** 全市场 RPS 分位下限（0~100，null=不启用） */
+  min_rps?: number | null
+}
+
+/** 动量预筛结果明细（带分数，展示"为什么选它"） */
+export interface MomentumPickItem {
+  rank: number
+  code: string
+  name: string
+  score: number
+  /** 0~100，全市场分位 */
+  rps: number | null
+}
+
 export interface PickFiltersInput {
   index?: string | null
   industry_l1?: string[]
@@ -105,6 +133,7 @@ export interface PickFiltersInput {
   industry_l3?: string[]
   boards?: string[]
   exclude_st?: boolean
+  momentum?: MomentumPickInput | null
 }
 
 export interface PickRandomInput {
@@ -115,6 +144,8 @@ export interface PickRandomInput {
 export interface PickRequest {
   filters: PickFiltersInput
   random?: PickRandomInput | null
+  /** 动量预筛基准日（传回测开始日，后端取其前一交易日） */
+  as_of?: string | null
 }
 
 export interface PickResponse {
@@ -125,6 +156,8 @@ export interface PickResponse {
   seed_used?: number | null
   truncated?: boolean
   meta: UniverseMeta
+  /** 动量预筛结果明细（按 rank 排序） */
+  items?: MomentumPickItem[]
 }
 
 // ---- 风控配置 ----
@@ -180,9 +213,20 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   strategy_id: string
   params: Record<string, ParamValue>
   risk_config?: RiskConfig
+  /** 动态选股开启时留空（池子由动量预筛自动生成并滚动重选） */
   universe: string[]
   /** 条件选股溯源（方案 §7）：池子来历与 seed，模板载入/实验复现可审计 */
   universe_meta?: UniverseMeta | null
+  // ---- 动态选股（universe_auto，仅 momentum_t/momentum_slot）----
+  universe_auto?: boolean
+  /** 全空仓持续 N 个交易日 -> 重选 */
+  auto_idle_days?: number
+  /** 每次预筛取前 x 只 */
+  auto_top_x?: number
+  /** 站上均线锚周期 */
+  auto_above_ma?: number
+  auto_with_accel?: boolean
+  auto_min_rps?: number | null
   start_date: string
   end_date: string
   period: Period
@@ -308,6 +352,8 @@ export interface TradeLogItem {
   pnl?: number | null
   /** 做T机制标记（grid/discipline/time/off，T_REFACTOR） */
   t_mode?: string | null
+  /** 动态选股段号（universe_auto 分段滚动重选时标记归属段） */
+  seg?: number
 }
 
 export interface PositionSnapshotPosition {
@@ -346,6 +392,26 @@ export interface WithdrawalSummary {
   log: WithdrawalLogItem[]
 }
 
+/** 动态选股（universe_auto）段元信息：每段的池子来历与重选触发点 */
+export interface AutoSegmentInfo {
+  seg: number
+  /** 段起始交易日 */
+  start: string
+  /** 段结束交易日（=下一触发日或回测结束日） */
+  end: string
+  /** 本段池子的预筛基准日（T-1，无后视镜） */
+  as_of: string
+  universe: string[]
+  /** 预筛明细（rank/code/name/score/rps） */
+  picked: MomentumPickItem[]
+  /** 触发重选的交易日（末段无） */
+  trigger_day?: string
+  /** 触发原因（如"全空仓持续5个交易日"） */
+  trigger_reason?: string
+  /** 触发后重选出的下一池明细（空=全市场无票过门槛） */
+  next_picked?: MomentumPickItem[]
+}
+
 export interface BacktestReport {
   task_id: string
   name: string
@@ -362,6 +428,9 @@ export interface BacktestReport {
   t_open_debts?: TOpenDebt[]
   /** 追回/回补被拒事件（审计可见，不进 trade_log） */
   t_reject_events?: TRejectEvent[]
+  /** 动态选股：分段滚动重选段元信息 */
+  universe_auto?: boolean
+  auto_segments?: AutoSegmentInfo[]
 }
 
 // ---- 做T重构（T_REFACTOR） ----

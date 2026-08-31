@@ -13,6 +13,7 @@ import {
   Space,
   Spin,
   Switch,
+  Table,
   Tag,
   TreeSelect,
   Typography
@@ -27,7 +28,7 @@ import type {
   UniverseMeta
 } from '../api/types'
 
-type PickMode = 'manual' | 'condition'
+type PickMode = 'manual' | 'condition' | 'momentum'
 
 interface StockPickerProps {
   /** 受控：当前股票池代码（Form.Item 自动注入 value） */
@@ -37,6 +38,9 @@ interface StockPickerProps {
   meta?: UniverseMeta | null
   onMetaChange?: (meta?: UniverseMeta | null) => void
   disabled?: boolean
+  /** 动量趋势预筛的基准日来源（=回测开始日，取其前一交易日收盘数据）；
+   * 为空时动量模式不可用——防止用未来数据选股（无后视镜） */
+  startDate?: string
 }
 
 /** 预览/已应用股票代码+名称 Tag 流（最多显示 N 个，可展开全部） */
@@ -66,7 +70,8 @@ export default function StockPicker({
   onChange,
   meta,
   onMetaChange,
-  disabled
+  disabled,
+  startDate
 }: StockPickerProps) {
   const codes = value ?? []
   const [mode, setMode] = useState<PickMode>('manual')
@@ -89,6 +94,11 @@ export default function StockPicker({
   const [lockSeed, setLockSeed] = useState(false)
   const [preview, setPreview] = useState<PickResponse | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  // ---- 动量趋势预筛：参数（与动态选股 universe_auto 同一套口径） ----
+  const [moTopX, setMoTopX] = useState<number>(30)
+  const [moAboveMa, setMoAboveMa] = useState<number>(60)
+  const [moAccel, setMoAccel] = useState(false)
+  const [moMinRps, setMoMinRps] = useState<number | undefined>(undefined)
   // 已应用池子的名称映射（供 Tag 展示；外部载入时按需回填）
   const [nameMap, setNameMap] = useState<Record<string, string>>({})
 
@@ -216,14 +226,31 @@ export default function StockPicker({
     }
   }
 
-  // ---- 条件选股：预览（筛选条件变化 -> 重新 pick） ----
+  // ---- 条件选股 / 动量预筛：预览 ----
   const doPreview = useCallback(async () => {
-    if (mode !== 'condition') return
+    if (mode === 'manual') return
+    if (mode === 'momentum' && !startDate) return
     setPreviewLoading(true)
     try {
-      const random = { n: n ?? undefined, seed: lockSeed ? seed : undefined }
-      const res = await pickStocks({ filters: { ...industryFilters, index, boards, exclude_st: excludeSt }, random })
-      setPreview(res)
+      if (mode === 'momentum') {
+        // 动量趋势预筛：基准日 = 回测开始日前一交易日（无后视镜，后端实现）
+        const res = await pickStocks({
+          filters: {
+            ...industryFilters,
+            index,
+            boards,
+            exclude_st: excludeSt,
+            momentum: { top_x: moTopX, above_ma: moAboveMa, with_accel: moAccel, min_rps: moMinRps ?? null }
+          },
+          random: null,
+          as_of: startDate ?? null
+        })
+        setPreview(res)
+      } else {
+        const random = { n: n ?? undefined, seed: lockSeed ? seed : undefined }
+        const res = await pickStocks({ filters: { ...industryFilters, index, boards, exclude_st: excludeSt }, random })
+        setPreview(res)
+      }
     } catch (err) {
       message.error(errDetail(err, '预览失败'))
       setPreview(null)
@@ -231,8 +258,10 @@ export default function StockPicker({
       setPreviewLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, industryFilters, index, boards, excludeSt, n, seed, lockSeed])
+  }, [mode, industryFilters, index, boards, excludeSt, n, seed, lockSeed,
+      startDate, moTopX, moAboveMa, moAccel, moMinRps])
 
+  // 仅条件选股自动预览（动量预筛需全市场特征计算，手动触发）
   useEffect(() => {
     if (mode !== 'condition') return
     const timer = window.setTimeout(doPreview, 300)
@@ -270,7 +299,8 @@ export default function StockPicker({
         disabled={disabled}
         options={[
           { value: 'manual', label: '手动选择' },
-          { value: 'condition', label: '条件选股' }
+          { value: 'condition', label: '条件选股' },
+          { value: 'momentum', label: '动量趋势' }
         ]}
       />
 
@@ -318,6 +348,115 @@ export default function StockPicker({
               批量添加
             </Button>
           </Popover>
+        </>
+      ) : mode === 'momentum' ? (
+        <>
+          {!startDate ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="需先确认回测时间范围"
+              description="动量趋势预筛基于「回测开始日前一交易日」的收盘数据选股（无后视镜），请先在表单中填写回测开始日期。"
+            />
+          ) : (
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  限定候选域（可选，缺省=全市场剔ST/退市）：
+                </Typography.Text>
+                <Select
+                  placeholder="全市场"
+                  allowClear
+                  value={index}
+                  onChange={setIndex}
+                  options={(options?.indices ?? []).map((i) => ({
+                    value: i.key,
+                    label: `${i.name}（${i.count}）`
+                  }))}
+                  style={{ width: 220 }}
+                  size="small"
+                  disabled={disabled}
+                />
+              </div>
+              <Space size="large" wrap>
+                <Space size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>取前 x 只：</Typography.Text>
+                  <InputNumber
+                    size="small" min={1} max={500} value={moTopX}
+                    onChange={(v) => setMoTopX(v ?? 30)} style={{ width: 80 }} disabled={disabled}
+                  />
+                </Space>
+                <Space size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>站上均线：</Typography.Text>
+                  <Select
+                    size="small" value={moAboveMa} onChange={setMoAboveMa} style={{ width: 92 }}
+                    options={[
+                      { value: 20, label: 'MA20（slot）' },
+                      { value: 60, label: 'MA60（t）' },
+                      { value: 120, label: 'MA120' }
+                    ]}
+                    disabled={disabled}
+                  />
+                </Space>
+                <Space size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>加速项：</Typography.Text>
+                  <Switch size="small" checked={moAccel} onChange={setMoAccel} disabled={disabled} />
+                </Space>
+                <Space size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>RPS≥：</Typography.Text>
+                  <InputNumber
+                    size="small" min={0} max={100} value={moMinRps}
+                    onChange={(v) => setMoMinRps(v ?? undefined)} placeholder="不限"
+                    style={{ width: 70 }} disabled={disabled}
+                  />
+                </Space>
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                门槛内置：MACD金叉 + 站上均线 + 动量分为正 + 崩溃保护（防追高）；
+                基准日 = {startDate} 前一交易日（与策略 T-1 建仓口径一致）。
+              </Typography.Text>
+              <Divider style={{ margin: '4px 0' }} />
+              <Space align="start">
+                <Button type="primary" size="small" loading={previewLoading} onClick={doPreview} disabled={disabled}>
+                  预览
+                </Button>
+                <Button
+                  size="small"
+                  icon={<AppstoreAddOutlined />}
+                  onClick={onApply}
+                  disabled={disabled || !preview || preview.codes.length === 0}
+                >
+                  应用为股票池
+                </Button>
+                {preview && (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    基准日 {preview.meta?.snapshot_date ?? '-'}：符合门槛 {preview.total_matched} 只 → 取前 {preview.total_picked} 只
+                  </Typography.Text>
+                )}
+              </Space>
+              {preview && preview.items && preview.items.length > 0 && (
+                <Table
+                  size="small"
+                  rowKey="code"
+                  dataSource={preview.items}
+                  pagination={{ pageSize: 8, size: 'small' }}
+                  columns={[
+                    { title: '#', dataIndex: 'rank', width: 44 },
+                    { title: '代码', dataIndex: 'code', width: 80 },
+                    { title: '名称', dataIndex: 'name', width: 96, ellipsis: true },
+                    {
+                      title: '动量分', dataIndex: 'score', width: 84,
+                      render: (v: number) => (typeof v === 'number' ? v.toFixed(3) : '-')
+                    },
+                    {
+                      title: 'RPS', dataIndex: 'rps', width: 64,
+                      render: (v: number | null) => (v != null ? v.toFixed(1) : '-')
+                    }
+                  ]}
+                />
+              )}
+            </Space>
+          )}
         </>
       ) : (
         <>
@@ -468,11 +607,16 @@ export default function StockPicker({
           已选 {codes.length} 只
         </Typography.Text>
       )}
-      {codes.length > 0 && mode === 'condition' && (
+      {codes.length > 0 && (mode === 'condition' || mode === 'momentum') && (
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             已应用股票池（{codes.length} 只）
-            {meta?.seed_used != null ? `，seed=${meta.seed_used}，命中 ${meta.total_matched ?? '-'}` : ''}：
+            {mode === 'momentum' && meta?.snapshot_date
+              ? `，基准日 ${meta.snapshot_date}`
+              : meta?.seed_used != null
+                ? `，seed=${meta.seed_used}，命中 ${meta.total_matched ?? '-'}`
+                : ''}
+            ：
           </Typography.Text>
           <div style={{ marginTop: 4 }}>
             <CodeTags nameMap={nameMap} codes={codes} />
