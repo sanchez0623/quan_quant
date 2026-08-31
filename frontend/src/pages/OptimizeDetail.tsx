@@ -30,7 +30,11 @@ import { useTaskProgress } from '../hooks/useTaskProgress'
 import TaskStatusTag from '../components/TaskStatusTag'
 import ImportanceBar from '../components/ImportanceBar'
 import ParallelChart from '../components/ParallelChart'
+import { RISK_FIELDS } from '../components/RiskConfigForm'
 import { fmtNum, fmtPct } from '../utils/format'
+
+/** 风控字段集合：寻优若搜了风控参数，best_params 里会混着它们，需归位到 risk_config */
+const RISK_KEYS = new Set(RISK_FIELDS.map((f) => f.key))
 
 const METRIC_LABEL: Record<string, string> = {
   annual_return: '年化收益',
@@ -121,12 +125,22 @@ export default function OptimizeDetail() {
       return
     }
     const cfg = detail.backtest_config
+    // best_params 里混着风控字段（param_space 允许搜 risk_config 的键），
+    // 必须拆回 risk_config，否则会被塞进 params 里被引擎忽略——寻优调过的风控值等于白调
+    const best = detail.best_params ?? {}
+    const bestParams: Record<string, string | number | boolean> = {}
+    const bestRisk: Record<string, string | number> = {}
+    Object.entries(best).forEach(([k, v]) => {
+      if (RISK_KEYS.has(k)) (bestRisk as Record<string, string | number>)[k] = v as string | number
+      else bestParams[k] = v
+    })
     setRerunning(true)
     try {
       const res = await createBacktest({
         ...cfg,
         name: `${detail.name || '寻优'}-最优参数重跑`,
-        params: { ...(cfg.params ?? {}), ...(detail.best_params ?? {}) }
+        params: { ...(cfg.params ?? {}), ...bestParams },
+        risk_config: { ...(cfg.risk_config ?? {}), ...bestRisk }
       })
       message.success('已用最优参数创建回测任务')
       navigate(`/backtests/${res.task_id}`)

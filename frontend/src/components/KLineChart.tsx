@@ -40,6 +40,9 @@ function parseTs(dateStr: string): number {
   return new Date(dateStr.replace(' ', 'T')).getTime()
 }
 
+const MARK_IND_NAME = 'TRADE_MARKS'
+const MARK_PANE_ID = 'candle_pane'
+
 let indicatorRegistered = false
 
 function ensureIndicatorRegistered(): void {
@@ -47,7 +50,7 @@ function ensureIndicatorRegistered(): void {
   indicatorRegistered = true
 
   const template: IndicatorTemplate<TradeMarkPoint> = {
-    name: 'TRADE_MARKS',
+    name: MARK_IND_NAME,
     shortName: '交易标记',
     calc: () => [],
     // 交易标记用自定义指标绘制：买入▲在K线下方、卖出▼在K线上方，按类型着色
@@ -188,13 +191,20 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
     }
     markPointsRef.current = points
     try {
-      chart.createIndicator(
-        { name: 'TRADE_MARKS', extendData: points },
-        false,
-        { id: 'candle_pane' }
-      )
-    } catch {
-      /* ignore */
+      // klinecharts 禁止同一 pane 下重复创建同名指标：addInstance 发现同名实例会直接
+      // reject('Duplicate indicators.')，extendData 不会被写入。因此切换周期/股票时
+      // 必须走 overrideIndicator 更新 extendData，否则买卖标记停留在上一次的数据。
+      if (chart.getIndicatorByPaneId(MARK_PANE_ID, MARK_IND_NAME)) {
+        chart.overrideIndicator({ name: MARK_IND_NAME, extendData: points }, MARK_PANE_ID)
+      } else {
+        chart.createIndicator(
+          { name: MARK_IND_NAME, extendData: points },
+          false,
+          { id: MARK_PANE_ID }
+        )
+      }
+    } catch (e) {
+      console.warn('[KLineChart] 交易标记更新失败', e)
     }
   }, [bars, marks])
 

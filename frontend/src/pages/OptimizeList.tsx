@@ -112,6 +112,12 @@ const MOMENTUM_T_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: 
   }
 ]
 
+/** 分组下拉项：label 为组名，options 为组内参数 */
+interface GroupedOption {
+  label: string
+  options: Array<{ value: string; label: string }>
+}
+
 /** 参数搜索空间行编辑器（平铺 / 组内嵌套共用） */
 function ParamRows({
   parent,
@@ -119,7 +125,7 @@ function ParamRows({
   disabled
 }: {
   parent: string | Array<string | number>
-  options: Array<{ value: string; label: string }>
+  options: GroupedOption[]
   disabled: boolean
 }) {
   const form = Form.useFormInstance()
@@ -139,7 +145,10 @@ function ParamRows({
                     placeholder="参数名"
                     options={options}
                     showSearch
-                    optionFilterProp="label"
+                    // 分组模式下不能用 optionFilterProp（只会匹配组名），按叶子项 label 过滤
+                    filterOption={(input, option) =>
+                      String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                    }
                     disabled={disabled}
                   />
                 </Form.Item>
@@ -302,16 +311,24 @@ export default function OptimizeList() {
     }
   }
 
-  const paramOptions = useMemo(() => {
+  const paramOptions = useMemo<GroupedOption[]>(() => {
     if (!templateConfig) return []
     const s = strategies.find((x) => x.id === templateConfig.strategy_id)
-    const opts = (s?.param_schema ?? []).map((p) => ({
-      value: p.key,
-      label: `策略参数 · ${p.label}（${p.key}）`
-    }))
+    const bucket = (
+      items: Array<{ key: string; label: string; group?: string }>,
+      prefix: string
+    ): GroupedOption[] => {
+      const map = new Map<string, Array<{ value: string; label: string }>>()
+      for (const it of items) {
+        const g = it.group || '其他'
+        if (!map.has(g)) map.set(g, [])
+        map.get(g)!.push({ value: it.key, label: `${it.label}（${it.key}）` })
+      }
+      return [...map].map(([g, options]) => ({ label: `${prefix} · ${g}`, options }))
+    }
     return [
-      ...opts,
-      ...RISK_FIELDS.map((f) => ({ value: f.key, label: `风控 · ${f.label}（${f.key}）` }))
+      ...bucket(s?.param_schema ?? [], '策略参数'),
+      ...bucket(RISK_FIELDS, '风控')
     ]
   }, [templateConfig, strategies])
 

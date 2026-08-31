@@ -28,6 +28,14 @@ export interface ParamSchema {
   step?: number
   choices?: string[]
   unit?: string
+  /** 参数说明（Tooltip 展示） */
+  description?: string
+  /** 分组名：影响同一类回测结果的参数归并展示，按 schema 出现顺序排列 */
+  group?: string
+  /** 高级参数：组内默认收起，需手动展开（二次微调项，非核心） */
+  advanced?: boolean
+  /** 条件显示：{ 依赖参数key: 允许的值数组 }，全部满足才显示；依赖值未设置时不隐藏 */
+  show_if?: Record<string, (string | number)[]>
 }
 
 export interface Strategy {
@@ -123,9 +131,10 @@ export interface PickResponse {
 export interface RiskConfig {
   max_position_pct_per_stock?: number
   max_total_position_pct?: number
-  stop_loss_mode?: 'fixed' | 'atr' | 'trailing'
+  stop_loss_mode?: 'fixed' | 'atr' | 'trailing' | 'atr_trailing'
   stop_loss_pct?: number
   atr_period?: number
+  /** atr / atr_trailing：成本项 ATR 倍数 k1 */
   atr_multiplier?: number
   take_profit_pct?: number
   trailing_stop_pct?: number
@@ -135,6 +144,24 @@ export interface RiskConfig {
   max_holdings?: number
   /** 现金缓冲比例（永不进场的资金） */
   cash_reserve_pct?: number
+  // ---- atr_trailing：止损线 = max(成本−k1×ATR, 最高价−k2×ATR)，只上不下 ----
+  /** 移动锁盈倍数 k2（相对持仓期最高价） */
+  atr_trail_mult?: number
+  /** 成本基准：first=首笔开仓价（不受加仓抬高）｜wavg=加权平均成本 */
+  atr_cost_base?: 'first' | 'wavg'
+  /** 棘轮：止损线只上不下 */
+  atr_trail_floor?: number
+  // ---- 自适应止损：按市场状态缩放 k1/k2 ----
+  adaptive?: 'off' | 'trend' | 'vol'
+  adaptive_trend_ma?: number
+  adaptive_slope_n?: number
+  /** 趋势确立时 k1/k2 的放大倍数（放宽止损，让利润奔跑） */
+  adaptive_k_loose?: number
+  /** 跌破均线时 k1/k2 的缩小倍数（收紧止损，快速离场） */
+  adaptive_k_tight?: number
+  adaptive_vol_n?: number
+  adaptive_vol_hi?: number
+  adaptive_vol_lo?: number
 }
 
 // ---- 月度出金 ----

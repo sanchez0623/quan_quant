@@ -38,6 +38,7 @@ import type {
   BacktestCreateRequest,
   BacktestListItem,
   BacktestTemplateItem,
+  ParamSchema,
   ParamValue,
   RiskConfig,
   Strategy,
@@ -45,7 +46,7 @@ import type {
 } from '../api/types'
 import TaskStatusTag from '../components/TaskStatusTag'
 import ParamSchemaForm from '../components/ParamSchemaForm'
-import RiskConfigForm, { DEFAULT_RISK_CONFIG } from '../components/RiskConfigForm'
+import RiskConfigForm, { DEFAULT_RISK_CONFIG, RISK_FIELDS } from '../components/RiskConfigForm'
 import BacktestRangePicker from '../components/BacktestRangePicker'
 import StockPicker from '../components/StockPicker'
 
@@ -71,6 +72,49 @@ interface BacktestFormValues {
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
   capital_preset?: string
+}
+
+/**
+ * 表单值 -> 策略参数：以 param_schema 为准做「补全 + 剪枝」。
+ *
+ * 不直接把 antd store 的 params 原样搬进配置，原因有二：
+ *  · 补全——advanced 收起、show_if 隐藏的参数可能从未挂载进表单，store 里没有值。
+ *    参数改版新增参数时这类缺项会被静默丢掉（库里 momentum_t 老模板各缺 7 个
+ *    做T重构新增参数，正是这么来的）；
+ *  · 剪枝——antd 的 setFieldsValue 是深合并（要整体替换得用 setFields），
+ *    切换策略后旧策略的参数键会残留在 params 里（模板 #15 momentum_slot 带着
+ *    ma_cross 的 fast / slow / stop_loss_pct 已被实测到），而后端对
+ *    params.stop_loss_pct 有「覆盖风控止损」的兼容分支，残留值会劫持止损。
+ */
+function pickSchemaParams(
+  schema: ParamSchema[],
+  formParams: unknown
+): Record<string, ParamValue> {
+  const src = (formParams ?? {}) as Record<string, unknown>
+  const out: Record<string, ParamValue> = {}
+  schema.forEach((p) => {
+    const v = src[p.key]
+    out[p.key] = (v === undefined || v === null || v === ''
+      ? (p.default as ParamValue)
+      : v) as ParamValue
+  })
+  return out
+}
+
+/** 表单值 -> 风控配置：以 RISK_FIELDS 为准，缺失用 DEFAULT_RISK_CONFIG 兜底；
+ *  max_intraday_trades 无默认值，留空交给后端对齐策略 max_t_times。 */
+function pickRiskConfig(formRisk: unknown): Record<string, string | number> {
+  const src = (formRisk ?? {}) as Record<string, unknown>
+  const out: Record<string, string | number> = {}
+  RISK_FIELDS.forEach((f) => {
+    const v = src[f.key]
+    if (v !== undefined && v !== null && v !== '') {
+      out[f.key] = v as string | number
+    } else if (DEFAULT_RISK_CONFIG[f.key] !== undefined) {
+      out[f.key] = DEFAULT_RISK_CONFIG[f.key]
+    }
+  })
+  return out
 }
 
 /** 资金档预设：选择后一键填充 初始资金 / 最大持股 / 月提取 / 最小T金额 */
@@ -130,13 +174,18 @@ export default function BacktestList() {
     fetchList()
   }, [fetchList])
 
-  /** 表单值 -> 回测配置（模板保存与提交共用；允许字段缺失，模板可存半成品） */
+  /**
+   * 表单值 -> 回测配置（模板保存与提交共用）。
+   * params / risk_config 一律以 schema / RISK_FIELDS 为准重建，保证落库配置
+   * 「参数全量、无跨策略残留」，与后端 normalize_config 口径一致。
+   */
   const buildConfigFromValues = useCallback((values: BacktestFormValues): BacktestCreateRequest => {
+    const schema = strategies.find((s) => s.id === values.strategy_id)?.param_schema ?? []
     return {
       name: values.name ?? '',
       strategy_id: values.strategy_id,
-      params: (values.params ?? {}) as Record<string, ParamValue>,
-      risk_config: values.risk_config as RiskConfig | undefined,
+      params: pickSchemaParams(schema, values.params),
+      risk_config: pickRiskConfig(values.risk_config) as RiskConfig,
       universe: values.universe ?? [],
       universe_meta: universeMeta ?? null,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
@@ -157,21 +206,22 @@ export default function BacktestList() {
       exclude_st: values.exclude_st ?? true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [universeMeta])
+  }, [universeMeta, strategies])
 
   /** 回测配置 -> 表单（载入模板 / AI 建议预填共用） */
   const applyConfigToForm = useCallback(
     (cfg: BacktestCreateRequest, tip = '配置已载入') => {
       setStrategyId(cfg.strategy_id)
       setUniverseMeta(cfg.universe_meta ?? null)
+      // 与默认值合并：老模板 / AI 建议可能缺新增字段（如自适应止损参数），
+      // 缺项按 schema default 回填，避免表单出现空框、用户误以为未配置
+      const schema = strategies.find((s) => s.id === cfg.strategy_id)?.param_schema ?? []
       const values: Record<string, unknown> = {
         name: cfg.name ?? '',
         strategy_id: cfg.strategy_id,
         period: cfg.period,
-        params: cfg.params ?? {},
         universe: cfg.universe ?? [],
         initial_capital: cfg.initial_capital ?? 400000,
-        risk_config: (cfg.risk_config ?? DEFAULT_RISK_CONFIG) as Record<string, string | number>,
         exclude_st: cfg.exclude_st ?? true
       }
       if (cfg.start_date && cfg.end_date) {
@@ -187,9 +237,15 @@ export default function BacktestList() {
         if (v !== undefined && v !== null) values[k] = v
       })
       form.setFieldsValue(values as unknown as BacktestFormValues)
+      // params / risk_config 必须整体替换：setFieldsValue 是深合并，上一个策略的
+      // 参数键会留在 store 里（下一次保存就会混进新策略配置）
+      form.setFields([
+        { name: 'params', value: pickSchemaParams(schema, cfg.params) },
+        { name: 'risk_config', value: pickRiskConfig(cfg.risk_config) }
+      ])
       message.success(tip)
     },
-    [form]
+    [form, strategies]
   )
 
   // AI 分析页「应用建议」跳转过来时预填表单（只应用一次）
@@ -219,11 +275,12 @@ export default function BacktestList() {
   const onStrategyChange = (id: string) => {
     setStrategyId(id)
     const s = strategies.find((x) => x.id === id)
-    const params: Record<string, string | number | boolean> = {}
-    s?.param_schema?.forEach((p) => {
-      if (p.default !== undefined) params[p.key] = p.default
-    })
-    form.setFieldsValue({ params, period: s?.periods?.[0] })
+    // 用 setFields 整体替换 params（setFieldsValue 是深合并，旧策略的参数键会残留），
+    // 否则下一次保存模板/提交回测时会把上一段策略的参数一起带进去
+    form.setFields([
+      { name: 'params', value: pickSchemaParams(s?.param_schema ?? [], {}) },
+      { name: 'period', value: s?.periods?.[0] }
+    ])
   }
 
   /** 资金档预设：一键填充 初始资金 / 最大持股 / 月提取 / 最小T金额 */
