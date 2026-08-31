@@ -19,7 +19,14 @@ SYSTEM_PROMPT = (
     "1. params 的键只能取自「回测配置.params」中已有的参数名，只写需要调整的，数值类型与原值保持一致；\n"
     "2. risk_config 的键只能取自：max_position_pct_per_stock, max_total_position_pct, stop_loss_mode, "
     "stop_loss_pct, atr_period, atr_multiplier, take_profit_pct, trailing_stop_pct, "
-    "max_drawdown_breaker, max_intraday_trades, max_holdings, cash_reserve_pct；\n"
+    "max_drawdown_breaker, max_intraday_trades, max_holdings, cash_reserve_pct, "
+    "atr_trail_mult, atr_cost_base, atr_trail_floor, adaptive, adaptive_trend_ma, "
+    "adaptive_slope_n, adaptive_k_loose, adaptive_k_tight, adaptive_vol_n, "
+    "adaptive_vol_hi, adaptive_vol_lo；\n"
+    "   其中 stop_loss_mode 可取 fixed / atr / trailing / atr_trailing；"
+    "atr_trailing 表示止损线 = max(成本−k1×ATR, 最高价−k2×ATR) 且只上不下，"
+    "k1 用 atr_multiplier、k2 用 atr_trail_mult；adaptive 可取 off / trend / vol，"
+    "trend 表示按个股趋势（收盘价 vs 均线 + 均线斜率）自动缩放 k1/k2；\n"
     '3. 若认为无需调整任何参数，输出 {"params": {}, "risk_config": {}}。'
 )
 
@@ -29,6 +36,11 @@ _RISK_FIELDS = {
     "stop_loss_pct", "atr_period", "atr_multiplier", "take_profit_pct",
     "trailing_stop_pct", "max_drawdown_breaker", "max_intraday_trades",
     "max_holdings", "cash_reserve_pct",
+    # atr_trailing
+    "atr_trail_mult", "atr_cost_base", "atr_trail_floor",
+    # 自适应止损
+    "adaptive", "adaptive_trend_ma", "adaptive_slope_n", "adaptive_k_loose",
+    "adaptive_k_tight", "adaptive_vol_n", "adaptive_vol_hi", "adaptive_vol_lo",
 }
 
 

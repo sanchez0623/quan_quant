@@ -30,6 +30,19 @@ class RiskConfigModel(BaseModel):
     max_intraday_trades: int | None = None  # 未传时自动对齐策略 max_t_times
     max_holdings: int = 0              # 最大持仓只数，0=不限
     cash_reserve_pct: float = 1.5      # 现金缓冲比例（永不进场的资金）
+    # ---- atr_trailing：止损线 = max(成本项−k1×ATR, 最高价−k2×ATR)，只上不下 ----
+    atr_trail_mult: float = 8.0        # k2：移动锁盈倍数（5~12 稳健区间，<=3 偏紧；勿再微调）
+    atr_cost_base: str = "first"       # 成本基准：first=首笔开仓价｜wavg=加权平均成本
+    atr_trail_floor: bool = True       # 棘轮：止损线只上不下
+    # ---- 自适应止损：按市场状态缩放 k1/k2 ----
+    adaptive: str = "off"              # off｜trend=个股趋势｜vol=波动率分位
+    adaptive_trend_ma: int = 60
+    adaptive_slope_n: int = 5
+    adaptive_k_loose: float = 1.5      # 趋势确立 -> 放宽，让利润奔跑
+    adaptive_k_tight: float = 0.7      # 趋势破坏 -> 收紧，快速离场
+    adaptive_vol_n: int = 120
+    adaptive_vol_hi: float = 0.7
+    adaptive_vol_lo: float = 0.3
 
 
 class BacktestRequest(BaseModel):
@@ -42,6 +55,7 @@ class BacktestRequest(BaseModel):
     universe_meta: dict | None = None
     start_date: str
     end_date: str
+    end_date_today: bool = False
     period: str = "daily"
     initial_capital: float = 1_000_000
     slippage_pct: float = 0.001
@@ -73,6 +87,49 @@ def _norm_universe(universe: list[str]) -> list[str]:
     return out
 
 
+def normalize_config(cfg: dict) -> dict:
+    """把配置按「策略 param_schema + RiskConfigModel」补全到全量，并剪掉不属于当前策略的键。
+
+    存在的必要性（两类已在线上出现过的问题）：
+    1. 参数改版新增参数后，历史模板/历史配置缺新键，引擎会静默回落到 RiskConfig
+       的内置默认值，而不是用户在表单里调过的值（如 atr_multiplier、adaptive_*）；
+    2. 前端 setFieldsValue 是深合并，切换策略后旧策略的参数会残留在 params 里
+       （实测模板 #15「测试新策略」momentum_slot 带着 ma_cross 的
+       fast / slow / stop_loss_pct），而 runner 有「params 含 stop_loss_pct 且
+       risk_config 未显式给 -> 覆盖风控止损」的兼容分支，残留值会劫持止损。
+
+    回测 / 寻优 / 对比实验 / 模板读写统一走这里，保证落库配置恒为「全量且干净」。
+    """
+    cfg = dict(cfg)
+    strategy = REGISTRY.get(cfg.get("strategy_id"))
+    risk_fields = RiskConfigModel.model_fields
+    risk = {k: v for k, v in (cfg.get("risk_config") or {}).items() if k in risk_fields}
+
+    params = dict(cfg.get("params") or {})
+    if strategy is not None:
+        schema_keys = {p["key"] for p in strategy.param_schema}
+        params = apply_param_defaults(cfg["strategy_id"], params)
+        # 不属于本策略的键一律剔除；其中「其实是风控字段」的（寻优把风控参数一起塞进
+        # best_params 的历史数据，如模板 #9 的 params 里躺着 11 个风控键）归位到
+        # risk_config 而不是丢掉。
+        # 注意：只在 risk_config 没显式给该键时才补——risk_config 是权威来源，
+        # 不能用 params 里的错位值去覆盖用户明确的止损设置（否则会静默改止损）。
+        for k in list(params):
+            if k in schema_keys:
+                continue
+            v = params.pop(k)
+            if k in risk_fields and v is not None and k not in risk:
+                risk[k] = v
+    cfg["params"] = params
+
+    for k, v in RiskConfigModel().model_dump().items():
+        # max_intraday_trades 默认 None：留空交给调用方对齐策略 max_t_times
+        if k not in risk and v is not None:
+            risk[k] = v
+    cfg["risk_config"] = risk
+    return cfg
+
+
 def validate_backtest_config(cfg: dict) -> dict:
     """校验并返回填充默认参数后的完整配置（供回测/寻优共用）"""
     strategy = REGISTRY.get(cfg.get("strategy_id"))
@@ -89,6 +146,9 @@ def validate_backtest_config(cfg: dict) -> dict:
             status_code=400,
             detail=f"周期 {period} 不在策略 {strategy.id} 支持范围 {strategy.periods} 内")
     start, end = cfg.get("start_date", ""), cfg.get("end_date", "")
+    if cfg.get("end_date_today"):
+        end = datetime.now().strftime("%Y-%m-%d")
+        cfg["end_date"] = end
     try:
         d1 = datetime.strptime(start, "%Y-%m-%d")
         d2 = datetime.strptime(end, "%Y-%m-%d")
@@ -99,10 +159,9 @@ def validate_backtest_config(cfg: dict) -> dict:
     ok, err = validate_params(cfg.get("strategy_id"), cfg.get("params") or {})
     if not ok:
         raise HTTPException(status_code=400, detail=err)
-    # 参数缺失用 schema default 填充后回显
-    cfg = dict(cfg)
-    cfg["params"] = apply_param_defaults(cfg["strategy_id"], cfg.get("params") or {})
-    risk = dict(cfg.get("risk_config") or RiskConfigModel().model_dump())
+    # 参数缺失用 schema default 填充后回显；同时剪掉不属于本策略的残留键
+    cfg = normalize_config(cfg)
+    risk = cfg["risk_config"]
     # 日内交易次数默认对齐策略 max_t_times（未显式配置时）；max_t_times=0（关闭做T）时
     # 移除该键，让 RiskConfig 落到默认值 4，避免 None 进入 int() 或误拦趋势交易
     if not risk.get("max_intraday_trades"):
@@ -131,12 +190,19 @@ def list_backtests(_user: str = Depends(get_current_user)):
     out = []
     for t in db.list_tasks("backtest"):
         payload = t.get("payload") or {}
+        cfg = payload.get("config")
+        # 归一化后再回显：老任务配置缺改版后新增的参数时，「存为模板」也能拿到全量配置
+        if isinstance(cfg, dict) and cfg.get("strategy_id"):
+            try:
+                cfg = normalize_config(cfg)
+            except Exception:      # 归一化失败不影响列表展示
+                pass
         out.append({
             "task_id": t["task_id"], "name": t["name"], "status": t["status"],
             "created_at": t["created_at"],
             "strategy_id": payload.get("strategy_id", ""),
             "period": payload.get("period", ""),
-            "config": payload.get("config"),
+            "config": cfg,
             "error": t.get("error"),
         })
     return out
@@ -151,7 +217,18 @@ class TemplateCreate(BaseModel):
 
 @router.get("/templates")
 def list_templates(user: str = Depends(get_current_user)):
-    return db.list_templates(user)
+    # 读取时按当前 schema 归一化：参数改版前的老模板缺的新参数即时补全、
+    # 跨策略残留键即时剔除，用户不必重新保存即可载入完整配置
+    out = []
+    for t in db.list_templates(user):
+        cfg = t.get("config")
+        if isinstance(cfg, dict) and cfg.get("strategy_id"):
+            try:
+                cfg = normalize_config(cfg)
+            except Exception:      # 归一化失败时原样返回，不阻塞列表
+                pass
+        out.append(dict(t, config=cfg))
+    return out
 
 
 @router.post("/templates")
@@ -159,9 +236,15 @@ def add_template(req: TemplateCreate, user: str = Depends(get_current_user)):
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="模板名不能为空")
-    if not req.config.get("strategy_id"):
+    cfg = req.config or {}
+    if not cfg.get("strategy_id"):
         raise HTTPException(status_code=400, detail="配置缺少 strategy_id，无法保存为模板")
-    template_id = db.add_template(user, name, req.config)
+    # 落库前归一化：保证模板恒为「参数全量 + 无残留键」，与回测提交口径一致
+    try:
+        cfg = normalize_config(cfg)
+    except Exception:
+        pass
+    template_id = db.add_template(user, name, cfg)
     return {"id": template_id, "status": "ok"}
 
 

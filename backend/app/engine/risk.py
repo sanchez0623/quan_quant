@@ -7,7 +7,8 @@ class RiskConfig:
         cfg = cfg or {}
         self.max_position_pct_per_stock = float(cfg.get("max_position_pct_per_stock", 40))
         self.max_total_position_pct = float(cfg.get("max_total_position_pct", 100))
-        self.stop_loss_mode = cfg.get("stop_loss_mode", "fixed")  # fixed | atr | trailing
+        # fixed | atr | trailing | atr_trailing
+        self.stop_loss_mode = cfg.get("stop_loss_mode", "fixed")
         self.stop_loss_pct = float(cfg.get("stop_loss_pct", 12.0))
         self.atr_period = int(cfg.get("atr_period", 14))
         # 默认组面向"做T+动量"风格：ATR 2.0 在高波动票上反复扫损，放宽至 2.5（建议 2.5~3）
@@ -19,6 +20,30 @@ class RiskConfig:
         self.max_intraday_trades = int(cfg.get("max_intraday_trades") or 4)
         self.max_holdings = int(cfg.get("max_holdings", 0) or 0)  # 最大持仓只数，0=不限
         self.cash_reserve_pct = float(cfg.get("cash_reserve_pct", 1.5) or 0)  # 现金缓冲比例
+        # ---- ATR_TRAILING：止损线 = max(成本项 − k1×ATR, 最高价 − k2×ATR)，只上不下 ----
+        # k1：硬止损兜底倍数（相对成本）。k2：移动锁盈倍数（相对持仓期最高价）。
+        # k2 < k1 时，价格上涨后移动项会超过成本项并接管，实现「随最高价上移锁盈」。
+        # 时序样本外验证（2024选参/2025测试）表明：k2 的「最优值」不可预测
+        # （训练集排名与测试集排名不相关），但 5~12 区间整体稳健，<=3 明显偏紧。
+        # 故取区间中部 8.0，且不建议继续微调该参数（会陷入噪声）。
+        self.atr_trail_mult = float(cfg.get("atr_trail_mult", 8.0) or 0)
+        # 成本基准：first=首笔开仓价（不受加仓抬高，推荐）｜wavg=加权平均成本（同旧 ATR 口径）
+        self.atr_cost_base = str(cfg.get("atr_cost_base", "first") or "first").lower()
+        # 止损线棘轮：True=只上不下（推荐）；False=允许随最高价回落而下移
+        self.atr_trail_floor = bool(cfg.get("atr_trail_floor", True))
+        # ---- 自适应止损：按市场状态缩放 k1/k2 ----
+        # off=关闭｜trend=个股趋势状态（收盘价 vs 均线 + 均线斜率）｜vol=波动率分位
+        self.adaptive = str(cfg.get("adaptive", "off") or "off").lower()
+        self.adaptive_trend_ma = int(cfg.get("adaptive_trend_ma", 60) or 60)
+        self.adaptive_slope_n = int(cfg.get("adaptive_slope_n", 5) or 5)
+        # 趋势确立（价在均线上且均线走平/向上）-> 放宽止损，让利润奔跑
+        self.adaptive_k_loose = float(cfg.get("adaptive_k_loose", 1.5) or 1.0)
+        # 趋势破坏（价跌破均线）-> 收紧止损，快速离场
+        self.adaptive_k_tight = float(cfg.get("adaptive_k_tight", 0.7) or 1.0)
+        # vol 模式：ATR% 滚动分位阈值
+        self.adaptive_vol_n = int(cfg.get("adaptive_vol_n", 120) or 120)
+        self.adaptive_vol_hi = float(cfg.get("adaptive_vol_hi", 0.7) or 0.7)
+        self.adaptive_vol_lo = float(cfg.get("adaptive_vol_lo", 0.3) or 0.3)
 
 
 class RiskManager:
@@ -108,8 +133,11 @@ class RiskManager:
 
     # ---------------- 持仓中检查（返回 (action, reason)） ----------------
 
-    def check_stop(self, pos, price: float, atr: float | None) -> tuple[str, str] | None:
-        """返回 (动作: stop_loss|take_profit, reason) 或 None"""
+    def check_stop(self, pos, price: float, atr: float | None,
+                   bar: dict | None = None) -> tuple[str, str] | None:
+        """返回 (动作: stop_loss|take_profit, reason) 或 None。
+
+        bar 为当前行情字典，供自适应止损读取趋势/波动列；不传则自适应退化为中性倍数 1.0。"""
         c = self.cfg
         if c.take_profit_pct > 0 and price >= pos.cost_price * (1 + c.take_profit_pct / 100):
             return "take_profit", f"止盈{c.take_profit_pct:g}%"
@@ -122,6 +150,76 @@ class RiskManager:
         elif c.stop_loss_mode == "trailing":
             if c.trailing_stop_pct > 0 and price <= pos.highest_price * (1 - c.trailing_stop_pct / 100):
                 return "stop_loss", f"移动止损{c.trailing_stop_pct:g}%"
+        elif c.stop_loss_mode == "atr_trailing":
+            hit = self._check_atr_trailing(pos, price, atr, bar)
+            if hit:
+                return hit
         elif c.stop_loss_mode == "none":
             return None
+        return None
+
+    # ---------------- ATR 移动止损 ----------------
+
+    def _adaptive_mult(self, pos, bar: dict | None) -> float:
+        """按市场状态返回止损 ATR 倍数的缩放系数。
+
+        trend：收盘价在均线上方且均线走平/向上 -> 趋势市，放宽止损（让利润奔跑）；
+               跌破均线 -> 趋势破坏，收紧止损（快速离场）；其余中性。
+        vol  ：ATR% 处于自身历史高分位 -> 高波动，放宽（防噪音扫损）；
+               低分位 -> 收紧（让止盈更敏感）。
+        无法判定时一律返回 1.0，保证行为可退化。"""
+        c = self.cfg
+        if c.adaptive == "off" or not bar:
+            return 1.0
+        if c.adaptive == "trend":
+            ma = bar.get("adaptive_ma")
+            close = bar.get("close")
+            if ma is None or close is None:
+                return 1.0
+            if close <= ma:
+                return c.adaptive_k_tight
+            # 价在均线上方：均线走平或向上才算趋势确立
+            slope = bar.get("adaptive_slope")
+            if slope is None:
+                return 1.0
+            return c.adaptive_k_loose if slope >= 0 else 1.0
+        if c.adaptive == "vol":
+            q = bar.get("adaptive_vol_q")
+            if q is None:
+                return 1.0
+            if q >= c.adaptive_vol_hi:
+                return c.adaptive_k_loose
+            if q <= c.adaptive_vol_lo:
+                return c.adaptive_k_tight
+            return 1.0
+        return 1.0
+
+    def _check_atr_trailing(self, pos, price: float, atr: float | None,
+                            bar: dict | None) -> tuple[str, str] | None:
+        """止损线 = max(成本项 − k1×ATR, 最高价 − k2×ATR)，棘轮只上不下。
+
+        成本项用首笔开仓价而非加权成本，切断「金字塔加仓抬高成本 -> 止损线抬高
+        -> 小幅回调即假止损」的死循环；移动项随持仓期最高价上移，实现锁盈。"""
+        if atr is None or atr <= 0:
+            return None
+        c = self.cfg
+        m = self._adaptive_mult(pos, bar)
+        k1, k2 = c.atr_multiplier * m, c.atr_trail_mult * m
+        if k2 <= 0:      # 未配置移动倍数时退化为纯 ATR 止损（成本项仍用所选基准）
+            k2 = k1
+        cost_base = pos.first_price if c.atr_cost_base == "first" else pos.cost_price
+        cost_line = cost_base - atr * k1          # 硬止损兜底
+        trail_line = pos.highest_price - atr * k2  # 随最高价上移
+        stop = max(cost_line, trail_line)
+        if c.atr_trail_floor:
+            # 棘轮：止损线只上不下，避免最高价回落后止损线跟着下移导致利润敞口扩大
+            pos.trail_stop = max(pos.trail_stop, stop)
+            stop = pos.trail_stop
+        else:
+            pos.trail_stop = stop
+        if price <= stop:
+            tag = "ATR移动止损"
+            if m != 1.0:
+                tag += f"[自适×{m:g}]"
+            return "stop_loss", f"{tag}(k1={k1:.2f},k2={k2:.2f})"
         return None

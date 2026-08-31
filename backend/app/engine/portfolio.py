@@ -8,17 +8,24 @@ from typing import Optional
 class Position:
     code: str
     volume: int
-    cost_price: float          # 后复权成本
+    cost_price: float          # 后复权成本（加权平均，加仓会抬高）
     open_time: str             # 开仓bar时间
     sellable_date: Optional[str]  # T+1: 可卖的最早交易日
     group_id: int              # 建仓组：同组开仓+后续加仓
     tag: str                   # 开仓类型标签: 开仓/加仓/做T
     highest_price: float = 0.0  # 移动止损用（后复权）
     open_fee: float = 0.0
+    # ATR_TRAILING：首笔开仓价（不随加仓改写）。金字塔加仓会抬高加权成本，
+    # 若止损线锚定加权成本，加仓后小幅回调即触发「假止损」；首笔价提供稳定基准。
+    first_price: float = 0.0
+    # ATR_TRAILING：当前生效的移动止损线，只上不下（ratchet），避免回调时止损线回落
+    trail_stop: float = 0.0
 
     def __post_init__(self) -> None:
         if self.highest_price == 0.0:
             self.highest_price = self.cost_price
+        if self.first_price == 0.0:
+            self.first_price = self.cost_price
 
 
 class Portfolio:

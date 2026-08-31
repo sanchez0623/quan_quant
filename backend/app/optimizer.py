@@ -23,6 +23,11 @@ RISK_KEYS = {
     "stop_loss_pct", "atr_period", "atr_multiplier", "take_profit_pct",
     "trailing_stop_pct", "max_drawdown_breaker", "max_intraday_trades",
     "max_holdings", "cash_reserve_pct",
+    # atr_trailing
+    "atr_trail_mult", "atr_cost_base", "atr_trail_floor",
+    # 自适应止损
+    "adaptive", "adaptive_trend_ma", "adaptive_slope_n", "adaptive_k_loose",
+    "adaptive_k_tight", "adaptive_vol_n", "adaptive_vol_hi", "adaptive_vol_lo",
 }
 
 METRICS = ("annual_return", "sharpe", "calmar", "total_return")
