@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>回测胜率诊断与优化方案 · bt_96bd7dcca2e4 / bt_809bdcc9032a / bt_95d4da25ff44</title>
+<style>
+  :root{
+    --bg:#faf9f7; --surface:#ffffff; --line:rgba(0,0,0,.10); --line2:rgba(0,0,0,.18);
+    --t1:#2C2C2A; --t2:#5F5E5A; --t3:#888780;
+    --red:#A32D2D; --red-bg:#FCEBEB; --red-line:#F09595;
+    --green:#0F6E56; --green-bg:#E1F5EE; --green-line:#5DCAA5;
+    --amber:#854F0B; --amber-bg:#FAEEDA; --amber-line:#EF9F27;
+    --blue:#185FA5; --blue-bg:#E6F1FB; --blue-line:#85B7EB;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t1);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.7;}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 32px 80px;}
+  h1{font-size:24px;font-weight:500;margin:0 0 8px;letter-spacing:-.01em}
+  .sub{color:var(--t2);font-size:13px;margin-bottom:32px}
+  h2{font-size:17px;font-weight:500;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:14px;font-weight:500;margin:26px 0 10px;color:var(--t1)}
+  p{margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;
+    background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th{background:#f4f2ee;text-align:left;padding:9px 12px;font-weight:500;
+    border-bottom:1px solid var(--line);white-space:nowrap;font-size:12px;color:var(--t2)}
+  td{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.05)}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .pos{color:var(--red)} .neg{color:var(--green)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
+  .kpi div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .kpi .l{font-size:12px;color:var(--t2);margin-bottom:4px}
+  .kpi .v{font-size:22px;font-weight:500;font-variant-numeric:tabular-nums}
+  .box{border-radius:8px;padding:14px 16px;margin:14px 0;font-size:13px;border:1px solid}
+  .box .bt{font-weight:500;margin-bottom:6px;display:block}
+  .b-red{background:var(--red-bg);border-color:var(--red-line);color:#501313}
+  .b-green{background:var(--green-bg);border-color:var(--green-line);color:#04342C}
+  .b-amber{background:var(--amber-bg);border-color:var(--amber-line);color:#412402}
+  .b-blue{background:var(--blue-bg);border-color:var(--blue-line);color:#042C53}
+  .b-red .bt{color:var(--red)} .b-green .bt{color:var(--green)}
+  .b-amber .bt{color:var(--amber)} .b-blue .bt{color:var(--blue)}
+  ul{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  code{background:#f1efe8;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;
+    border:1px solid var(--line2);color:var(--t2);margin-right:6px}
+  .tag-p0{background:var(--red-bg);border-color:var(--red-line);color:var(--red)}
+  .tag-p1{background:var(--amber-bg);border-color:var(--amber-line);color:var(--amber)}
+  .tag-p2{background:var(--blue-bg);border-color:var(--blue-line);color:var(--blue)}
+  .hl{background:#fff3cd;padding:0 3px;border-radius:3px}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
+    font-size:12px;color:var(--t3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>回测胜率诊断与优化方案</h1>
+<div class="sub">
+分析对象：bt_96bd7dcca2e4 · bt_809bdcc9032a · bt_95d4da25ff44 &nbsp;|&nbsp;
+生成时间：2026-08-29 &nbsp;|&nbsp; 样本外验证：8 场景 / 4 股票池 / 3 个年度区间
+</div>
+
+<div class="box b-red">
+<span class="bt">核心结论</span>
+胜率低的根因<strong>不在入场信号，而在止损机制</strong>。三个任务 73%~89% 的平仓来自止损，
+止损累计贡献 <strong>−122 万</strong>，把止盈端赚到的 +106 万全部吃掉还倒亏。
+根因是<strong>金字塔加仓抬高加权成本 → ATR 止损线随之抬高 → 小幅回调即触发「假止损」</strong>。
+将止损改为锚定最高价的移动止损并限制加仓，<strong>8 个验证场景胜率全部提升（+23~+39pp），
+止损盈亏 8/8 转正或大幅收窄</strong>；但收益率仅 5/8 改善，趋势强市中会让渡右侧利润。
+</div>
+
+<h2>一、三个任务总览</h2>
+
+<table>
+<thead><tr>
+<th>任务 ID</th><th>创建</th><th>策略</th><th>股票池</th><th>区间</th>
+<th class="num">收益率</th><th class="num">回撤</th><th class="num">夏普</th>
+<th class="num">笔数胜率</th><th class="num">头寸胜率</th><th class="num">持股</th>
+</tr></thead>
+<tbody>
+<tr>
+<td class="mono">bt_96bd7dcca2e4</td><td>00:43:28</td><td>测试做t</td><td>创业板 20</td>
+<td>2025-08~2026-08</td>
+<td class="num pos">+7.57%</td><td class="num neg">−10.68%</td><td class="num">0.606</td>
+<td class="num">42.7%</td><td class="num">37.2%</td><td class="num">4.49天</td>
+</tr>
+<tr>
+<td class="mono">bt_809bdcc9032a</td><td>00:46:22</td><td>测试做t2</td><td>科创板 20</td><td>2025 全年</td>
+<td class="num neg">−6.86%</td><td class="num neg">−23.93%</td><td class="num neg">−0.149</td>
+<td class="num">28.7%</td><td class="num">13.4%</td><td class="num">12.70天</td>
+</tr>
+<tr>
+<td class="mono">bt_95d4da25ff44</td><td>00:48:43</td><td>测试做t2</td><td>科创板 20</td><td>2025 全年</td>
+<td class="num neg">−2.93%</td><td class="num neg">−21.00%</td><td class="num">0.015</td>
+<td class="num">31.0%</td><td class="num">16.2%</td><td class="num">14.23天</td>
+</tr>
+</tbody>
+</table>
+
+<p>三个任务的策略参数<strong>几乎完全相同</strong>，唯一实质差异是<strong>止损模式</strong>与股票池／区间：</p>
+
+<table>
+<thead><tr><th>参数</th><th>96bd7d</th><th>809bdc</th><th>95d4da</th></tr></thead>
+<tbody>
+<tr><td class="mono">stop_loss_mode</td><td><strong>trailing</strong>（移动止损 5%）</td><td>atr</td><td>atr</td></tr>
+<tr><td class="mono">atr_multiplier / atr_period</td><td>2.5 / 14</td><td>2.5 / 14</td><td>3.0 / 20</td></tr>
+<tr><td class="mono">t_vol_hi</td><td>1.5</td><td>1.3333</td><td>1.3333</td></tr>
+<tr><td>其余 40+ 参数</td><td colspan="3">完全一致</td></tr>
+</tbody>
+</table>
+
+<div class="box b-blue">
+<span class="bt">关键对照</span>
+唯一使用移动止损的 96bd7d 是<strong>三个任务中唯一盈利的</strong>（+7.57%，回撤仅 −10.68%），
+且它的 196 笔止损合计盈亏为 <strong>+5.1 万（正贡献）</strong>；
+而两个 ATR 止损任务的止损端分别亏 −122 万。
+这是本次诊断的第一个强信号。
+</div>
+
+<h2>二、利润归因：止损是唯一的黑洞</h2>
+
+<p>以 <span class="mono">bt_95d4da25ff44</span> 为例，按退出类型拆解全部 239 笔卖出：</p>
+
+<table>
+<thead><tr>
+<th>退出类型</th><th class="num">笔数</th><th class="num">占比</th><th class="num">胜率</th>
+<th class="num">净盈亏</th><th class="num">单笔均值</th><th>判定</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>止损（ATR ×3）</td><td class="num">176</td><td class="num">73.6%</td>
+<td class="num">9.7%</td><td class="num neg">−1,218,484</td><td class="num neg">−6,923</td>
+<td><span class="tag tag-p0">利润黑洞</span></td></tr>
+<tr>
+<td>减仓（过热锁盈 + 网格高抛）</td><td class="num">41</td><td class="num">17.2%</td>
+<td class="num">97.6%</td><td class="num pos">+782,168</td><td class="num pos">+19,077</td>
+<td><span class="tag tag-p2">有效，应强化</span></td></tr>
+<tr>
+<td>做T</td><td class="num">8</td><td class="num">3.3%</td>
+<td class="num">100%</td><td class="num pos">+172,597</td><td class="num pos">+21,575</td>
+<td><span class="tag tag-p1">100%胜率，触发太少</span></td></tr>
+<tr>
+<td>清仓（MACD 翻空）</td><td class="num">14</td><td class="num">5.9%</td>
+<td class="num">64.3%</td><td class="num pos">+108,084</td><td class="num pos">+7,720</td>
+<td><span class="tag tag-p2">正常</span></td></tr>
+</tbody>
+</table>
+
+<div class="box b-red">
+<span class="bt">一句话</span>
+止盈端（减仓 + 做T + 清仓）合计 <strong>+106.3 万</strong>，止损端 <strong>−121.8 万</strong>。
+系统不是不会赚钱，而是<strong>赚到的钱被止损原样吐了回去</strong>。
+优化胜率的唯一高杠杆点，就是把止损端的 −122 万收窄。
+</div>
+
+<h3>止损的亏损结构：绝大多数是「噪音止损」</h3>
+
+<table>
+<thead><tr><th>指标</th><th class="num">95d4da（ATR ×3）</th><th class="num">96bd7d（移动 5%）</th></tr></thead>
+<tbody>
+<tr><td>止损笔数</td><td class="num">176</td><td class="num">196</td></tr>
+<tr><td>止损胜率</td><td class="num">9.7%</td><td class="num pos">39.3%</td></tr>
+<tr><td>单笔亏损中位数</td><td class="num">−1.71%</td><td class="num">−1.46%</td></tr>
+<tr><td>小亏（&lt;2%）占比</td><td class="num">59.1%</td><td class="num">56.1%</td></tr>
+<tr><td>止损端合计盈亏</td><td class="num neg">−1,218,484</td><td class="num pos">+51,302</td></tr>
+</tbody>
+</table>
+
+<p>近六成止损的亏损不足 2%，中位仅 −1.71%。这不是趋势反转，是<strong>被波动噪音扫出局</strong>；
+而 96bd7d 用移动止损时，同样的噪音区间内止损端反而是净赚的。</p>
+
+<h2>三、根因诊断</h2>
+
+<h3>3.1 死循环：加仓抬高成本 → 止损线抬高 → 假止损</h3>
+
+<p>引擎中持仓成本是<strong>加权平均成本</strong>，且加仓会合并进同一个持仓对象
+（<span class="mono">portfolio.py:59</span>）：
+
+<code>cost = (cost × vol + price × new_vol) / (vol + new_vol)</code></p>
+
+<p>而 ATR 止损线锚定这个成本（<span class="mono">risk.py:120</span>）：</p>
+<code>price ≤ cost_price − atr × atr_multiplier → 触发止损</code>
+
+<div class="box b-red">
+<span class="bt">两者耦合的后果</span>
+金字塔加仓发生在「突破 20 日新高」时，<strong>必然买在相对高位</strong>；
+加仓量又远大于底仓（<span class="mono">add_scale=0.5</span> 按账户权益计算，而非底仓比例）。
+于是<strong>成本被抬升 → 止损线同步抬升 → 只需小幅回调就触发 → 记为亏损</strong>，
+形成自我强化的死循环。
+</div>
+
+<h3>3.2 具体案例：688178 · group_id=1（bt_95d4da25ff44）</h3>
+
+<table>
+<thead><tr>
+<th>时间</th><th>方向</th><th class="num">价格</th><th class="num">数量</th><th>类型</th>
+<th class="num">盈亏</th><th class="num">持仓加权成本</th>
+</tr></thead>
+<tbody>
+<tr><td class="mono">01-24 13:35</td><td>买入</td><td class="num">13.3134</td><td class="num">1,400</td><td>开仓</td><td class="num">—</td><td class="num">13.3134</td></tr>
+<tr><td class="mono">01-27 09:40</td><td>买入</td><td class="num">13.6638</td><td class="num">6,200</td><td>加仓</td><td class="num">—</td><td class="num">13.6014</td></tr>
+<tr><td class="mono">02-07 09:40</td><td>卖出</td><td class="num">15.1548</td><td class="num">2,500</td><td>减仓</td><td class="num pos">+3,862</td><td class="num">13.6014</td></tr>
+<tr style="background:var(--amber-bg)"><td class="mono">02-12 09:40</td><td>买入</td><td class="num">16.5466</td><td class="num">23,000</td><td><strong>加仓</strong></td><td class="num">—</td><td class="num"><strong>16.0114</strong></td></tr>
+<tr style="background:var(--red-bg)"><td class="mono">02-13 15:00</td><td>卖出</td><td class="num">15.8140</td><td class="num">4,500</td><td><strong>止损</strong></td><td class="num neg">−935</td><td class="num">16.0114</td></tr>
+<tr><td class="mono">02-14 09:40</td><td>卖出</td><td class="num">15.7241</td><td class="num">3,100</td><td>止损</td><td class="num neg">−924</td><td class="num">16.0114</td></tr>
+<tr><td class="mono">02-14 09:45</td><td>卖出</td><td class="num">15.7641</td><td class="num">5,200</td><td>止损</td><td class="num neg">−1,339</td><td class="num">16.0114</td></tr>
+<tr><td class="mono">02-14 09:50</td><td>卖出</td><td class="num">15.7541</td><td class="num">9,000</td><td>止损</td><td class="num neg">−2,405</td><td class="num">16.0114</td></tr>
+<tr><td class="mono">02-14 09:55</td><td>卖出</td><td class="num">15.6343</td><td class="num">6,300</td><td>止损</td><td class="num neg">−2,438</td><td class="num">16.0114</td></tr>
+</tbody>
+</table>
+
+<div class="box b-red">
+<span class="bt">这个案例说明了一切</span>
+首笔开仓价 <strong>13.3134</strong>，最终清仓价 <strong>15.63~15.81</strong>，
+股价全程<strong>上涨约 17.4%</strong>，但整个头寸净亏 <strong>−8,041 元</strong>。<br>
+原因：第二次加仓 23,000 股 @16.5466（是底仓 1,400 股的 <strong>16.4 倍</strong>），
+把加权成本从 13.60 一把拉到 <strong>16.01</strong>，抬高 17.7%。
+此后股价仍在 15.6~15.8，<strong>相对首笔开仓价大赚，相对加权成本却是亏的</strong>，
+ATR 止损线随成本上移，回调 1.3% 即触发。
+</div>
+
+<h3>3.3 胜率口径本身是失真的</h3>
+
+<p>上面还能看到第二个问题：一个止损事件被拆成 <strong>5 笔</strong>（09:40 / 09:45 / 09:50 / 09:55 每 5 分钟一笔），
+每笔<strong>单独计入 win_rate 的分母</strong>。</p>
+
+<table>
+<thead><tr><th>任务</th><th class="num">平仓笔数</th><th class="num">真实头寸数</th><th class="num">放大倍数</th><th class="num">报告胜率</th><th class="num">头寸级胜率</th></tr></thead>
+<tbody>
+<tr><td class="mono">bt_95d4da25ff44</td><td class="num">239</td><td class="num">101</td><td class="num">2.37×</td><td class="num">31.0%</td><td class="num">16.2%</td></tr>
+<tr><td class="mono">bt_809bdcc9032a</td><td class="num">247</td><td class="num">112</td><td class="num">2.21×</td><td class="num">28.7%</td><td class="num">13.4%</td></tr>
+<tr><td class="mono">bt_96bd7dcca2e4</td><td class="num">220</td><td class="num">148</td><td class="num">1.49×</td><td class="num">42.7%</td><td class="num">37.2%</td></tr>
+</tbody>
+</table>
+
+<p>你看到的「31% 胜率」既不是头寸胜率也不是机会胜率，而是<strong>被分批卖出稀释后的笔数胜率</strong>。
+建议 <span class="mono">stats.py</span> 增加按 <span class="mono">group_id</span> 聚合的
+<span class="mono">position_win_rate</span> 字段——<strong>此项需改代码，待你确认后我再动手</strong>。</p>
+
+<h3>3.4 持仓周期与胜率强正相关</h3>
+
+<table>
+<thead><tr><th>持仓天数</th><th class="num">头寸数</th><th class="num">胜率</th><th class="num">净盈亏</th><th class="num">止损率</th></tr></thead>
+<tbody>
+<tr><td>0–3 天</td><td class="num">67</td><td class="num">1.5%</td><td class="num neg">−1,034,434</td><td class="num neg">94.0%</td></tr>
+<tr><td>4–7 天</td><td class="num">16</td><td class="num">12.5%</td><td class="num neg">−162,710</td><td class="num">81.2%</td></tr>
+<tr><td>8–15 天</td><td class="num">5</td><td class="num">20.0%</td><td class="num neg">−23,269</td><td class="num">100%</td></tr>
+<tr><td>16–30 天</td><td class="num">3</td><td class="num">66.7%</td><td class="num pos">+164,764</td><td class="num">66.7%</td></tr>
+<tr><td>31–60 天</td><td class="num">5</td><td class="num">100%</td><td class="num pos">+136,338</td><td class="num">40.0%</td></tr>
+<tr><td>61 天以上</td><td class="num">5</td><td class="num">100%</td><td class="num pos">+763,675</td><td class="num">0%</td></tr>
+</tbody>
+</table>
+
+<p>近乎单调：<strong>持有越久，胜率越高、赚得越多</strong>。而 94% 的头寸在 3 天内就被止损砍掉，
+贡献了 −103 万的亏损。系统在趋势尚未展开时就把仓位清掉了。</p>
+
+<h2>四、优化方案与对照实验</h2>
+
+<h3>4.1 方案设计（纯参数调整，不改引擎代码）</h3>
+
+<table>
+<thead><tr><th>参数</th><th>当前</th><th>建议</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td class="mono">stop_loss_mode</td><td class="mono">atr</td><td class="mono hl">trailing</td>
+<td>止损线锚定最高价而非加权成本，与加仓成本彻底解耦，止损线只上不下</td></tr>
+<tr><td class="mono">trailing_stop_pct</td><td>5.0</td><td class="mono hl">10.0</td>
+<td>10% 是 8 组对照中的甜点（见 4.2 倒 U 型曲线）</td></tr>
+<tr><td class="mono">max_adds</td><td>2</td><td class="mono hl">1</td>
+<td>加仓次数越多，成本漂移越大；只加 1 次可显著收窄回撤</td></tr>
+<tr><td class="mono">add_scale</td><td>0.5</td><td class="mono hl">0.25</td>
+<td>单笔加仓量减半，抑制成本向上漂移的幅度</td></tr>
+</tbody>
+</table>
+
+<h3>4.2 对照实验结果（科创板 20 只 / 2025 全年，仅改上述参数）</h3>
+
+<table>
+<thead><tr>
+<th>方案</th><th class="num">收益率</th><th class="num">回撤</th><th class="num">夏普</th>
+<th class="num">笔胜率</th><th class="num">头寸胜率</th><th class="num">止损盈亏</th><th class="num">减仓盈亏</th>
+</tr></thead>
+<tbody>
+<tr><td>V0 基线（ATR ×3）</td><td class="num neg">−2.93%</td><td class="num neg">−21.00%</td>
+<td class="num">0.015</td><td class="num">31.0%</td><td class="num">16.2%</td>
+<td class="num neg">−1,218k</td><td class="num pos">+938k</td></tr>
+<tr><td>V1 移动 5%</td><td class="num neg">−2.52%</td><td class="num neg">−21.46%</td>
+<td class="num neg">−0.046</td><td class="num">43.6%</td><td class="num">33.3%</td>
+<td class="num neg">−214k</td><td class="num pos">+127k</td></tr>
+<tr><td>R7 移动 6.5% + 限加仓</td><td class="num neg">−2.43%</td><td class="num neg">−19.37%</td>
+<td class="num neg">−0.026</td><td class="num">36.9%</td><td class="num">32.0%</td>
+<td class="num neg">−277k</td><td class="num pos">+266k</td></tr>
+<tr><td>V4 移动 8%</td><td class="num pos">+3.73%</td><td class="num neg">−20.15%</td>
+<td class="num">0.284</td><td class="num">43.3%</td><td class="num">33.3%</td>
+<td class="num neg">−147k</td><td class="num pos">+402k</td></tr>
+<tr><td>R4 移动 8% + 限加仓</td><td class="num pos">+5.56%</td><td class="num neg">−20.40%</td>
+<td class="num">0.365</td><td class="num">45.4%</td><td class="num">36.8%</td>
+<td class="num neg">−40k</td><td class="num pos">+381k</td></tr>
+<tr><td>V5 移动 5% + 限加仓</td><td class="num pos">+3.08%</td><td class="num neg">−16.25%</td>
+<td class="num">0.264</td><td class="num">44.7%</td><td class="num">34.5%</td>
+<td class="num neg">−46k</td><td class="num pos">+122k</td></tr>
+<tr><td>R8 移动 12% + 限加仓</td><td class="num pos">+4.08%</td><td class="num neg">−19.82%</td>
+<td class="num">0.291</td><td class="num">51.2%</td><td class="num">39.2%</td>
+<td class="num neg">−192k</td><td class="num pos">+598k</td></tr>
+<tr style="background:var(--green-bg)"><td><strong>R6 移动 10% + 限加仓</strong></td>
+<td class="num pos"><strong>+9.25%</strong></td><td class="num neg">−21.82%</td>
+<td class="num"><strong>0.506</strong></td><td class="num"><strong>51.5%</strong></td>
+<td class="num"><strong>41.2%</strong></td>
+<td class="num pos"><strong>+43k</strong></td><td class="num pos">+394k</td></tr>
+</tbody>
+</table>
+
+<div class="box b-green">
+<span class="bt">R6 的突破点</span>
+止损端盈亏<strong>首次转正（+43k，108 笔，44% 胜率）</strong>——
+止损从「利润黑洞」变成「锁盈出场」。同时换手从 362 笔降到 271 笔（−25%），手续费同步下降。
+</div>
+
+<h3>4.3 参数敏感性：止损宽度呈倒 U 型</h3>
+
+<table>
+<thead><tr><th>移动止损宽度</th><th class="num">收益率</th><th class="num">头寸胜率</th><th class="num">止损盈亏</th><th class="num">减仓盈亏</th></tr></thead>
+<tbody>
+<tr><td>6.5%</td><td class="num neg">−2.43%</td><td class="num">32.0%</td><td class="num neg">−277k</td><td class="num pos">+266k</td></tr>
+<tr><td>8%</td><td class="num pos">+5.56%</td><td class="num">36.8%</td><td class="num neg">−40k</td><td class="num pos">+381k</td></tr>
+<tr style="background:var(--green-bg)"><td><strong>10%</strong></td><td class="num pos"><strong>+9.25%</strong></td><td class="num"><strong>41.2%</strong></td><td class="num pos"><strong>+43k</strong></td><td class="num pos">+394k</td></tr>
+<tr><td>12%</td><td class="num pos">+4.08%</td><td class="num">39.2%</td><td class="num neg">−192k</td><td class="num pos">+598k</td></tr>
+</tbody>
+</table>
+
+<p>止损越紧 → 胜率越高但右侧利润损失；越松 → 减仓利润高但止损亏损大。
+<strong>10% 是收益与胜率的共同甜点</strong>，不要拍脑袋继续放宽。</p>
+
+<h2>五、样本外验证（关键，请重点看）</h2>
+
+<p>把 R6 参数原样搬到<strong>另外 3 个股票池 + 3 个时间区间</strong>，共 8 个场景：</p>
+
+<table>
+<thead><tr>
+<th>场景</th><th class="num">基线收益</th><th class="num">R6 收益</th><th class="num">Δ 收益</th>
+<th class="num">头寸胜率 Δ</th><th class="num">止损盈亏 Δ</th><th class="num">回撤 Δ</th>
+</tr></thead>
+<tbody>
+<tr><td>科创板 20 / 2025 全年</td><td class="num neg">−2.93%</td><td class="num pos">+9.25%</td>
+<td class="num pos">+12.18pp</td><td class="num pos">+25.1pp</td><td class="num pos">+1,261k</td><td class="num neg">−0.82pp</td></tr>
+<tr><td>创业板 20 / 2025 全年</td><td class="num neg">−12.25%</td><td class="num pos">+32.72%</td>
+<td class="num pos">+44.97pp</td><td class="num pos">+26.6pp</td><td class="num pos">+1,587k</td><td class="num pos">+3.93pp</td></tr>
+<tr><td>创业板 20 / 2024 全年</td><td class="num pos">+4.65%</td><td class="num pos">+28.27%</td>
+<td class="num pos">+23.62pp</td><td class="num pos">+38.9pp</td><td class="num pos">+1,179k</td><td class="num pos">+2.47pp</td></tr>
+<tr><td>混合 60 / 2025 全年</td><td class="num neg">−7.19%</td><td class="num neg">−1.69%</td>
+<td class="num pos">+5.51pp</td><td class="num pos">+27.4pp</td><td class="num pos">+1,247k</td><td class="num neg">−0.63pp</td></tr>
+<tr><td>混合 60 / 2024 全年</td><td class="num pos">+1.17%</td><td class="num neg">−1.55%</td>
+<td class="num neg">−2.72pp</td><td class="num pos">+22.9pp</td><td class="num pos">+1,073k</td><td class="num pos">+2.45pp</td></tr>
+<tr><td>混合 60 / 近 12 月</td><td class="num neg">−3.29%</td><td class="num pos">+19.43%</td>
+<td class="num pos">+22.72pp</td><td class="num pos">+27.2pp</td><td class="num pos">+1,803k</td><td class="num pos">+10.70pp</td></tr>
+<tr style="background:var(--amber-bg)"><td>创业板 40 / 2025 全年</td><td class="num pos">+73.08%</td><td class="num pos">+44.94%</td>
+<td class="num neg">−28.13pp</td><td class="num pos">+23.4pp</td><td class="num pos">+2,467k</td><td class="num neg">−1.21pp</td></tr>
+<tr><td>科创板 40 / 2025 全年</td><td class="num neg">−8.84%</td><td class="num neg">−14.55%</td>
+<td class="num neg">−5.71pp</td><td class="num pos">+27.3pp</td><td class="num pos">+786k</td><td class="num pos">+1.83pp</td></tr>
+</tbody>
+</table>
+
+<div class="kpi">
+<div><div class="l">胜率提升</div><div class="v pos">8 / 8</div></div>
+<div><div class="l">止损盈亏改善</div><div class="v pos">8 / 8</div></div>
+<div><div class="l">收益率改善</div><div class="v" style="color:var(--amber)">5 / 8</div></div>
+<div><div class="l">回撤改善</div><div class="v" style="color:var(--amber)">5 / 8</div></div>
+</div>
+
+<div class="box b-amber">
+<span class="bt">必须承认的边界：胜率提升是确定的，收益提升不是</span>
+<strong>胜率 8/8 提升（+22.9 ~ +38.9pp），止损盈亏 8/8 改善（+79 万 ~ +247 万）——这两项完全稳健。</strong><br><br>
+但收益率只有 5/8 改善。规律非常清晰：<strong>基线本身亏损的场景，R6 全部大幅改善</strong>
+（−2.93→+9.25、−12.25→+32.72、−3.29→+19.43）；
+<strong>而基线已经很强的趋势市（创业板 40 只 +73.08%），R6 反而降 28pp</strong>。
+<br><br>
+原因：创业板 40 只 2025 是强趋势，基线 ATR 止损虽然止损端亏 −169.6 万，
+但容忍度高，让盈利头寸充分奔跑，减仓锁盈拿到 <strong>+268.3 万</strong>；
+R6 的 10% 移动止损提前下车，减仓只有 +90.5 万。
+<br><br>
+<strong>结论：「提升胜率」和「提升收益」是两个目标。止损松紧本质是「胜率 ↔ 右侧利润」的交换。</strong>
+</div>
+
+<h2>六、其他三个高杠杆机会</h2>
+
+<h3><span class="tag tag-p1">机会 1</span>做T模块：100% 胜率，但一年只触发 8 次</h3>
+<p>三个任务的做T都是 <strong>8 笔、100% 胜率、+17.2 万、单笔均值 +2.16 万</strong>——
+这是全系统胜率最高的模块，却因为触发条件太苛刻（<span class="mono">min_t_amount=20000</span>、
+<span class="mono">t_debt_max_days=2</span>、<span class="mono">t_max_chase_pct=3.0</span>）
+一年只用上 8 次。<strong>放宽触发条件的边际收益，可能高于继续调止损。</strong></p>
+
+<h3><span class="tag tag-p2">机会 2</span>减仓逻辑已被验证有效，应强化而非削弱</h3>
+<p>过热减仓 + 网格高抛在全部场景中胜率 79%~98%，是真正的 alpha 来源。
+R8（移动止损 12%）减仓拿到 +59.8 万也是全场最高。<strong>调参时不要把这条腿砍掉。</strong></p>
+
+<h3><span class="tag tag-p1">机会 3</span>选股过滤的杠杆远大于参数微调</h3>
+<table>
+<thead><tr><th>个股（bt_95d4da25ff44）</th><th class="num">笔数</th><th class="num">胜率</th><th class="num">净盈亏</th></tr></thead>
+<tbody>
+<tr><td>688520 神州细胞</td><td class="num">7</td><td class="num">100%</td><td class="num pos">+424,702</td></tr>
+<tr><td>688557 兰剑智能</td><td class="num">29</td><td class="num">41.4%</td><td class="num pos">+164,869</td></tr>
+<tr><td>688316 青云科技</td><td class="num">6</td><td class="num">0%</td><td class="num neg">−158,134</td></tr>
+<tr><td>688717 艾罗能源</td><td class="num">8</td><td class="num">0%</td><td class="num neg">−136,300</td></tr>
+</tbody>
+</table>
+<p>同样是 20 只池子，最好与最差的个股差 <strong>58 万</strong>。
+加入流动性/波动率/趋势强度过滤剔除「0% 胜率」的标的，可能比调止损更有效。</p>
+
+<h2>七、行动建议</h2>
+
+<table>
+<thead><tr><th>优先级</th><th>动作</th><th>预期效果</th><th>是否需改代码</th></tr></thead>
+<tbody>
+<tr>
+<td><span class="tag tag-p0">P0</span></td>
+<td>止损模式改为 <span class="mono">trailing 10%</span>，
+<span class="mono">max_adds=1</span>，<span class="mono">add_scale=0.25</span></td>
+<td>头寸胜率 +23~+39pp，止损端由 −122 万转为正贡献</td>
+<td>否，改配置即可</td></tr>
+<tr>
+<td><span class="tag tag-p0">P0</span></td>
+<td>评估自适应止损：趋势强（指数在 MA60 上方 / ADX 高）时用宽松 ATR 止损，
+震荡市用 10% 移动止损</td>
+<td>解决 5/8 的收益问题，兼顾趋势市右侧利润</td>
+<td>是，需新增止损模式</td></tr>
+<tr>
+<td><span class="tag tag-p1">P1</span></td>
+<td><span class="mono">stats.py</span> 增加 <span class="mono">position_win_rate</span>
+（按 group_id 聚合）</td>
+<td>让胜率指标反映真实头寸表现，消除分批卖出造成的 2.4 倍失真</td>
+<td>是，改动较小</td></tr>
+<tr>
+<td><span class="tag tag-p1">P1</span></td>
+<td>放宽做T触发条件，把 8 次/年提到 30+ 次/年</td>
+<td>做T模块 100% 胜率，是明确的增量 alpha</td>
+<td>否，调参</td></tr>
+<tr>
+<td><span class="tag tag-p2">P2</span></td>
+<td>股票池加入趋势强度/流动性前置过滤</td>
+<td>剔除 0% 胜率标的，个股层面最大差 58 万</td>
+<td>部分需改代码</td></tr>
+</tbody>
+</table>
+
+<h2>八、待你确认的两个改动</h2>
+
+<div class="box b-amber">
+<span class="bt">1. 止损与成本耦合的设计缺陷（引擎级）</span>
+<span class="mono">risk.py:120</span> 的 ATR 止损锚定
+<span class="mono">pos.cost_price</span>，而 <span class="mono">portfolio.py:59</span> 的加权成本会被加仓抬高，
+两者耦合产生了 3.2 节的「假止损」。<br><br>
+<strong>可选修复方向（三选一，需你拍板）：</strong>
+<ul style="margin:8px 0">
+<li><strong>A. 最小改动</strong>：ATR 止损基准从 <span class="mono">cost_price</span> 改为
+<span class="mono">min(cost_price, first_open_price)</span>，切断加仓对止损线的抬升；</li>
+<li><strong>B. 推荐</strong>：新增 <span class="mono">atr_trailing</span> 模式——
+止损线 = <span class="mono">max(cost − k₁×ATR, highest − k₂×ATR)</span>，随最高价上移，兼顾两者；</li>
+<li><strong>C. 不动代码</strong>：仅用 P0 的参数方案，把 <span class="mono">stop_loss_mode</span>
+设为 <span class="mono">trailing</span> 绕开该问题（已验证有效，但失去 ATR 的自适应波动特性）。</li>
+</ul>
+按你的规矩，<strong>我不会擅自修改引擎代码，等你确认方案后再动手</strong>。
+</div>
+
+<div class="box b-amber">
+<span class="bt">2. R6 参数是否直接落到默认模板</span>
+R6 在 8 个场景中胜率 8/8 提升，但收益 5/8 改善。
+<strong>建议先在震荡/弱势环境启用，趋势强市保留 ATR 宽松止损</strong>，
+即配合上面的自适应方案一起上，而不是无条件全局替换。
+</div>
+
+<div class="foot">
+数据来源：<span class="mono">data/meta.db · backtest_reports</span> 最近 3 条记录及其 JSON 报告。<br>
+对照实验脚本：<span class="mono">scripts/ab_stop_loss.py</span>（首轮）、
+<span class="mono">scripts/ab_refine.py</span>（细化）、
+<span class="mono">scripts/ab_validate.py</span> 与 <span class="mono">scripts/ab_validate2.py</span>（样本外）。<br>
+归因脚本：<span class="mono">scripts/analyze_last3.py</span>、<span class="mono">scripts/analyze_last3_b.py</span>。<br>
+实验结果：<span class="mono">data/reports/_ab_*_result.json</span>。
+本轮仅运行回测与生成报告，<strong>未修改任何引擎代码</strong>。
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>未来函数与过拟合审查 · atr_trailing / 自适应止损</title>
+<style>
+  :root{
+    --bg:#faf9f7; --surface:#fff; --line:rgba(0,0,0,.10); --line2:rgba(0,0,0,.18);
+    --t1:#2C2C2A; --t2:#5F5E5A; --t3:#888780;
+    --red:#A32D2D; --red-bg:#FCEBEB; --red-line:#F09595;
+    --green:#0F6E56; --green-bg:#E1F5EE; --green-line:#5DCAA5;
+    --amber:#854F0B; --amber-bg:#FAEEDA; --amber-line:#EF9F27;
+    --blue:#185FA5; --blue-bg:#E6F1FB; --blue-line:#85B7EB;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t1);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.7}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 32px 80px}
+  h1{font-size:24px;font-weight:500;margin:0 0 8px}
+  .sub{color:var(--t2);font-size:13px;margin-bottom:32px}
+  h2{font-size:17px;font-weight:500;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:14px;font-weight:500;margin:26px 0 10px}
+  p{margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;
+    background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th{background:#f4f2ee;text-align:left;padding:9px 12px;font-weight:500;
+    border-bottom:1px solid var(--line);white-space:nowrap;font-size:12px;color:var(--t2)}
+  td{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.05)}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .pos{color:var(--red)} .neg{color:var(--green)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .box{border-radius:8px;padding:14px 16px;margin:14px 0;font-size:13px;border:1px solid}
+  .box .bt{font-weight:500;margin-bottom:6px;display:block}
+  .b-red{background:var(--red-bg);border-color:var(--red-line);color:#501313}
+  .b-green{background:var(--green-bg);border-color:var(--green-line);color:#04342C}
+  .b-amber{background:var(--amber-bg);border-color:var(--amber-line);color:#412402}
+  .b-blue{background:var(--blue-bg);border-color:var(--blue-line);color:#042C53}
+  .b-red .bt{color:var(--red)} .b-green .bt{color:var(--green)}
+  .b-amber .bt{color:var(--amber)} .b-blue .bt{color:var(--blue)}
+  ul{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  code{background:#f1efe8;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre{background:#f4f2ee;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-size:12.5px;line-height:1.6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:12px 0}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--t3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>未来函数与过拟合审查</h1>
+<div class="sub">
+审查对象：atr_trailing 止损模式 + 自适应止损 &nbsp;|&nbsp; 2026-08-29 &nbsp;|&nbsp;
+方法：代码语义审查 + 前视注入对照 + 时序样本外（2024 选参 / 2025 测试）
+</div>
+
+<div class="box b-green">
+<span class="bt">结论一：未来函数 —— 未发现前视</span>
+核心依赖 <span class="mono">atr_pct</span> 来自 momentum_t 的
+<span class="mono">_daily_features</span>，该策略已做 T-1 对齐（源码注释明确「防未来函数」）。
+前视注入对照（预知未来 1/5 个交易日的 ATR）收益变化仅 −0.06pp / +0.02pp。
+</div>
+
+<div class="box b-amber">
+<span class="bt">结论二：过拟合 —— 模式有效，但我之前推荐的 k2=6 是噪声</span>
+<strong>好消息</strong>：时序样本外下，8 个 k2 取值<strong>全部</strong>跑赢基线（+16.46 ~ +33.39pp），
+说明有效的不是某个参数值，而是 <strong>atr_trailing 这个模式本身</strong>。<br>
+<strong>坏消息</strong>：k2 的「最优值」完全不可预测——训练集排名与测试集排名<strong>不相关</strong>。
+我之前推荐的 k2=6 是在含 2025 数据的场景上选的（样本内），实测训练集仅排第 6、测试集第 5。<br>
+<strong>默认已从 6.0 改为 8.0</strong>（5~12 稳健区间中部），并标注不建议继续微调。
+</div>
+
+<h2>一、未来函数审查</h2>
+
+<h3>1.1 逐项核查</h3>
+
+<table>
+<thead><tr><th>数据/逻辑</th><th>时点语义</th><th>判定</th></tr></thead>
+<tbody>
+<tr>
+<td class="mono">first_price</td>
+<td>首笔成交价，建仓时确定，加仓不改写</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr>
+<td class="mono">highest_price</td>
+<td>当日 high 更新，当日 close 判定；<span class="mono">stop_fill='next_open'</span>（默认）
+当日判定、<strong>次日开盘</strong>成交</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr>
+<td class="mono">trail_stop</td>
+<td>持仓期已实现状态的单调上移，只用过去信息</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr>
+<td class="mono">atr_pct<br>（_daily_atr 依赖）</td>
+<td>momentum_t 在 prepare 中做了 <span class="mono">day.shift(-1)</span>，
+当日 bar 只能看到<strong>上一完整交易日</strong>的特征</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr>
+<td class="mono">adaptive_ma / slope</td>
+<td>优先复用 <span class="mono">ma_slow</span> / <span class="mono">slope</span>（同为 T-1）</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr>
+<td class="mono">adaptive_vol_q</td>
+<td><span class="mono">atr_pct</span> 的历史 rolling 均值/标准差</td>
+<td><span style="color:var(--green)">无前视</span></td></tr>
+<tr style="background:var(--amber-bg)">
+<td class="mono">自算 MA 分支</td>
+<td>仅当策略<strong>未</strong>产出 ma_slow 时才用
+<span class="mono">close.rolling_mean(n)</span>（当期语义）</td>
+<td><span style="color:var(--amber)">非前视，但语义不一致</span></td></tr>
+</tbody>
+</table>
+
+<div class="box b-blue">
+<span class="bt">momentum_t 的 T-1 对齐源码依据</span>
+<pre># A1 点时可得性对齐（防未来函数）：
+# feats[code] 第 i 行的特征（day_i 收盘后才可知）整体后移一个交易日，
+# 当日 bar 只能"看见"上一完整交易日的特征，避免 09:35 就知道当日收盘。
+feats_t1 = feats[code].with_columns(
+    pl.col("day").shift(-1).alias("day")).drop_nulls("day")</pre>
+我依赖的 <span class="mono">atr_pct</span> 正是走这条链路进入 prepared 数据的，因此是 T-1 可得的。
+</div>
+
+<h3>1.2 前视注入对照实验</h3>
+
+<p>把 <span class="mono">atr_pct</span> 向前移动（让 bar 能"预知"未来 N 个交易日的波动率），观察收益变化：</p>
+
+<table>
+<thead><tr><th>方案</th><th class="num">3 场景平均收益</th><th class="num">相对现状</th></tr></thead>
+<tbody>
+<tr><td>A 现状（T-1，无前视）</td><td class="num">31.97%</td><td class="num">—</td></tr>
+<tr><td>B 注入前视 1 格</td><td class="num">31.90%</td><td class="num">−0.06pp</td></tr>
+<tr><td>C 注入前视 5 格</td><td class="num">31.98%</td><td class="num">+0.02pp</td></tr>
+</tbody>
+</table>
+
+<div class="box b-amber">
+<span class="bt">这个检验的效力有限，必须诚实说明</span>
+ATR 是 20 日平滑指标，提前 1 天或 5 天知道它，本来就几乎没有差别——
+所以「注入前视无变化」<strong>不能强证明无前视</strong>，只能作为佐证。
+真正的依据是 1.1 的<strong>代码语义审查</strong>：所有输入都是 T-1 或已实现状态。<br><br>
+如果你想要更强的证据，可以做「注入价格前视」的压力测试（预知次日收盘价），
+那会显著改变收益，能验证整个回测链路对前视的敏感性。需要的话我可以补做。
+</div>
+
+<h2>二、过拟合审查</h2>
+
+<h3>2.1 我之前犯的错误</h3>
+
+<div class="box b-red">
+<span class="bt">样本内选参、样本内报告</span>
+上一轮 k2=6 是在 <strong>3 个含 2025 数据的场景</strong>上扫描选出的，
+随后又在<strong>同样包含这些场景</strong>的 8 场景上报告 +21.41pp。
+这是典型的自欺欺人——参数已经"看过"测试数据了。
+</div>
+
+<h3>2.2 严格时序样本外验证</h3>
+
+<p><strong>训练集</strong>（仅用于挑参数）：2024 年两个场景<br>
+<strong>测试集</strong>（从未参与选参）：2025 全年 + 近 12 月，共 6 个场景</p>
+
+<table>
+<thead><tr>
+<th class="num">k2</th><th class="num">训练 2024</th><th class="num">测试 2025</th>
+<th class="num">落差</th><th>训练排名</th><th>测试排名</th><th class="num">vs 基线</th>
+</tr></thead>
+<tbody>
+<tr><td class="num">3</td><td class="num">21.72%</td><td class="num">5.68%</td><td class="num neg">−16.04</td><td>3</td><td class="neg">8（垫底）</td><td class="num">+16.46pp</td></tr>
+<tr><td class="num">4</td><td class="num">18.55%</td><td class="num pos">22.61%</td><td class="num">+4.07</td><td>7</td><td class="pos">1</td><td class="num pos">+33.39pp</td></tr>
+<tr><td class="num">5</td><td class="num">14.16%</td><td class="num">16.40%</td><td class="num">+2.24</td><td>8</td><td>4</td><td class="num">+27.18pp</td></tr>
+<tr style="background:var(--red-bg)"><td class="num"><strong>6</strong></td><td class="num">19.81%</td><td class="num">15.80%</td><td class="num">−4.01</td><td>6</td><td>5</td><td class="num">+26.58pp</td></tr>
+<tr><td class="num">7</td><td class="num">19.97%</td><td class="num">18.12%</td><td class="num">−1.85</td><td>5</td><td class="pos">2</td><td class="num">+28.90pp</td></tr>
+<tr><td class="num">8</td><td class="num">21.67%</td><td class="num">15.60%</td><td class="num">−6.07</td><td>4</td><td>6</td><td class="num">+26.38pp</td></tr>
+<tr><td class="num">10</td><td class="num">22.31%</td><td class="num">16.68%</td><td class="num">−5.64</td><td>2</td><td class="pos">3</td><td class="num">+27.46pp</td></tr>
+<tr><td class="num">12</td><td class="num">23.41%</td><td class="num">15.43%</td><td class="num neg">−7.98</td><td>1</td><td>7</td><td class="num">+26.21pp</td></tr>
+</tbody>
+</table>
+
+<p>基线在测试集平均 <strong>−10.78%</strong>。</p>
+
+<div class="box b-red">
+<span class="bt">致命发现：训练集排名与测试集排名不相关</span>
+训练集顺序（优→差）：<code>[12, 10, 3, 8, 7, 6, 4, 5]</code><br>
+测试集顺序（优→差）：<code>[4, 7, 10, 5, 6, 8, 12, 3]</code><br><br>
+k2=12 训练第 1 → 测试第 7；k2=3 训练第 3 → 测试垫底；k2=4 训练第 7 → 测试第 1。
+<strong>参数「最优值」完全是噪声，挑选它没有任何预测力。</strong>
+</div>
+
+<div class="box b-green">
+<span class="bt">但模式本身是真的有效</span>
+关键判据不是「最优值有多高」，而是<strong>「是否所有参数取值都一致优于基线」</strong>。<br>
+8 个 k2 取值在测试集上<strong>全部跑赢基线</strong>，改善幅度 +16.46 ~ +33.39pp，
+其中 5 个取值在 6 个场景中跑赢 5 个。<br>
+这说明收益来自 <strong>atr_trailing 的结构性改进</strong>（止损随最高价上移 + 成本基准解耦），
+而不是参数碰巧。
+</div>
+
+<h3>2.3 修正后的建议</h3>
+
+<div class="box b-blue">
+<span class="bt">默认 k2：6.0 → 8.0</span>
+理由：5~12 区间在测试集上都稳定在 15.4~16.7%（差异在噪声内），
+取区间中部避开两端异常值。<strong>k2 ≤ 3 明显偏紧，不要用。</strong><br><br>
+<strong>更重要的是：停止在 k2 上继续调优。</strong>
+训练集排名都预测不了测试集排名，再扫下去只会拟合噪声。
+后续如果要提升，应该改<strong>结构</strong>（入场过滤、选股、减仓逻辑），而不是调这个系数。
+</div>
+
+<h2>三、一个必须知道的风险</h2>
+
+<div class="box b-red">
+<span class="bt">近 12 月场景：所有新方案都跑输基线</span>
+「混合 60 / 近 12 月」（2025-08 ~ 2026-08）这个最贴近当前实盘环境的场景：
+<table style="margin:10px 0">
+<thead><tr><th>方案</th><th class="num">收益</th><th class="num">vs 基线</th></tr></thead>
+<tbody>
+<tr><td>基线 ATR×3</td><td class="num">−12.21%</td><td class="num">—</td></tr>
+<tr><td>AT k2=4</td><td class="num">−17.4%</td><td class="num neg">−5.2pp</td></tr>
+<tr><td>AT k2=6</td><td class="num">−26.6%</td><td class="num neg">−14.4pp</td></tr>
+<tr><td>AT k2=8</td><td class="num">−29.6%</td><td class="num neg">−17.4pp</td></tr>
+<tr><td>AT k2=10</td><td class="num">−26.7%</td><td class="num neg">−14.5pp</td></tr>
+<tr><td>AT k2=12</td><td class="num">−26.2%</td><td class="num neg">−14.0pp</td></tr>
+</tbody>
+</table>
+<strong>所有 k2 取值都比基线亏得多</strong>。原因：近一年是震荡/下跌环境，
+宽松止损（让利润奔跑）反而放大了亏损；而基线那套「过窄的止损」在这种环境下恰好是有效的快速离场。<br><br>
+<strong>含义</strong>：atr_trailing 的优势主要来自趋势市。若你认为当前是震荡或下跌市，
+启用它<strong>可能反而更差</strong>。这也是自适应止损本该解决的问题，但实测的自适应实现在这个场景
+同样更差（AT6+trend −26.70pp），说明我的自适应设计<strong>没能抓住真正的市场状态</strong>。
+</div>
+
+<h2>四、结论与建议</h2>
+
+<table>
+<thead><tr><th>问题</th><th>结论</th><th>依据</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>未来函数</strong></td>
+<td><span style="color:var(--green)">未发现</span></td>
+<td>所有输入为 T-1 或已实现状态；前视注入无显著变化（佐证，效力有限）</td>
+</tr>
+<tr>
+<td><strong>模式是否过拟合</strong></td>
+<td><span style="color:var(--green)">否（结构性改进）</span></td>
+<td>测试集上 8 个 k2 取值全部跑赢基线 +16~+33pp</td>
+</tr>
+<tr>
+<td><strong>k2 具体取值是否过拟合</strong></td>
+<td><span style="color:var(--red)">是（纯噪声）</span></td>
+<td>训练集排名与测试集排名不相关，最优值无预测力</td>
+</tr>
+<tr>
+<td><strong>自适应是否有用</strong></td>
+<td><span style="color:var(--red)">当前实现无效</span></td>
+<td>最优配置下负贡献；近 12 月场景更差</td>
+</tr>
+</tbody>
+</table>
+
+<h3>建议</h3>
+<ol>
+<li><strong>默认 k2 用 8.0，不要继续微调</strong>（已改代码，前端标注了提示）</li>
+<li><strong>上线前先看清当前市场状态</strong>：趋势市用 atr_trailing，震荡/下跌市可能基线更好。</li>
+<li><strong>后续优化方向改结构而非调参</strong>：入场过滤、选股池、减仓锁盈逻辑——
+这些的杠杆远大于 k2（上一轮已证实：个股层面最好与最差标的差 58 万）。</li>
+<li><strong>如果要更强的无前视证据</strong>，我可以补做「价格前视压力测试」。</li>
+</ol>
+
+<div class="foot">
+审查脚本：<span class="mono">scripts/check_lookahead.py</span>（前视注入对照）、
+<span class="mono">scripts/walkforward.py</span>（时序样本外）<br>
+数据：<span class="mono">data/reports/_walkforward_result.json</span><br>
+回归测试：130 passed, 1 skipped（默认值 6.0→8.0 后已重跑）<br>
+相关文档：<span class="mono">docs/ATR_TRAILING_IMPL.html</span>（实现报告，其中 k2=6 的结论已被本文档修正）、
+<span class="mono">docs/WINRATE_DIAGNOSIS.html</span>（原始诊断）
+</div>
+
+</div>
+</body>
+</html>

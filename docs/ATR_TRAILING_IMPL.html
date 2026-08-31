@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>atr_trailing 止损模式与自适应止损 · 实现与验证</title>
+<style>
+  :root{
+    --bg:#faf9f7; --surface:#fff; --line:rgba(0,0,0,.10); --line2:rgba(0,0,0,.18);
+    --t1:#2C2C2A; --t2:#5F5E5A; --t3:#888780;
+    --red:#A32D2D; --red-bg:#FCEBEB; --red-line:#F09595;
+    --green:#0F6E56; --green-bg:#E1F5EE; --green-line:#5DCAA5;
+    --amber:#854F0B; --amber-bg:#FAEEDA; --amber-line:#EF9F27;
+    --blue:#185FA5; --blue-bg:#E6F1FB; --blue-line:#85B7EB;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t1);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.7}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 32px 80px}
+  h1{font-size:24px;font-weight:500;margin:0 0 8px}
+  .sub{color:var(--t2);font-size:13px;margin-bottom:32px}
+  h2{font-size:17px;font-weight:500;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:14px;font-weight:500;margin:26px 0 10px}
+  p{margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;
+    background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th{background:#f4f2ee;text-align:left;padding:9px 12px;font-weight:500;
+    border-bottom:1px solid var(--line);white-space:nowrap;font-size:12px;color:var(--t2)}
+  td{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.05);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .pos{color:var(--red)} .neg{color:var(--green)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0}
+  .kpi div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .kpi .l{font-size:12px;color:var(--t2);margin-bottom:4px}
+  .kpi .v{font-size:22px;font-weight:500;font-variant-numeric:tabular-nums}
+  .box{border-radius:8px;padding:14px 16px;margin:14px 0;font-size:13px;border:1px solid}
+  .box .bt{font-weight:500;margin-bottom:6px;display:block}
+  .b-red{background:var(--red-bg);border-color:var(--red-line);color:#501313}
+  .b-green{background:var(--green-bg);border-color:var(--green-line);color:#04342C}
+  .b-amber{background:var(--amber-bg);border-color:var(--amber-line);color:#412402}
+  .b-blue{background:var(--blue-bg);border-color:var(--blue-line);color:#042C53}
+  .b-red .bt{color:var(--red)} .b-green .bt{color:var(--green)}
+  .b-amber .bt{color:var(--amber)} .b-blue .bt{color:var(--blue)}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  code{background:#f1efe8;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre{background:#f4f2ee;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-size:12.5px;line-height:1.6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:12px 0}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;
+    border:1px solid var(--line2);color:var(--t2);margin-right:6px}
+  .t-done{background:var(--green-bg);border-color:var(--green-line);color:var(--green)}
+  .t-new{background:var(--blue-bg);border-color:var(--blue-line);color:var(--blue)}
+  .t-warn{background:var(--amber-bg);border-color:var(--amber-line);color:var(--amber)}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--t3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>atr_trailing 止损模式与自适应止损</h1>
+<div class="sub">
+目标：提升<strong>收益</strong>（非胜率） &nbsp;|&nbsp; 2026-08-29 &nbsp;|&nbsp;
+验证：8 场景 / 5 股票池 / 3 个年度区间，确定性股票池 &nbsp;|&nbsp; 回归测试 130 passed
+</div>
+
+<div class="box b-green">
+<span class="bt">结论摘要</span>
+<strong>atr_trailing（k1=3, k2=6，成本基准用首笔开仓价）8 场景平均跑赢基线 +21.41pp，
+且尾部风险最小（最差 −14.40pp，优于 trailing 10% 的 −29.03pp）。</strong><br>
+过程中发现并修复了一个更严重的引擎级缺陷：<strong>ATR 口径与数据频率错配</strong>——
+5 分钟线上 <span class="mono">atr20</span> 只有 0.65%，而日线真实波动 6.00%，相差 9.2 倍，
+导致止损线紧贴买入价。修正后 atr_trailing 平均收益从 +1.05% 跃升到 +38.57%。<br>
+<strong>自适应止损已实现，但在最优配置下是负贡献，故默认关闭</strong>（详见第五节）。
+</div>
+
+<h2>一、实现内容</h2>
+
+<h3>1.1 atr_trailing 止损模式 <span class="tag t-new">新增</span></h3>
+
+<pre>止损线 = max(成本项 − k1 × ATR, 最高价 − k2 × ATR)
+         └─ 硬止损兜底 ─┘   └─ 随最高价上移锁盈 ─┘
+且止损线「只上不下」（棘轮）</pre>
+
+<table>
+<thead><tr><th>配置项</th><th>默认</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td class="mono">stop_loss_mode</td><td class="mono">fixed</td><td>新增取值 <strong>atr_trailing</strong></td></tr>
+<tr><td class="mono">atr_multiplier (k1)</td><td>3.0</td><td>成本项 ATR 倍数，控制最大亏损</td></tr>
+<tr><td class="mono">atr_trail_mult (k2)</td><td><strong>6.0</strong></td><td>移动项 ATR 倍数（实测最优，≤3 会明显偏紧）</td></tr>
+<tr><td class="mono">atr_cost_base</td><td><strong>first</strong></td><td><strong>成本基准：首笔开仓价</strong>。这是切断「加仓抬高成本→假止损」死循环的关键，
+不同于旧 atr 模式用的加权平均成本</td></tr>
+<tr><td class="mono">atr_trail_floor</td><td>true</td><td>棘轮：止损线只上不下</td></tr>
+</tbody>
+</table>
+
+<div class="box b-blue">
+<span class="bt">为什么用首笔开仓价而不是加权成本</span>
+上一轮诊断的实证案例（688178）：底仓 1,400 股 @13.31，第二次加仓 23,000 股 @16.55（底仓的 16.4 倍），
+加权成本被抬到 16.01。此后股价 15.63~15.81——<strong>相对首笔开仓价涨了 17.4%，相对加权成本却是亏的</strong>，
+ATR 止损线随成本上移，回调 1.3% 即触发。<br>
+改用首笔开仓价后，止损线不再被加仓行为推高，这个案例在回归测试中已不再误触发。
+</div>
+
+<h3>1.2 自适应止损 <span class="tag t-new">新增</span></h3>
+
+<p>按市场状态动态缩放 k1/k2：<strong>趋势确立放宽（让利润奔跑），趋势破坏收紧（快速离场）</strong>。</p>
+
+<table>
+<thead><tr><th>配置项</th><th>默认</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td class="mono">adaptive</td><td><strong>off</strong></td><td>off｜trend（个股趋势）｜vol（波动率分位）</td></tr>
+<tr><td class="mono">adaptive_k_loose</td><td>1.5</td><td>trend：收盘价 &gt; 均线 且 均线走平/向上 → k × 1.5</td></tr>
+<tr><td class="mono">adaptive_k_tight</td><td>0.7</td><td>trend：收盘价 ≤ 均线 → k × 0.7</td></tr>
+<tr><td class="mono">adaptive_trend_ma</td><td>60</td><td>trend 判定均线周期</td></tr>
+<tr><td class="mono">adaptive_slope_n</td><td>5</td><td>trend 斜率窗口</td></tr>
+<tr><td class="mono">adaptive_vol_n / _hi / _lo</td><td>120 / 0.7 / 0.3</td><td>vol：ATR% 的 z-score 近似分位阈值</td></tr>
+</tbody>
+</table>
+
+<p>无法判定状态时一律退化为中性倍数 1.0，保证行为可预测。分钟线数据下会优先复用策略已产出的
+日线级特征（<span class="mono">ma_slow</span> / <span class="mono">slope</span> / <span class="mono">atr_pct</span>），
+避免把「N 根分钟K线的均线」误当作「N 日均线」。</p>
+
+<h3>1.3 改动文件</h3>
+<table>
+<thead><tr><th>文件</th><th>改动</th></tr></thead>
+<tbody>
+<tr><td class="mono">engine/portfolio.py</td><td>Position 新增 <span class="mono">first_price</span>（首笔成本，加仓不改写）、<span class="mono">trail_stop</span>（棘轮止损线）</td></tr>
+<tr><td class="mono">engine/risk.py</td><td>RiskConfig 新增 10 个配置项；<span class="mono">check_stop</span> 新增 atr_trailing 分支 + <span class="mono">_adaptive_mult</span> + <span class="mono">_check_atr_trailing</span></td></tr>
+<tr><td class="mono">engine/runner.py</td><td><span class="mono">check_stops</span> 传 bar 上下文；新增 <span class="mono">_daily_atr</span>（ATR 口径修正）、<span class="mono">_add_adaptive_cols</span></td></tr>
+<tr><td class="mono">api/backtests.py</td><td>RiskConfigModel 同步新字段</td></tr>
+<tr><td class="mono">optimizer.py / llm/analyzer.py</td><td>RISK_KEYS / _RISK_FIELDS 白名单同步，LLM 提示词补充新模式语义</td></tr>
+<tr><td class="mono">frontend（3 个文件）</td><td>RiskConfigForm 新增字段与下拉（支持 string/bool 类型）、types.ts 类型、AiAnalysis 标签映射</td></tr>
+</tbody>
+</table>
+
+<h2>二、过程中发现的引擎级缺陷：ATR 口径与数据频率错配</h2>
+
+<div class="box b-red">
+<span class="bt">问题</span>
+回测数据是 <strong>5 分钟线</strong>。引擎止损用的 <span class="mono">atr20</span> 是
+<strong>20 根 5 分钟 K 线</strong>的平均波幅，实测中位仅 <strong>0.65%</strong>；
+而真实的日线波动（策略产出的 <span class="mono">atr_pct</span> = d_atr/d_close）中位为
+<strong>6.00%</strong>——<strong>相差 9.2 倍</strong>。
+</div>
+
+<p>后果：3×ATR 只有约 1.95%，止损线几乎贴在买入价上，任何日内噪音都能扫掉仓位。</p>
+
+<table>
+<thead><tr><th>指标</th><th class="num">修正前（分钟 ATR）</th><th class="num">修正后（日线 ATR）</th></tr></thead>
+<tbody>
+<tr><td>ATR 占价格比（中位）</td><td class="num">0.65%</td><td class="num">6.00%</td></tr>
+<tr><td>止损笔数（科创板20/25）</td><td class="num">416</td><td class="num">231</td></tr>
+<tr><td>止损中位亏损</td><td class="num">−0.24%</td><td class="num">—</td></tr>
+<tr><td>买入后 ≤2 天被扫损占比</td><td class="num neg">73%</td><td class="num">—</td></tr>
+<tr><td>平均持股天数</td><td class="num neg">1.8 天</td><td class="num">—</td></tr>
+<tr><td>3 场景平均收益</td><td class="num">+1.05%</td><td class="num pos">+38.57%</td></tr>
+</tbody>
+</table>
+
+<div class="box b-amber">
+<span class="bt">处理方式：新功能用正确口径，旧模式暂不改动</span>
+新增 <span class="mono">_daily_atr()</span>：atr_trailing 模式改用
+<span class="mono">atr_pct × close</span> 折算日线 ATR（该列是 T-1 可得语义，无未来函数）。<br>
+<strong>但旧的 <span class="mono">atr</span> 模式仍在使用分钟 ATR，我没有改动它</strong>——
+修复它会让所有历史回测报告不可比。<strong>是否修复请你决定</strong>（见第六节）。
+</div>
+
+<h2>三、参数标定</h2>
+
+<h3>3.1 k2 扫描（k1 固定 3.0，3 场景均值）</h3>
+<table>
+<thead><tr><th class="num">k2</th><th class="num">平均收益</th><th class="num">平均夏普</th><th class="num">平均回撤</th><th>评价</th></tr></thead>
+<tbody>
+<tr><td class="num">2.0</td><td class="num neg">−2.93%</td><td class="num neg">−0.148</td><td class="num">—</td><td>过紧，反复扫损</td></tr>
+<tr><td class="num">3.0</td><td class="num">+14.49%</td><td class="num">0.581</td><td class="num">−23.47%</td><td>偏紧</td></tr>
+<tr><td class="num">4.0</td><td class="num">+33.20%</td><td class="num">0.890</td><td class="num">−20.93%</td><td>可用</td></tr>
+<tr style="background:var(--green-bg)"><td class="num"><strong>6.0</strong></td><td class="num pos"><strong>+38.57%</strong></td><td class="num"><strong>1.049</strong></td><td class="num">−22.00%</td><td><strong>推荐</strong></td></tr>
+<tr><td class="num">8.0</td><td class="num">+35.87%</td><td class="num">1.015</td><td class="num">—</td><td>平台期</td></tr>
+<tr><td class="num">10.0</td><td class="num">+40.44%</td><td class="num">1.115</td><td class="num">—</td><td>收益略高但止损过松</td></tr>
+<tr><td class="num">12.0</td><td class="num">+38.95%</td><td class="num">1.063</td><td class="num">—</td><td>平台期</td></tr>
+</tbody>
+</table>
+
+<p>k2 在 5~12 区间收益稳定在 34~40%，<strong>平台期说明参数不敏感、不易过拟合</strong>。
+选取 k2=6.0：收益接近最优、止损不至于过松。k2=10 虽然收益略高，但 10×6% ≈ 60% 的回撤容忍已近似不止损。</p>
+
+<h2>四、最终验证（8 场景，确定性股票池）</h2>
+
+<p>数值为<strong>相对基线 ATR×3 的收益率改善（百分点）</strong>：</p>
+
+<table>
+<thead><tr>
+<th>场景</th><th class="num">T1 trailing10%</th><th class="num">AT6</th>
+<th class="num">AT6+trend</th><th class="num">AT6+vol</th><th>该场景最优</th>
+</tr></thead>
+<tbody>
+<tr><td>科创板 20 / 2025</td><td class="num">+5.59</td><td class="num">+9.92</td><td class="num pos">+11.59</td><td class="num neg">−2.25</td><td>AT6+trend</td></tr>
+<tr><td>创业板 20 / 2025</td><td class="num">+35.73</td><td class="num pos">+97.29</td><td class="num">+85.90</td><td class="num">+73.77</td><td>AT6</td></tr>
+<tr><td>创业板 20 / 2024</td><td class="num pos">+26.87</td><td class="num">+19.04</td><td class="num">+16.59</td><td class="num">+19.36</td><td>T1</td></tr>
+<tr><td>创业板 40 / 2025</td><td class="num pos">+49.07</td><td class="num">+12.30</td><td class="num">+1.10</td><td class="num">+4.95</td><td>T1</td></tr>
+<tr><td>科创板 40 / 2025</td><td class="num">+8.79</td><td class="num pos">+34.13</td><td class="num">+31.53</td><td class="num">+30.63</td><td>AT6</td></tr>
+<tr><td>混合 60 / 2025</td><td class="num pos">+30.38</td><td class="num">+20.28</td><td class="num">+7.60</td><td class="num neg">−5.76</td><td>T1</td></tr>
+<tr><td>混合 60 / 2024</td><td class="num neg">−29.03</td><td class="num neg">−7.25</td><td class="num pos">+4.47</td><td class="num neg">−26.73</td><td>AT6+trend</td></tr>
+<tr><td>混合 60 / 近 12 月</td><td class="num pos">+13.35</td><td class="num neg">−14.40</td><td class="num neg">−26.70</td><td class="num neg">−14.44</td><td>T1</td></tr>
+<tr style="background:#f4f2ee"><td><strong>均值</strong></td>
+<td class="num"><strong>+17.59</strong></td><td class="num pos"><strong>+21.41</strong></td>
+<td class="num">+16.51</td><td class="num">+9.94</td><td></td></tr>
+<tr style="background:#f4f2ee"><td><strong>中位</strong></td>
+<td class="num pos"><strong>+26.87</strong></td><td class="num">+19.04</td>
+<td class="num">+11.59</td><td class="num">+4.95</td><td></td></tr>
+<tr style="background:#f4f2ee"><td><strong>最差</strong></td>
+<td class="num neg">−29.03</td><td class="num"><strong>−14.40</strong></td>
+<td class="num neg">−26.70</td><td class="num neg">−26.73</td><td></td></tr>
+<tr style="background:#f4f2ee"><td><strong>跑赢基线</strong></td>
+<td class="num">7/8</td><td class="num">6/8</td><td class="num">7/8</td><td class="num neg">4/8</td><td></td></tr>
+</tbody>
+</table>
+
+<div class="kpi">
+<div><div class="l">AT6 平均改善</div><div class="v pos">+21.41pp</div></div>
+<div><div class="l">AT6 尾部风险</div><div class="v" style="color:var(--green)">−14.40pp</div></div>
+<div><div class="l">最佳单场景</div><div class="v pos">+97.29pp</div></div>
+<div><div class="l">回归测试</div><div class="v" style="color:var(--green)">130 通过</div></div>
+</div>
+
+<p><strong>AT6 与 T1 的取舍</strong>：T1 中位数更高（+26.87 vs +19.04）且跑赢场景更多（7/8 vs 6/8），
+但尾部风险明显更大（最差 −29.03 vs −14.40）。<strong>AT6 胜在均值更高、尾部更可控</strong>；
+若你的风格偏好「多数场景稳健」可选 T1，偏好「控制最坏情况」选 AT6。</p>
+
+<h2>五、关于自适应止损的诚实结论</h2>
+
+<table>
+<thead><tr><th>方案</th><th class="num">3 场景平均收益</th><th class="num">平均夏普</th><th class="num">平均回撤</th></tr></thead>
+<tbody>
+<tr style="background:var(--green-bg)"><td><strong>固定 k2=6</strong></td><td class="num pos"><strong>+38.57%</strong></td><td class="num"><strong>1.049</strong></td><td class="num">−22.00%</td></tr>
+<tr><td>k2=6 + trend</td><td class="num">+34.51%</td><td class="num">0.995</td><td class="num">−22.27%</td></tr>
+<tr><td>固定 k2=4</td><td class="num">+33.20%</td><td class="num">0.890</td><td class="num">−20.93%</td></tr>
+<tr><td>k2=4 + trend</td><td class="num">+32.67%</td><td class="num">0.896</td><td class="num">−22.95%</td></tr>
+<tr><td>k2=3 + trend</td><td class="num pos">+20.88%</td><td class="num">0.565</td><td class="num">−24.44%</td></tr>
+<tr><td>固定 k2=3</td><td class="num">+14.49%</td><td class="num">0.581</td><td class="num">−23.47%</td></tr>
+</tbody>
+</table>
+
+<div class="box b-amber">
+<span class="bt">自适应不是万能的</span>
+<strong>在止损偏紧时自适应确实有价值</strong>：k2=3 时，14.49% → 20.88%（<strong>+6.4pp</strong>）。<br>
+<strong>但在最优的 k2=6 上是负贡献</strong>：38.57% → 34.51%（−4.1pp）。原因很简单——
+k2=6 已经是最优固定值，自适应只会让它偏离最优。<br>
+<strong>vol（波动率）自适应表现最差（8 场景中仅 4/8 跑赢），不建议启用。</strong><br><br>
+因此默认设为 <span class="mono">adaptive='off'</span>。功能已完整实现并验证可用，
+若你后续把止损调紧（如 k2≤3），再开启 trend 自适应才有意义。
+</div>
+
+<h2>六、待你决策的事项</h2>
+
+<div class="box b-amber">
+<span class="bt">1. 旧 atr 模式的 ATR 口径 bug 是否修复？</span>
+2.2 节描述的频率错配在旧的 <span class="mono">atr</span> 模式下<strong>依然存在</strong>。
+这意味着<strong>历史所有 ATR 止损回测用的都是「约 1.95% 的止损宽度」，而非设计意图的 12%+</strong>。<br><br>
+<ul>
+<li><strong>修复</strong>：把 <span class="mono">_daily_atr()</span> 应用到 atr 模式。收益可能显著提升，
+但<strong>所有历史回测报告将不可比</strong>，需要重新跑一遍存量任务。</li>
+<li><strong>不修复</strong>：保持现状，新任务统一改用 atr_trailing（已用正确口径）。</li>
+</ul>
+我倾向于先不改动存量行为，新增任务直接用 atr_trailing。<strong>等你拍板。</strong>
+</div>
+
+<div class="box b-blue">
+<span class="bt">2. 建议的默认配置</span>
+<pre>stop_loss_mode   = "atr_trailing"
+atr_multiplier   = 3.0      # k1 硬止损兜底
+atr_trail_mult   = 6.0      # k2 移动锁盈（实测最优）
+atr_cost_base    = "first"  # 首笔开仓价，避免加仓抬高止损线
+atr_trail_floor  = true     # 棘轮，只上不下
+adaptive         = "off"    # 止损调紧到 k2≤3 时再考虑开启 trend</pre>
+</div>
+
+<h2>七、可复现性修复说明</h2>
+
+<div class="box b-red">
+<span class="bt">上一轮实验的 5 个随机池场景已作废</span>
+之前的验证脚本用 <span class="mono">random.shuffle(list(set(...)))</span> 抽样股票池。
+<span class="mono">set</span> 的迭代顺序受 Python 字符串哈希随机化（PYTHONHASHSEED）影响，
+<strong>同一份代码两次运行会选出完全不同的股票</strong>——实测两次抽样完全不同。<br><br>
+本轮已修复：候选集先 <span class="mono">sorted()</span> 再 shuffle，保证跨进程可复现。
+<strong>上一轮报告中基于随机池的 5 个场景数据不可信，本轮 8 场景全部重跑且可复现。</strong>
+</div>
+
+<div class="foot">
+改动文件：<span class="mono">backend/app/engine/{portfolio,risk,runner}.py</span>、
+<span class="mono">backend/app/api/backtests.py</span>、<span class="mono">backend/app/optimizer.py</span>、
+<span class="mono">backend/app/llm/analyzer.py</span>、
+<span class="mono">frontend/src/{api/types.ts,components/RiskConfigForm.tsx,pages/AiAnalysis.tsx}</span><br>
+实验脚本：<span class="mono">scripts/{scan_k2,scan_adaptive,ab_final,diag_atr_trailing,ab_atr_trailing}.py</span><br>
+实验数据：<span class="mono">data/reports/_ab_final_result.json</span><br>
+回归测试：130 passed, 1 skipped &nbsp;|&nbsp; 相关诊断报告：<span class="mono">docs/WINRATE_DIAGNOSIS.html</span>
+</div>
+
+</div>
+</body>
+</html>
