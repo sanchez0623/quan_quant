@@ -16,12 +16,17 @@ class GridTStrategy(Strategy):
     periods = ["minute5", "daily"]
     param_schema = [
         {"key": "base_pct", "label": "底仓资金占比", "type": "float", "default": 30,
-         "min": 5, "max": 90, "step": 1, "unit": "%"},
+         "min": 5, "max": 90, "step": 1, "unit": "%", "group": "核心开关",
+         "description": "建仓时动用的资金比例，做T在其之上高抛低吸"},
+        {"key": "max_t_times", "label": "日内T次数上限", "type": "int", "default": 4, "min": 0, "max": 20,
+         "group": "核心开关", "description": "受风控 max_intraday_trades 二次约束"},
         {"key": "grid_atr_mult", "label": "网格ATR倍数", "type": "float", "default": 1.5,
-         "min": 0.2, "max": 8, "step": 0.1},
-        {"key": "atr_period", "label": "ATR周期", "type": "int", "default": 14, "min": 3, "max": 60},
-        {"key": "max_t_times", "label": "日内T次数上限", "type": "int", "default": 4, "min": 1, "max": 20},
-        {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 0, "min": 0, "max": 10},
+         "min": 0.2, "max": 8, "step": 0.1, "group": "做T·网格",
+         "description": "网格阈值 = 日ATR/close × 该倍数；越大越宽、触发越少"},
+        {"key": "atr_period", "label": "ATR周期", "type": "int", "default": 14, "min": 3, "max": 60,
+         "group": "做T·网格"},
+        {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 0, "min": 0, "max": 10,
+         "group": "仓位"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,

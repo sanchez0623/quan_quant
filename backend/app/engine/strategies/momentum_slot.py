@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
-"""动量趋势+做T策略：动量趋势为主，做T为增强。
+"""动量槽位轮换策略（momentum_slot）：加速启动选股 + 个股衰退退出 + 网格做T降成本 + 槽位轮换。
 
-架构：
-- 趋势层（日线级）：MACD+慢线+斜率三重确认建仓（信号强度决定底仓 10%~70% 动态仓位）；
-  持仓中金字塔加仓（突破N日新高、规模递减、冷却期）；乖离过热减仓；MACD死叉+跌破慢线双确认清仓。
-- 做T层（分钟级）：ATR 自适应网格，阈值 = ATR%/close × 倍数（带费用下限）；
-  波动状态（ATR% 相对滚动分位数定档，每只票自适应）连续调整网格宽度与T比例；趋势乖离非对称（强趋势放宽卖出阈值防卖飞）。
-- 选股层（横截面）：universe 内按动量分排名，仅 top_n 可建仓（可少于 top_n）。
+架构（对照产品需求）：
+- 选股层（横截面）：多周期风险调整动量 + 加速度项（短周期跑赢中周期=加速）打分，
+  每日取前 pool_n 为候选池；引擎按风控 max_holdings 做槽位管理，持仓不足时自动补位。
+- 个股状态机（逐股独立，不混组合）：
+  ① 加速启动建仓：金叉 + 站上快均线(ma_fast) + 当日进入候选池 → 分档建仓
+     （斜率向上满配 base_pct_max，否则试仓 base_pct_min）；
+  ② 持仓做T：ATR 自适应非对称网格（完整复用 momentum_t 做T层），双向高抛低吸降成本；
+     正向T(fwd_t=on)：逢低买入更多筹码→等反弹后高抛底仓；
+  ③ 衰退初期退出（个股级）：MACD死叉/跌破MA20/动量衰减/转负/跌出榜单，
+     三项中满足 ≥ exit_need 项即退出；渐进式：首次减partial_exit_pct→二次清仓；
+     ATR硬止损(bias < atr_stop_k) 优先级最高，盘中实时触发；
+  ④ 退出冷却：该股退出后 exit_cooldown 个交易日内不重建，杜绝
+     "止损→立即买回→再止损"的放血循环；
+- 止损兜底：由引擎风控承担（建议 stop_loss_mode=atr_trailing，ATR 移动止损锁盈）。
 
 信号列协议：signal / tag / reason / budget_pct（开仓·加仓预算%）/
 t_ratio（做T比例%）/ reduce_pct（减仓比例%）。
@@ -17,57 +25,47 @@ from ..indicators import _rolling_params, add_atr, add_macd, add_ma
 from .ma_cross import Strategy
 
 
-class MomentumTStrategy(Strategy):
-    id = "momentum_t"
-    name = "动量趋势+做T"
-    description = ("动量三重确认建仓(底仓10~70%动态)+金字塔加仓+过热减仓+双确认清仓；"
-                   "ATR自适应非对称网格做T(动态T比例)。适合5分钟周期，建议开启引擎预热。")
+class MomentumSlotStrategy(Strategy):
+    id = "momentum_slot"
+    name = "动量槽位轮换"
+    description = ("加速动量候选池选股 + 个股独立生命周期：加速启动建仓→网格做T降成本→"
+                   "衰退初期(3取2)退出→冷却后从候选池补位。止损建议配合 ATR 移动止损。"
+                   "适合5分钟周期，建议开启引擎预热。")
     periods = ["minute5", "daily"]  # daily 为 E 格（纯日线趋势层稳健性参考）
 
     @property
     def warmup_days(self) -> int:
-        """指标预热建议值（交易日数）= 最长回看参数默认值 + 缓冲。
-
-        只影响数据加载量，不影响正确性。缓冲 180 ≈ 其余主要回看窗口默认值之和
-        （trend_ma 60 + vol_window 120），保证极端参数下滚动/EMA 指标完全预热。
-        """
-        lookback = {"trend_ma", "vol_window", "crash_vol_n", "mom_long",
+        """指标预热建议值（交易日数）= 最长回看参数默认值 + 缓冲。"""
+        lookback = {"ma_fast", "vol_window", "crash_vol_n", "mom_long",
                     "add_breakout_n", "slope_n"}
         longest = max((int(p["default"]) for p in self.param_schema
                        if p["key"] in lookback and p.get("default")), default=0)
         return longest + 180
 
-    # 分组约定（供前端按"对回测结果的影响维度"折叠展示）：
-    #   group     = 分组名，按下方出现顺序渲染
-    #   advanced  = 二次微调项，组内默认收起
-    #   show_if   = {依赖key: 允许值列表}，依赖值未设置时不隐藏（避免首帧闪烁）
     param_schema = [
-        # ---- G1 核心开关：决定跑的是哪一类实验，改动影响最大 ----
+        # ---- G1 核心开关 ----
         {"key": "t_mode", "label": "做T机制", "type": "categorical", "group": "核心开关",
          "choices": ["grid", "discipline", "time", "off"], "default": "grid",
          "description": "grid=网格+双止损(L1)；discipline=回补纪律(L2)；time=时点规律T(D)；"
                         "off=关闭做T(C)。选 off/time 时下方网格类参数自动隐藏"},
         {"key": "max_t_times", "label": "日内T次数上限", "type": "int", "default": 4, "min": 0, "max": 10,
          "group": "核心开关", "show_if": {"t_mode": ["grid", "discipline", "time"]},
-         "description": "每日最多做T几次；0=关闭做T层（对比实验C/D格）。受风控 max_intraday_trades 二次约束"},
+         "description": "每日最多做T几次；0=关闭做T层。受风控 max_intraday_trades 二次约束"},
         {"key": "trend_clock", "label": "趋势时钟", "type": "categorical", "group": "核心开关",
          "choices": ["intraday", "daily"], "default": "intraday",
-         "description": "intraday=盘中触发；daily=趋势信号仅在当日末bar评估、次日开盘成交（做T不受限）"},
-        {"key": "top_n", "label": "最大持仓只数", "type": "int", "default": 3, "min": 1, "max": 10,
-         "group": "核心开关", "description": "universe 内按动量分排名，仅前 top_n 可建仓（可少于该数）"},
-        # ---- G2 趋势判据：决定何时进/出，三重确认建仓 + 双确认清仓 ----
-        {"key": "macd_fast", "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
-         "group": "趋势判据"},
-        {"key": "macd_slow", "label": "MACD慢线", "type": "int", "default": 26, "min": 10, "max": 60,
-         "group": "趋势判据"},
-        {"key": "macd_signal", "label": "MACD信号线", "type": "int", "default": 9, "min": 3, "max": 20,
-         "group": "趋势判据"},
-        {"key": "trend_ma", "label": "趋势慢线周期", "type": "int", "default": 60, "min": 20, "max": 120,
-         "group": "趋势判据", "description": "站上/跌破该均线是建仓与清仓的硬条件"},
-        {"key": "slope_n", "label": "斜率确认窗口", "type": "int", "default": 5, "min": 2, "max": 10,
-         "group": "趋势判据", "description": "均线斜率向上才算三重确认（试仓升级满配的触发条件）"},
-        # ---- G3 选股排序：决定买谁（多周期风险调整动量）----
-        {"key": "mom_short", "label": "短周期动量", "type": "int", "default": 20, "min": 5, "max": 40,
+         "description": "intraday=盘中触发；daily=建仓/退出信号仅在当日末bar评估、次日开盘成交（做T不受限）"},
+        {"key": "pool_n", "label": "候选池大小", "type": "int", "default": 6, "min": 1, "max": 20,
+         "group": "核心开关",
+         "description": "横截面加速动量排名前 pool_n 为候选池；建议 ≥ 风控 max_holdings（持仓不足自动补位）"},
+        {"key": "max_holdings", "label": "最大持仓只数", "type": "int", "default": 3, "min": 1, "max": 10,
+         "group": "核心开关",
+         "description": "同时最多持仓N只，满仓不新增，退出后从候选池自动补位；0=不限（兼容旧版）"},
+        # ---- G0 止损（最高优先级，盘中实时触发）----
+        {"key": "atr_stop_k", "label": "ATR硬止损倍数", "type": "float", "default": -3.0,
+         "min": -6, "max": -1, "step": 0.5, "unit": "×ATR", "group": "止损",
+         "description": "bias < 此值触发ATR硬止损（价格低于快均线N倍ATR），盘中实时执行，优先级最高"},
+        # ---- G2 选股排序（加速动量）----
+        {"key": "mom_short", "label": "短周期动量", "type": "int", "default": 10, "min": 5, "max": 40,
          "unit": "日", "group": "选股排序"},
         {"key": "mom_mid", "label": "中周期动量", "type": "int", "default": 60, "min": 30, "max": 90,
          "unit": "日", "group": "选股排序"},
@@ -77,13 +75,36 @@ class MomentumTStrategy(Strategy):
          "step": 0.1, "group": "选股排序"},
         {"key": "w_mid", "label": "中周期权重", "type": "float", "default": 0.3, "min": 0, "max": 1,
          "step": 0.1, "group": "选股排序", "description": "长周期权重 = 1 - 短 - 中"},
-        # ---- G4 建仓与加仓：决定仓位曲线 ----
+        {"key": "w_accel", "label": "加速项权重", "type": "float", "default": 0.3, "min": 0, "max": 1,
+         "step": 0.1, "group": "选股排序",
+         "description": "短周期动量 − 中周期动量（短期跑赢中期=加速段），刻画“加速启动期”"},
+        {"key": "crash_sigma", "label": "动量崩溃阈值(σ)", "type": "float", "default": 2.0,
+         "min": 1, "max": 4, "step": 0.5, "group": "选股排序", "advanced": True,
+         "description": "近5日涨幅 > σ×自身波动√5 -> 动量分作废不入榜"},
+        {"key": "crash_vol_n", "label": "崩溃波动窗口", "type": "int", "default": 60,
+         "min": 20, "max": 120, "unit": "日", "group": "选股排序", "advanced": True},
+        {"key": "crash_abs_cap", "label": "崩溃绝对涨幅上限", "type": "float", "default": 30,
+         "min": 10, "max": 60, "step": 1, "unit": "%", "group": "选股排序", "advanced": True,
+         "description": "近5日涨幅超此值硬性禁入（σ自适应阈值作第二道），防连板追高"},
+        # ---- G3 趋势判据（建仓确认 / 退出信号）----
+        {"key": "macd_fast", "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
+         "group": "趋势判据"},
+        {"key": "macd_slow", "label": "MACD慢线", "type": "int", "default": 26, "min": 10, "max": 60,
+         "group": "趋势判据"},
+        {"key": "macd_signal", "label": "MACD信号线", "type": "int", "default": 9, "min": 3, "max": 20,
+         "group": "趋势判据"},
+        {"key": "ma_fast", "label": "快均线周期", "type": "int", "default": 20, "min": 5, "max": 60,
+         "group": "趋势判据",
+         "description": "站上/跌破该均线为建仓确认与衰退退出信号（比慢线灵敏）"},
+        {"key": "slope_n", "label": "斜率确认窗口", "type": "int", "default": 5, "min": 2, "max": 10,
+         "group": "趋势判据", "description": "均线斜率向上才算满配确认（试仓升级的触发条件）"},
+        # ---- G4 建仓与加仓 ----
         {"key": "base_pct_min", "label": "试仓资金占比", "type": "float", "default": 10,
          "min": 5, "max": 40, "step": 1, "unit": "%", "group": "建仓与加仓",
-         "description": "仅金叉+站上慢线（未确认斜率）时的首仓比例"},
+         "description": "金叉+站上快均线+入榜但斜率未确认时的首仓比例"},
         {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 50,
          "min": 30, "max": 90, "step": 1, "unit": "%", "group": "建仓与加仓",
-         "description": "三重确认后的目标仓位；实际仍受风控个股上限约束"},
+         "description": "加速确认（斜率向上）后的目标仓位；实际仍受风控个股上限约束"},
         {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 4,
          "group": "建仓与加仓"},
         {"key": "add_scale", "label": "加仓规模递减系数", "type": "float", "default": 0.5,
@@ -93,15 +114,31 @@ class MomentumTStrategy(Strategy):
          "unit": "交易日", "group": "建仓与加仓"},
         {"key": "add_breakout_n", "label": "新高突破窗口", "type": "int", "default": 20, "min": 5, "max": 60,
          "unit": "日", "group": "建仓与加仓", "description": "创 N 日新高才允许金字塔加仓"},
-        # ---- G5 过热减仓：决定何时主动锁盈 ----
-        {"key": "overheat_k", "label": "过热乖离倍数", "type": "float", "default": 3.0,
-         "min": 1, "max": 6, "step": 0.5, "unit": "×ATR", "group": "过热减仓",
-         "description": "价格高于慢线 N 倍 ATR 视为过热，触发减仓"},
-        {"key": "reduce_pct", "label": "过热减仓比例", "type": "float", "default": 33,
-         "min": 10, "max": 50, "step": 1, "unit": "%", "group": "过热减仓"},
-        {"key": "reduce_cooldown", "label": "减仓冷却期", "type": "int", "default": 10, "min": 1, "max": 30,
-         "unit": "交易日", "group": "过热减仓"},
-        # ---- G6 做T·网格：T 收益的主要来源（grid/discipline 模式有效）----
+        # ---- G5 退出（衰退初期，个股级）----
+        {"key": "exit_need", "label": "衰退信号满足数", "type": "int", "default": 2, "min": 1, "max": 3,
+         "group": "衰退退出",
+         "description": "MACD死叉/跌破MA20/动量转负或跌出榜单，满足 ≥N 项即退出（2=更保险）"},
+        {"key": "exit_cooldown", "label": "退出冷却期", "type": "int", "default": 5, "min": 0, "max": 20,
+         "unit": "交易日", "group": "衰退退出",
+         "description": "该股退出后 N 个交易日内不重建，防\"止损->立即买回->再止损\"放血"},
+        {"key": "decay_window", "label": "动量衰减窗口", "type": "int", "default": 5,
+         "min": 2, "max": 20, "unit": "日", "group": "衰退退出",
+         "description": "滚动窗口内score峰值，score从峰值回落超decay_pct即判定动量衰减"},
+        {"key": "decay_pct", "label": "动量衰减阈值", "type": "float", "default": 0.15,
+         "min": 0.05, "max": 0.5, "step": 0.05, "group": "衰退退出",
+         "description": "score从峰值回落超过此比例即判定动量衰减（早于score<0触发）"},
+        {"key": "partial_exit_pct", "label": "首次减仓比例", "type": "float", "default": 50,
+         "min": 10, "max": 80, "step": 5, "unit": "%", "group": "衰退退出",
+         "description": "衰退初期首次减仓比例，剩余仓位待二次信号清仓（渐进式退出）"},
+        # ---- G7 做T·正向T ----
+        {"key": "fwd_t", "label": "正向T开关", "type": "categorical", "group": "做T·正向T",
+         "choices": ["off", "on"], "default": "off",
+         "description": "on=允许正向T：逢低买入更多筹码→等反弹后高抛底仓降成本（需底仓存在）"},
+        {"key": "fwd_t_budget_pct", "label": "正向T买入占比", "type": "float", "default": 25,
+         "min": 5, "max": 50, "step": 5, "unit": "%", "group": "做T·正向T",
+         "show_if": {"fwd_t": ["on"]},
+         "description": "正向T逢低买入时动用的资金占比"},
+        # ---- G6 做T·网格（完整复用 momentum_t 做T层）----
         {"key": "atr_period", "label": "ATR周期", "type": "int", "default": 14, "min": 5, "max": 30,
          "group": "做T·网格", "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "网格阈值 = ATR%/close × 网格ATR倍数"},
@@ -129,7 +166,7 @@ class MomentumTStrategy(Strategy):
          "min": 0, "max": 6, "step": 0.1, "unit": "×ATR", "group": "做T·网格",
          "advanced": True, "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "乖离超过该值禁止网格卖出（仅买回），治强趋势卖飞"},
-        # ---- G7 做T·波动定档：二次微调（高波放宽/低波收窄）----
+        # ---- G7 做T·波动定档（二次微调）----
         {"key": "vol_window", "label": "波动中位数窗口", "type": "int", "default": 120, "min": 30, "max": 250,
          "unit": "日", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
@@ -158,7 +195,7 @@ class MomentumTStrategy(Strategy):
          "min": 0.3, "max": 1.0, "step": 0.05, "unit": "×", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "低波时 T 单比例乘数下限"},
-        # ---- G8 做T·机制专属：随 t_mode 切换显示 ----
+        # ---- G8 做T·机制专属（随 t_mode 切换显示）----
         {"key": "t_debt_max_days", "label": "债务时限", "type": "int", "default": 2, "min": 1, "max": 10,
          "unit": "交易日", "group": "做T·机制专属",
          "show_if": {"t_mode": ["grid", "discipline"]},
@@ -171,16 +208,6 @@ class MomentumTStrategy(Strategy):
          "min": 0, "max": 10, "step": 0.1, "unit": "%", "group": "做T·机制专属",
          "show_if": {"t_mode": ["discipline"]},
          "description": "discipline模式：仅当价格回到卖出价下方N%才回补"},
-        # ---- G9 风控·崩溃保护：防追高连板（σ自适应 + 绝对上限双保险）----
-        {"key": "crash_sigma", "label": "动量崩溃阈值(σ)", "type": "float", "default": 2.0,
-         "min": 1, "max": 4, "step": 0.5, "group": "崩溃保护", "advanced": True,
-         "description": "近5日涨幅 > σ×自身波动√5 -> 动量分作废不入榜"},
-        {"key": "crash_vol_n", "label": "崩溃波动窗口", "type": "int", "default": 60,
-         "min": 20, "max": 120, "unit": "日", "group": "崩溃保护", "advanced": True},
-        {"key": "crash_abs_cap", "label": "崩溃绝对涨幅上限", "type": "float", "default": 30,
-         "min": 10, "max": 60, "step": 1, "unit": "%", "group": "崩溃保护", "advanced": True,
-         "description": "近5日涨幅超此值硬性禁入（σ自适应阈值作第二道），"
-                        "防高波股连板后σ阈值自动放宽而仍被满配"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
@@ -197,14 +224,13 @@ class MomentumTStrategy(Strategy):
 
         # 1. 每股日线特征
         feats = {code: self._daily_features(df, p) for code, df in data.items()}
-        # 2. 横截面动量排名：day -> top_n 的 code 集合（T-1 语义，见 _rank_days）
-        top_days = self._rank_days(feats, int(p["top_n"]))
+        # 2. 横截面加速动量排名：day -> 候选池 code 集合（T-1 语义，见 _rank_days）
+        top_days = self._rank_days(feats, int(p["pool_n"]))
         # 3. 每股状态机
         out: dict[str, pl.DataFrame] = {}
         for code, df in data.items():
             df = df.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
-            # A1 点时可得性对齐（防未来函数）：
-            # feats[code] 第 i 行的特征（day_i 收盘后才可知）整体后移一个交易日，
+            # A1 点时可得性对齐（防未来函数）：特征整体后移一个交易日，
             # 当日 bar 只能"看见"上一完整交易日的特征，避免 09:35 就知道当日收盘。
             feats_t1 = feats[code].with_columns(
                 pl.col("day").shift(-1).alias("day")).drop_nulls("day")
@@ -212,13 +238,19 @@ class MomentumTStrategy(Strategy):
             cols = self._walk(df, p, top_days.get(code, set()), start_date)
             df = df.with_columns(cols)
             out[code] = df.drop("day")
+
+        # 4. 槽位管理后处理：max_holdings 强制约束
+        max_holdings = int(p.get("max_holdings", 0))
+        if max_holdings > 0:
+            out = self._enforce_slots(out, max_holdings)
+
         return out
 
     # ---------------- 日线特征 ----------------
 
     @staticmethod
     def _daily_features(df: pl.DataFrame, p: dict) -> pl.DataFrame:
-        """聚合日线并计算趋势/波动/动量特征，返回按 day 的特征表"""
+        """聚合日线并计算趋势/波动/加速动量特征，返回按 day 的特征表"""
         daily = (df.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
                  .group_by("day").agg(pl.col("close").last().alias("d_close"),
                                       pl.col("high").max().alias("d_high"),
@@ -226,20 +258,20 @@ class MomentumTStrategy(Strategy):
                  .sort("day"))
         daily = add_macd(daily, int(p["macd_fast"]), int(p["macd_slow"]),
                          int(p["macd_signal"]), col="d_close")
-        daily = add_ma(daily, int(p["trend_ma"]), col="d_close", name="ma_slow")
-        # add_atr 需要 close/high/low 列名：临时重命名计算后还原
+        daily = add_ma(daily, int(p["ma_fast"]), col="d_close", name="ma_fast")
         daily = (add_atr(daily.rename({"d_close": "close", "d_high": "high",
                                        "d_low": "low"}),
                          int(p["atr_period"]), name="d_atr")
                  .rename({"close": "d_close", "high": "d_high", "low": "d_low"}))
         daily = daily.with_columns([
-            (pl.col("ma_slow") - pl.col("ma_slow").shift(int(p["slope_n"]))).alias("slope"),
+            (pl.col("ma_fast") - pl.col("ma_fast").shift(int(p["slope_n"]))).alias("slope"),
             (pl.col("d_atr") / pl.col("d_close")).alias("atr_pct"),
         ])
         slope_n = int(p["slope_n"])
         mom_s, mom_m, mom_l = int(p["mom_short"]), int(p["mom_mid"]), int(p["mom_long"])
         w_s, w_m = float(p["w_short"]), float(p["w_mid"])
         w_l = max(0.0, 1.0 - w_s - w_m)  # 长周期权重 = 1 - 短 - 中
+        w_a = float(p["w_accel"])
         crash_sigma = float(p["crash_sigma"])
         crash_n = int(p["crash_vol_n"])
         crash_abs = float(p["crash_abs_cap"]) / 100.0
@@ -251,42 +283,44 @@ class MomentumTStrategy(Strategy):
         # 日收益率（风险调整与崩溃保护的公共输入）
         daily_ret = pl.col("d_close") / pl.col("d_close").shift(1) - 1
         # 日波动绝对下限：真实市场日 σ 最低约 0.5%（低波银行股），低于此视为无波动，
-        # 防止恒定收益序列导致 std 浮点下溢（~1e-16）后除零/误触发
+        # 防止恒定收益序列导致 std 浮点下溢后除零/误触发
         _vol_floor = 0.005
 
         def _risk_adj(n: int):
-            """风险调整动量：N日涨幅 / N日波动（横截面可比，防高波动假强势）
-            波动低于绝对下限时无风险调整必要，退化为原始涨幅"""
+            """风险调整动量：N日涨幅 / N日波动（横截面可比，防高波动假强势）"""
             ret = pl.col("d_close") / pl.col("d_close").shift(n) - 1
             vol = daily_ret.rolling_std(n, **_rolling_params(n)) * (n ** 0.5)
             return pl.when(vol > _vol_floor * (n ** 0.5)).then(ret / vol).otherwise(ret)
 
-        # 多周期混合：短(灵敏) + 中(确认) + 长(主升浪)，任一周期数据不足则该日无分
-        score_expr = (w_s * _risk_adj(mom_s) + w_m * _risk_adj(mom_m)
-                      + w_l * _risk_adj(mom_l))
+        mom_s_expr = _risk_adj(mom_s)
+        mom_m_expr = _risk_adj(mom_m)
+        mom_l_expr = _risk_adj(mom_l)
+        # 加速度项：短周期跑赢中周期 = 处于加速段（启动期），仅取正向
+        accel = (mom_s_expr - mom_m_expr).clip(lower_bound=0.0)
+        # 多周期混合 + 加速项：分数越高越接近"加速启动期强势"
+        score_expr = (w_s * mom_s_expr + w_m * mom_m_expr + w_l * mom_l_expr
+                      + w_a * accel)
         # σ自适应崩溃保护：近5日涨幅 > crash_sigma × 自身σ√5 -> 动量分作废不入榜
-        # （自动适配板块：创业板/科创板 σ 大阈值宽，低波股 σ 小阈值严，无需识别代码前缀）
-        # 绝对上限：近5日涨幅 > crash_abs_cap 硬性禁入（σ 阈值作第二道），
-        # 防止高波股连板后 σ 被撑大导致自适应阈值放宽、仍被放行满配。
+        # 绝对上限：近5日涨幅 > crash_abs_cap 硬性禁入（σ 阈值作第二道）
         ret5 = pl.col("d_close") / pl.col("d_close").shift(5) - 1
         vol5 = (daily_ret.rolling_std(crash_n, **_rolling_params(crash_n))
                 .clip(lower_bound=_vol_floor) * (5 ** 0.5))
 
         daily = daily.with_columns([
-            # 乖离（以 ATR 为单位）：>0 强上行
+            # 乖离（以 ATR 为单位）：>0 强上行（做T非对称用）
             pl.when(pl.col("d_atr") > 0)
-              .then((pl.col("d_close") - pl.col("ma_slow")) / pl.col("d_atr"))
+              .then((pl.col("d_close") - pl.col("ma_fast")) / pl.col("d_atr"))
               .otherwise(None).alias("bias"),
             score_expr.alias("score"),
             ret5.alias("ret5"),
             vol5.alias("vol5"),
         ])
         # 波动位置 vol_pos ∈ [0,1]：ATR% 相对滚动分位数定档（每只票自适应）。
-        # 高于 vol_q_hi 分位 → 1（高波），低于 vol_q_lo 分位 → 0（低波），之间线性；
-        # 样本不足/分位数重合（恒定波动）→ None，由状态机按中性 0.5 处理。
         daily = daily.with_columns([
-            pl.col("atr_pct").rolling_quantile(vol_q_hi, window_size=vol_n, **_rolling_params(1)).alias("vq_hi"),
-            pl.col("atr_pct").rolling_quantile(vol_q_lo, window_size=vol_n, **_rolling_params(1)).alias("vq_lo"),
+            pl.col("atr_pct").rolling_quantile(vol_q_hi, window_size=vol_n,
+                                                **_rolling_params(1)).alias("vq_hi"),
+            pl.col("atr_pct").rolling_quantile(vol_q_lo, window_size=vol_n,
+                                                **_rolling_params(1)).alias("vq_lo"),
         ])
         daily = daily.with_columns(
             pl.when(pl.col("vq_hi") > pl.col("vq_lo"))
@@ -302,16 +336,15 @@ class MomentumTStrategy(Strategy):
             (pl.col("d_close") >= pl.col("d_close")
              .rolling_max(brk_n, **_rolling_params(1)).shift(1)).alias("breakout"),
         ])
-        # 交易日序号（冷却期计算用）
         return daily.with_row_index("day_idx").select(
-            ["day", "day_idx", "dif", "dea", "ma_slow", "slope", "atr_pct",
+            ["day", "day_idx", "dif", "dea", "ma_fast", "slope", "atr_pct",
              "bias", "score", "vol_pos", "breakout"])
 
     @staticmethod
-    def _rank_days(feats: dict[str, pl.DataFrame], top_n: int) -> dict[str, set]:
-        """每日按动量分排名，返回 code -> 可建仓日集合（A1 T-1 语义）。
+    def _rank_days(feats: dict[str, pl.DataFrame], pool_n: int) -> dict[str, set]:
+        """每日按加速动量分排名，返回 code -> 可建仓日集合（A1 T-1 语义）。
 
-        day D 的动量分在 D 收盘后才可知，因此 D 的 top_n 名次只决定
+        day D 的动量分在 D 收盘后才可知，因此 D 的 pool_n 名次只决定
         D 的**下一交易日**（全局交易日并集的次日）是否可建仓。
         """
         rows: list[tuple[str, str, float]] = []
@@ -322,16 +355,15 @@ class MomentumTStrategy(Strategy):
         by_day: dict[str, list] = {}
         for day, code, score in rows:
             by_day.setdefault(day, []).append((score, code))
-        # 全局交易日历（各代码日期的并集，升序）-> 次一交易日
         cal = sorted(by_day)
         next_day = {cal[i]: cal[i + 1] for i in range(len(cal) - 1)}
         out: dict[str, set] = {c: set() for c in feats}
         for day, items in by_day.items():
             nd = next_day.get(day)
             if nd is None:
-                continue  # 最后一天无次日，不产生建仓日
+                continue
             items.sort(reverse=True)
-            for _s, code in items[:max(1, top_n)]:
+            for _s, code in items[:max(1, pool_n)]:
                 out.setdefault(code, set()).add(nd)
         return out
 
@@ -340,7 +372,16 @@ class MomentumTStrategy(Strategy):
     @staticmethod
     def _walk(df: pl.DataFrame, p: dict, top_days: set,
               start_date: str | None) -> list[pl.Series]:
-        """生成 signal/tag/reason/budget_pct/t_ratio/reduce_pct 列"""
+        """生成 signal/tag/reason/budget_pct/t_ratio/reduce_pct 列
+
+        状态机优先级（从高到低）：
+          0) ATR硬止损（盘中实时，最高优先级）
+          1) 衰退初期退出（渐进式：首次减partial_exit_pct->二次清仓）
+          2) 加速启动建仓（金叉+站上快均线+候选池+冷却期）
+          3) 试仓升级（斜率确认->满配）
+          4) 金字塔加仓（突破新高+冷却+递减）
+          5) 做T（正向T逢低买入 / 反向T高抛低吸）
+        """
         n = df.height
         signals = [0] * n
         tags = [""] * n
@@ -359,7 +400,7 @@ class MomentumTStrategy(Strategy):
         t_mode = str(p.get("t_mode") or "grid")
         asym_sell_cap = float(p.get("asym_sell_cap") or 2.0)
         if t_mode == "off":
-            max_t = 0  # 关闭做T层（C 基线）
+            max_t = 0
         vol_grid_hi = float(p["vol_grid_hi"])
         vol_grid_lo = float(p["vol_grid_lo"])
         t_vol_hi = float(p["t_vol_hi"])
@@ -368,68 +409,117 @@ class MomentumTStrategy(Strategy):
         max_adds = int(p["max_adds"])
         add_scale = float(p["add_scale"])
         add_cd = int(p["add_cooldown"])
-        overheat_k = float(p["overheat_k"])
-        reduce_pct = float(p["reduce_pct"])
-        reduce_cd = int(p["reduce_cooldown"])
+        exit_need = int(p["exit_need"])
+        exit_cd = int(p["exit_cooldown"])
+        # ---- 新增参数 ----
+        atr_stop_k = float(p.get("atr_stop_k") or -3.0)
+        decay_window = int(p.get("decay_window") or 5)
+        decay_pct = float(p.get("decay_pct") or 0.15)
+        partial_exit_pct = float(p.get("partial_exit_pct") or 50)
+        fwd_t = str(p.get("fwd_t") or "off")
+        fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
 
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
-                "dif", "dea", "ma_slow", "slope", "day_idx"]
-        # trend_clock=daily：趋势信号只在当日最后一根bar评估（is_eod），次日开盘成交；
-        # 做T网格不受门控，仍盘中逐bar运行（阈值用T-1 ATR/vol_pos，无泄漏）。
+                "dif", "dea", "ma_fast", "slope", "score", "day_idx"]
         trend_clock = str(p.get("trend_clock") or "intraday")
         dts = df["date"].to_list()
         is_eod = [i == n - 1 or dts[i][:10] != dts[i + 1][:10] for i in range(n)]
         opened = False
-        full = False           # True=满配确认，False=试仓
+        full = False
         adds_done = 0
         last_add_idx = -10**9
-        last_reduce_idx = -10**9
+        last_exit_idx = -10**9
         cur_day = None
         ref = None
         t_count = 0
+        # 动量衰减跟踪：持仓期间score峰值
+        score_peak: float | None = None
+        # 渐进式退出阶段: 0=无退出, 1=已部分减仓待清仓, 2=已清仓
+        exit_stage = 0
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
-             dif, dea, ma_slow, slope, day_idx) = row
+             dif, dea, ma_fast, slope, score, day_idx) = row
             day = date[:10]
             if start_date and day < start_date:
-                continue  # 预热期：不推进状态机
+                continue
             if day != cur_day:
                 cur_day = day
                 ref = None
                 t_count = 0
+                score_peak = None
             trend_ok = (trend_clock != "daily") or is_eod[i]
 
             macd_ok = dif is not None and dea is not None and dif > dea
-            above = ma_slow is not None and close > ma_slow
+            above_fast = ma_fast is not None and close > ma_fast
             slope_up = slope is not None and slope > 0
-            bear = (dif is not None and dea is not None and dif < dea) and not above
-            confirmed = macd_ok and above and slope_up
+            # 衰退初期三信号（个股级，T-1 特征，次日成交）
+            s1 = dif is not None and dea is not None and dif < dea
+            s2 = ma_fast is not None and close < ma_fast
+            # 动量衰减：持仓期间score从峰值回落超过decay_pct
+            if opened and score is not None:
+                if score_peak is None or score > score_peak:
+                    score_peak = score
+                score_decay = (score_peak is not None
+                               and score < score_peak * (1 - decay_pct))
+            else:
+                score_decay = False
+            s3 = ((score is not None and score < 0)
+                  or (day not in top_days)
+                  or score_decay)
 
-            # ---- 1) 双确认翻空：清仓（最高优先级） ----
-            if opened and bear and trend_ok:
+            # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
+            if opened and bias is not None and bias < atr_stop_k:
                 signals[i] = -1
-                tags[i] = ""
-                reasons[i] = "MACD死叉+跌破慢线，趋势翻空清仓"
+                tags[i] = "止损"
+                reasons[i] = (f"ATR硬止损(bias={bias:.1f}<-{atr_stop_k})"
+                              f" 价格跌破{atr_stop_k}倍ATR")
                 opened, full, adds_done = False, False, 0
+                exit_stage = 0
                 continue
+
+            # ---- 1) 衰退初期退出：渐进式（首次减仓->二次清仓） ----
+            if opened and trend_ok and (int(s1) + int(s2) + int(s3)) >= exit_need:
+                hits = []
+                if s1: hits.append("MACD死叉")
+                if s2: hits.append(f"跌破MA{int(p['ma_fast'])}")
+                if score_decay: hits.append("动量衰减")
+                if score is not None and score < 0: hits.append("动量转负")
+                if day not in top_days: hits.append("跌出榜单")
+                if exit_stage == 0:
+                    signals[i] = -1
+                    tags[i] = "减仓"
+                    reduces[i] = partial_exit_pct
+                    reasons[i] = (f"衰退初期(首次减{partial_exit_pct:.0f}%): "
+                                  f"{'+'.join(hits)}")
+                    exit_stage = 1
+                    continue
+                elif exit_stage == 1:
+                    signals[i] = -1
+                    tags[i] = ""
+                    reasons[i] = f"衰退清仓(二次): {'+'.join(hits)}"
+                    opened, full, adds_done = False, False, 0
+                    exit_stage = 2
+                    last_exit_idx = day_idx
+                    continue
 
             if not opened:
-                # ---- 2) 建仓：初步确认试仓 / 三重确认满配 ----
-                if macd_ok and above and day in top_days and trend_ok:
-                    if confirmed:
+                # ---- 2) 加速启动建仓 ----
+                if (macd_ok and above_fast and day in top_days
+                        and (day_idx - last_exit_idx) >= exit_cd and trend_ok):
+                    if slope_up:
                         budgets[i] = base_max
-                        reasons[i] = "三重确认（金叉+站上慢线+斜率向上），满配建仓"
+                        reasons[i] = ("加速启动(金叉+站上快均线+入榜+斜率向上)，满配建仓")
                     else:
                         budgets[i] = base_min
-                        reasons[i] = "初步确认（金叉+站上慢线），试仓建仓"
+                        reasons[i] = ("加速启动(金叉+站上快均线+入榜)，试仓建仓")
                     signals[i] = 1
                     tags[i] = "开仓"
-                    opened, full = True, confirmed
+                    opened, full = True, slope_up
                 continue
 
-            # ---- 3) 试仓升级：确认升级后补到满配 ----
-            if not full and confirmed and trend_ok:
+            # ---- 3) 试仓升级 ----
+            if not full and slope_up and trend_ok:
                 signals[i] = 1
                 tags[i] = "加仓"
                 budgets[i] = max(0.0, base_max - base_min)
@@ -437,7 +527,7 @@ class MomentumTStrategy(Strategy):
                 full = True
                 continue
 
-            # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
+            # ---- 4) 金字塔加仓 ----
             if (full and breakout and adds_done < max_adds
                     and (day_idx - last_add_idx) >= add_cd and trend_ok):
                 budget = base_max * (add_scale ** (adds_done + 1))
@@ -445,26 +535,15 @@ class MomentumTStrategy(Strategy):
                     signals[i] = 1
                     tags[i] = "加仓"
                     budgets[i] = budget
-                    reasons[i] = f"突破{int(p['add_breakout_n'])}日新高，第{adds_done + 1}次金字塔加仓"
+                    reasons[i] = (f"突破{int(p['add_breakout_n'])}日新高，"
+                                  f"第{adds_done + 1}次金字塔加仓")
                     adds_done += 1
                     last_add_idx = day_idx
                     ref = close
                     continue
 
-            # ---- 5) 过热减仓：乖离超阈值 + 冷却期 ----
-            if (bias is not None and bias > overheat_k
-                    and (day_idx - last_reduce_idx) >= reduce_cd and trend_ok):
-                signals[i] = -1
-                tags[i] = "减仓"
-                reduces[i] = reduce_pct
-                reasons[i] = f"乖离{bias:.1f}×ATR过热，减仓{reduce_pct:g}%锁盈"
-                last_reduce_idx = day_idx
-                ref = close
-                continue
-
-            # ---- 6) 做T：时点规律T(D) 或 ATR 自适应非对称网格 ----
+            # ---- 5) 做T ----
             if t_mode == "time":
-                # D：每日 09:35 高抛 1/4 底仓 / 14:50 尾盘买回（吃 A 股开盘冲高+尾盘低位规律）
                 if " " not in date or t_count >= max_t:
                     continue
                 hhmm = date[11:16]
@@ -486,29 +565,36 @@ class MomentumTStrategy(Strategy):
             g = float(atr_pct) * mult
             if g <= 0:
                 continue
-            # 波动状态调整：vol_pos(0~1) 线性插值，高波放宽(防噪声打穿)、低波收窄(保证触发)。
-            # vol_pos 无分位数(样本不足)时按中性 0.5 处理，保持原比例。
             vp = vol_pos if vol_pos is not None else 0.5
             g *= vol_grid_lo + (vol_grid_hi - vol_grid_lo) * vp
-            # 费用下限保护（往返成本约0.07%+滑点，阈值低于此必亏）
             g = max(g, floor_g)
-            # 趋势非对称：强上行放宽卖出阈值（防卖飞）、收窄买回；走弱反之
             b = bias if bias is not None else 0.0
             g_sell = g * (1 + asym) if b > 0 else g * (1 - asym)
             g_buy = g * (1 - asym) if b > 0 else g * (1 + asym)
-            # 动态T比例：波动线性插值 × 日内衰减（t_decay^n，随当日T次数递减）
             vol_mult = t_vol_lo + (t_vol_hi - t_vol_lo) * vp
             ratio = min(1.0, t_base * vol_mult * (t_decay ** t_count))
 
             if ref is None:
                 ref = close
                 continue
+
+            # ---- 正向T：逢低买入 ----
+            if fwd_t == "on" and close <= ref * (1 - g_buy) and opened:
+                signals[i] = 1
+                tags[i] = "做T"
+                t_ratios[i] = ratio * 100
+                budgets[i] = fwd_t_budget * 100
+                reasons[i] = (f"正向T：跌破下网格线(阈值{g_buy * 100:.2f}%)"
+                              f"逢低买入(预算{fwd_t_budget*100:.0f}%)")
+                ref = close
+                t_count += 1
+                continue
+
+            # ---- 反向T ----
             if close <= ref * (1 - g_buy):
                 signals[i] = 1
                 tags[i] = "做T"
                 t_ratios[i] = ratio * 100
-                # 网格买点携带试仓档预算：引擎遇到空仓重建底仓时按 base_pct_min 封顶，
-                # 避免走完整风控预算满仓重建（正常做T债务买回路径不读 budget_pct，不受影响）
                 budgets[i] = base_min
                 reasons[i] = f"跌破下网格线(阈值{g_buy * 100:.2f}%)买回"
                 ref = close
@@ -529,3 +615,81 @@ class MomentumTStrategy(Strategy):
             pl.Series("t_ratio", t_ratios, dtype=pl.Float64),
             pl.Series("reduce_pct", reduces, dtype=pl.Float64),
         ]
+
+    @staticmethod
+    def _enforce_slots(data: dict[str, pl.DataFrame],
+                       max_holdings: int) -> dict[str, pl.DataFrame]:
+        """槽位管理后处理：强制max_holdings约束。
+
+        原理：
+        - 遍历全局交易日历，按时间顺序推进
+        - 维护当前持仓数(open_count)和每只股票的持仓状态
+        - 当某股票产生建仓信号(open=1)且open_count >= max_holdings时，
+          将该信号置0（释放槽位给更高分的候选股）
+        - 当某股票产生退出信号(open=-1)时，open_count减1
+
+        注意：此为策略层近似实现，引擎风控(max_holdings)仍为最终屏障。
+        """
+        if max_holdings <= 0 or not data:
+            return data
+
+        # 收集所有日期（按时间排序）
+        all_dates: set[str] = set()
+        for code, df in data.items():
+            all_dates.update(
+                df["date"].str.slice(0, 10).unique().to_list())
+        sorted_dates = sorted(all_dates)
+
+        # 预构建每只股票的 signal 列表（按 row order）
+        # 以及 score 列表（用于排序）
+        code_signals: dict[str, list[int]] = {}
+        code_scores: dict[str, list[float]] = {}
+        code_days: dict[str, list[str]] = {}
+        for code, df in data.items():
+            code_signals[code] = df["signal"].to_list()
+            code_scores[code] = df["score"].to_list()
+            code_days[code] = df["date"].str.slice(0, 10).to_list()
+
+        held: dict[str, bool] = {}
+        open_count = 0
+
+        for day in sorted_dates:
+            # 先处理退出信号（释放槽位）
+            for code in data:
+                days = code_days[code]
+                sigs = code_signals[code]
+                for i, d in enumerate(days):
+                    if d == day and sigs[i] == -1 and held.get(code, False):
+                        held[code] = False
+                        open_count = max(0, open_count - 1)
+
+            # 再处理建仓信号（检查槽位，按score降序）
+            entries = []
+            for code in data:
+                days = code_days[code]
+                sigs = code_signals[code]
+                scores = code_scores[code]
+                for i, d in enumerate(days):
+                    if d == day and sigs[i] == 1 and not held.get(code, False):
+                        sc = scores[i]
+                        if sc is None:
+                            continue  # 跳过无score的条目（如崩溃保护期）
+                        entries.append((-sc, code, i))  # 负分用于升序排序
+            entries.sort()
+            for neg_score, code, idx in entries:
+                if open_count >= max_holdings:
+                    # 槽位已满：将此bar的signal置0
+                    data[code] = data[code].with_columns(
+                        pl.when(pl.col("date").str.slice(0, 10) == day)
+                          .then(0)
+                          .otherwise(pl.col("signal"))
+                          .alias("signal")
+                    )
+                    # 更新本地缓存
+                    code_signals[code][idx] = 0
+                else:
+                    open_count += 1
+                    held[code] = True
+
+        return data
+

@@ -2,12 +2,13 @@
 """策略注册表"""
 from .grid_t import GridTStrategy
 from .ma_cross import MaCrossStrategy
+from .momentum_slot import MomentumSlotStrategy
 from .momentum_t import MomentumTStrategy
 from .select_trend import SelectTrendStrategy
 
 REGISTRY: dict[str, object] = {
     s.id: s for s in [MaCrossStrategy(), GridTStrategy(), MomentumTStrategy(),
-                      SelectTrendStrategy()]
+                      SelectTrendStrategy(), MomentumSlotStrategy()]
 }
 
 

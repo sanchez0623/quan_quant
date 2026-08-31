@@ -31,11 +31,15 @@ class MaCrossStrategy(Strategy):
     description = "快线上穿慢线买入，下穿卖出"
     periods = ["daily", "minute5"]
     param_schema = [
-        {"key": "fast", "label": "快线周期", "type": "int", "default": 5, "min": 2, "max": 60},
-        {"key": "slow", "label": "慢线周期", "type": "int", "default": 20, "min": 5, "max": 250},
-        {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 10},
+        {"key": "fast", "label": "快线周期", "type": "int", "default": 5, "min": 2, "max": 60,
+         "group": "均线判据", "description": "快线上穿慢线买入、下穿卖出"},
+        {"key": "slow", "label": "慢线周期", "type": "int", "default": 20, "min": 5, "max": 250,
+         "group": "均线判据", "description": "需明显大于快线，否则频繁交叉刷单"},
+        {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 10,
+         "group": "仓位"},
         {"key": "stop_loss_pct", "label": "止损比例", "type": "float", "default": 12.0,
-         "min": 1, "max": 50, "step": 0.5, "unit": "%"},
+         "min": 1, "max": 50, "step": 0.5, "unit": "%", "group": "仓位",
+         "description": "未显式设置风控时会同步到风控固定止损"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
