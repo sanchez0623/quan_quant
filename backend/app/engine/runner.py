@@ -56,6 +56,73 @@ def _shift_back(d: str, trading_days: int) -> str:
     return (dt - timedelta(days=int(trading_days * 1.5) + 7)).strftime("%Y-%m-%d")
 
 
+def _daily_atr(bar: dict, risk_cfg) -> float | None:
+    """日线口径 ATR（后复权绝对值）。
+
+    分钟线数据下 atr{N} 是「N 根分钟K线」的波幅，比真实日波动窄一个数量级。
+    策略产出的 atr_pct = d_atr / d_close 是日线口径（且已是 T-1 可得语义，无未来函数），
+    按当前后复权收盘价折算即得日线 ATR 绝对值。缺失时退回原口径。"""
+    ap = bar.get("atr_pct")
+    if ap:
+        close = bar.get("close")
+        if close:
+            try:
+                return float(ap) * float(close)
+            except (TypeError, ValueError):
+                pass
+    return bar.get(f"atr{risk_cfg.atr_period}") or bar.get("d_atr") or bar.get("atr")
+
+
+def _add_adaptive_cols(prepared: dict, risk_cfg) -> dict:
+    """为自适应止损生成规范化列：adaptive_ma / adaptive_slope / adaptive_vol_q。
+
+    分钟线数据下直接算 MA{N} 得到的是「N 根分钟K线」而非「N 日」，
+    因此优先复用策略已产出的日线级特征（ma_slow / slope / atr_pct），
+    缺失时才按收盘价自行计算，保证日线/分钟线两种口径都有正确语义。"""
+    n = max(2, int(risk_cfg.adaptive_trend_ma))
+    sn = max(1, int(risk_cfg.adaptive_slope_n))
+    mode = risk_cfg.adaptive
+    out = {}
+    for code, df in prepared.items():
+        cols = list(df.columns)
+        exprs = []
+        if mode == "trend":
+            if "ma_slow" in cols and n == 60:
+                # 策略已产出日线级 MA（momentum_t 的 trend_ma 默认 60）
+                exprs.append(pl.col("ma_slow").alias("adaptive_ma"))
+                if "slope" in cols:
+                    exprs.append(pl.col("slope").alias("adaptive_slope"))
+                else:
+                    exprs.append((pl.col("ma_slow") - pl.col("ma_slow").shift(sn))
+                                 .alias("adaptive_slope"))
+            else:
+                exprs.append(pl.col("close").rolling_mean(n, min_samples=max(2, n // 2))
+                             .alias("adaptive_ma"))
+                exprs.append((pl.col("close").rolling_mean(n, min_samples=max(2, n // 2))
+                              - pl.col("close").rolling_mean(n, min_samples=max(2, n // 2))
+                              .shift(sn)).alias("adaptive_slope"))
+        elif mode == "vol":
+            wn = max(20, int(risk_cfg.adaptive_vol_n))
+            # ATR 占价格比；策略已产出 atr_pct 时复用，否则现算。
+            # 注意：中间列必须单独 with_columns，不能与引用它的表达式同批（polars 不支持同批引用新列）
+            if "atr_pct" in cols:
+                df = df.with_columns(pl.col("atr_pct").alias("_ap"))
+            else:
+                atr_col = f"atr{risk_cfg.atr_period}"
+                if atr_col in cols:
+                    df = df.with_columns((pl.col(atr_col) / pl.col("close")).alias("_ap"))
+            if "_ap" in df.columns:
+                mean = pl.col("_ap").rolling_mean(wn, min_samples=max(5, wn // 4))
+                std = pl.col("_ap").rolling_std(wn, min_samples=max(5, wn // 4))
+                # z-score 线性映射到 [0,1] 近似分位：±2σ 对应 0/1，避免滚动分位的高开销
+                q = (0.5 + (pl.col("_ap") - mean) / (4 * std)).fill_nan(0.5).clip(0.0, 1.0)
+                df = df.with_columns(q.alias("adaptive_vol_q")).drop("_ap")
+        if exprs:
+            df = df.with_columns(exprs)
+        out[code] = df
+    return out
+
+
 def run_backtest(config: dict, data_dir: Optional[str] = None,
                  progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
     """config: 契约 POST /api/backtests 请求体（params 已填默认值）。返回完整 report dict。"""
@@ -95,11 +162,14 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
         risk_cfg_dict["max_intraday_trades"] = int(params["max_t_times"])
     risk_cfg = RiskConfig(risk_cfg_dict)
 
-    # 为 ATR 止损模式预计算 ATR 列
-    if risk_cfg.stop_loss_mode == "atr":
+    # 为 ATR / ATR移动止损模式预计算 ATR 列
+    if risk_cfg.stop_loss_mode in ("atr", "atr_trailing"):
         atr_n = risk_cfg.atr_period
         prepared = {c: add_atr(df, atr_n, name=f"atr{atr_n}")
                     for c, df in prepared.items()}
+    # 自适应止损：预计算趋势/波动判定列（列名规范化，与具体策略解耦）
+    if risk_cfg.stop_loss_mode == "atr_trailing" and risk_cfg.adaptive != "off":
+        prepared = _add_adaptive_cols(prepared, risk_cfg)
 
     return _simulate(cfg, prepared, params, risk_cfg, data_dir, progress_cb)
 
@@ -383,6 +453,10 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                 # 追回/回补执行判定（L1 价格止损 / L2 回补纪律），被拒则本次不成交
                 if not _t_rebuy_allowed(st, raw_price, day, code):
                     return
+                # 债务买回若发生在"该股持仓已清"状态，等于重新建仓，须遵守槽位上限
+                if (risk_cfg.max_holdings > 0 and not portfolio.positions_of(code)
+                        and len({p.code for p in portfolio.positions}) >= risk_cfg.max_holdings):
+                    return
                 # 买回做T卖出的筹码（债务跨日保留，直至回补/到期作废）
                 amount = min(debt * raw_price, budget)
                 vol = broker.lots_for_amount(amount, raw_price)
@@ -390,12 +464,18 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                 # 底仓已被止损/清仓：网格买点重建底仓
                 tag = "开仓"
             else:
-                return
+                # 纯正向T：持仓存在但无债务 → 用预算占比逢低加仓
+                budget_pct = order.get("budget_pct")
+                if budget_pct:
+                    budget = min(budget, equity * float(budget_pct) / 100)
+                vol = broker.lots_for_amount(budget, raw_price)
         if tag in ("开仓", "加仓"):
-            if tag == "开仓" and risk_cfg.max_holdings > 0:
+            # 槽位管理：无论开仓还是加仓信号，只要该 code 当前不在持仓且槽位已满，
+            # 一律拒绝（覆盖"试仓未成交/已清但策略状态机未同步"时加仓补建的情况）
+            if risk_cfg.max_holdings > 0:
                 held = {p.code for p in portfolio.positions}
                 if code not in held and len(held) >= risk_cfg.max_holdings:
-                    return  # 持仓只数已达上限（只限制新开仓，不影响持有/加仓/做T）
+                    return  # 持仓只数已达上限（已有持仓的加仓/做T不受影响）
             budget_pct = order.get("budget_pct")
             if budget_pct:
                 budget = min(budget, equity * float(budget_pct) / 100)
@@ -422,14 +502,20 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         if tag == "做T":
             pos = portfolio.add_position(code, vol, price, bar["date"],
                                          next_day.get(day, "9999-12-31"), "做T", fee)
-            st["bought"] += vol
-            st["buy_amt"] += raw_price * vol
-            log_trade(code, bar, "buy", price, vol, fee, "做T", pos.group_id,
-                      order.get("reason", "网格买回"), t_mode=t_mode)
-            if st["bought"] >= st["sold"]:
-                # 做T周期完成：卖旧与买回的价差即为做T贡献（配对口径 + 逐笔出金）
-                _book_t_cycle(code, day, st["open_day"], st["sell_amt"] - st["buy_amt"])
-                t_state.pop(code, None)
+            if st["sold"] > 0:
+                # 反向T买回：更新债务跟踪
+                st["bought"] += vol
+                st["buy_amt"] += raw_price * vol
+                log_trade(code, bar, "buy", price, vol, fee, "做T", pos.group_id,
+                          order.get("reason", "网格买回"), t_mode=t_mode)
+                if st["bought"] >= st["sold"]:
+                    # 做T周期完成：卖旧与买回的价差即为做T贡献（配对口径 + 逐笔出金）
+                    _book_t_cycle(code, day, st["open_day"], st["sell_amt"] - st["buy_amt"])
+                    t_state.pop(code, None)
+            else:
+                # 正向T逢低加仓：不涉及债务，仅记录交易
+                log_trade(code, bar, "buy", price, vol, fee, "做T", pos.group_id,
+                          order.get("reason", "正向T逢低买入"), t_mode=t_mode)
         elif tag == "加仓":
             same_code = portfolio.positions_of(code)
             base = same_code[-1] if same_code else None
@@ -469,6 +555,8 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                                                 order.get("reason", "网格卖出"), bar["open"])
                 if sold:
                     st = _t_state(code)
+                    # 网格高抛/反向T卖出：无条件建立债务（首次卖出 sold==0 也要记，
+                    # 否则债务链断裂导致后续买回永不配对、T 统计恒为 0）
                     st["sold"] += sold
                     st["sell_amt"] += (fill_price / float(bar.get("adj_factor") or 1.0)) * sold
                     # 债务记账：首次卖出记录 open_day + deadline_day（到期作废转减仓）
@@ -507,8 +595,16 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             if not (pos.sellable_date and day >= pos.sellable_date):
                 continue  # T+1：当日买入不可卖
             pos.highest_price = max(pos.highest_price, bar["high"])
-            atr = bar.get(f"atr{risk_cfg.atr_period}") or bar.get("d_atr") or bar.get("atr")
-            hit = risk_mgr.check_stop(pos, bar["close"], atr)
+            # ATR 口径修正（ATR_DAILY_FIX）：
+            # 分钟线数据下 atr{N} 是「N 根分钟K线」的波幅（实测仅 0.65% 量级），
+            # 远窄于真实日波动（日线 atr_pct 中位 6.00%，相差约 9 倍）。
+            # 直接用会让止损线紧贴买入价、反复扫损。atr_trailing 模式改用日线口径；
+            # 旧 atr 模式保持原样，避免历史报告不可比（是否修复待定）。
+            if risk_cfg.stop_loss_mode == "atr_trailing":
+                atr = _daily_atr(bar, risk_cfg)
+            else:
+                atr = bar.get(f"atr{risk_cfg.atr_period}") or bar.get("d_atr") or bar.get("atr")
+            hit = risk_mgr.check_stop(pos, bar["close"], atr, bar)
             if hit:
                 action, reason = hit
                 ttype = "止损" if action == "stop_loss" else "止盈"
