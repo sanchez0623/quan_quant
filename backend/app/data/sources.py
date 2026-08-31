@@ -149,7 +149,8 @@ INDEX_PARENTS = {INDEX_CSI800: ["hs300", "zz500"]}
 
 
 class BaostockSource(DataSource):
-    """日线主源 / 复权因子源 / 5分钟线深历史源"""
+    """日线主源 / 复权因子源 / 5分钟线深历史源 / 交易日历源
+    （baostock 各频率 volume 单位均为股，是全库统一"股"口径的基准源）。"""
     name = "baostock"
     role = "daily主源"
 
@@ -269,6 +270,35 @@ class BaostockSource(DataSource):
             pl.lit(code).alias("code"),
         ]).filter(pl.col("close").is_not_null() & (pl.col("close") > 0))
         return df.select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
+
+    def get_trade_dates(self, start: str = "1990-01-01",
+                        end: str = "2099-12-31") -> Optional[pl.DataFrame]:
+        """交易日历（query_trade_dates）。仅保留开盘日（is_open==1）。
+
+        返回列: date(Utf8), is_open(Int64)；调用方（update_calendar）直接落库。
+        只写开盘日是因为 _validate_daily 把日历日期无条件当有效交易日使用。
+        """
+        if not self._ok:
+            return None
+        def _q():
+            rs = self._bs.query_trade_dates(start_date=start, end_date=end)
+            rows = []
+            while rs.error_code == "0" and rs.next():
+                rows.append(rs.get_row_data())
+            return rs, rows
+        rows = self._run_query(_q)
+        if rows is None:
+            return None
+        empty = pl.DataFrame(schema={"date": pl.Utf8, "is_open": pl.Int64})
+        if not rows:
+            return empty
+        df = pl.DataFrame(rows, schema={"calendar_date": str, "is_trading_day": str},
+                          orient="row")
+        return (df.rename({"calendar_date": "date", "is_trading_day": "is_open"})
+                  .with_columns(pl.col("is_open").cast(pl.Int64))
+                  .filter(pl.col("is_open") == 1)
+                  .select(["date", "is_open"])
+                  .sort("date"))
 
     def get_adj_factor(self, code, start: str = "1990-01-01",
                        end: str = "2099-12-31") -> Optional[pl.DataFrame]:
@@ -484,7 +514,8 @@ class AkshareSource(DataSource):
                 pl.lit(code).alias("code"),
                 pl.col("date").cast(pl.Utf8),
                 # 东财停牌日可能返回空串/异常值：非严格转数值（空串→null），与其它源 schema 一致
-                pl.col("volume").cast(pl.Float64, strict=False),
+                # 东财日线成交量单位为手：x100 归一为股（全库统一股口径，2026-08-31 实测核对）
+                (pl.col("volume").cast(pl.Float64, strict=False) * 100),
                 pl.col("amount").cast(pl.Float64, strict=False),
             ).select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
         except Exception:
@@ -638,7 +669,9 @@ class MootdxSource(DataSource):
             "code",
             pl.col("datetime").cast(pl.Utf8).str.slice(0, date_slice).alias("date"),
             "open", "high", "low", "close",
-            pl.col("volume").cast(pl.Float64),
+            # TDX 成交量单位随频率不同：日线(9)=手需x100归一为股，5分钟(0)=股保持原样
+            # （2026-08-31 与 baostock 逐bar核对：minute5 完全一致，日线恰差 x100）
+            (pl.col("volume").cast(pl.Float64) * (100.0 if frequency == 9 else 1.0)),
             pl.col("amount").cast(pl.Float64),
         ])
         out = out.filter((pl.col("close") > 0)

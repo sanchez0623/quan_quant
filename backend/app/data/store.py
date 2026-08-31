@@ -19,12 +19,43 @@ def data_root(data_dir: Optional[str] = None) -> Path:
     return Path(data_dir) if data_dir else config.DATA_DIR
 
 
+def _write_parquet_atomic(df: pl.DataFrame, path: Path) -> None:
+    """先写临时文件再 os.replace 原子替换（同盘原子，任何时刻磁盘上只有完整文件）。
+
+    直接覆盖写一旦进程被杀/断电就留下半截 parquet（结尾非 PAR1），之后每次读取都抛
+    'File out of specification: The file must end with PAR1'，且增量更新读旧文件也会
+    连带失败 —— 688188.parquet 即此（2026-08-27 更新中断留下的 0.4MB 截断文件）。
+    临时文件用 .tmp 后缀，不会被 *.parquet 的 glob 命中。
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        df.write_parquet(tmp)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)     # 写失败不留半截 tmp
+        raise
+
+
+def _quarantine_corrupt(path: Path, err: Exception) -> None:
+    """把无法读取的 parquet 改名隔离（保留现场），避免每次读取都在同一处炸。"""
+    import time
+    dst = path.with_name(f"{path.stem}.corrupt-{time.strftime('%Y%m%d_%H%M%S')}.bak")
+    try:
+        path.rename(dst)
+        import logging
+        logging.getLogger(__name__).warning(
+            "parquet 损坏已隔离: %s -> %s（%s: %s）",
+            path, dst.name, type(err).__name__, err)
+    except OSError:
+        pass
+
+
 # ---------------- daily ----------------
 
 def write_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
     d = data_root(data_dir)
     d.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(d / "daily.parquet")
+    _write_parquet_atomic(df, d / "daily.parquet")
 
 
 def read_daily(codes: Optional[list[str]] = None,
@@ -43,7 +74,7 @@ def read_daily(codes: Optional[list[str]] = None,
 def write_minute5(code: str, df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
     d = data_root(data_dir) / "minute5"
     d.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(d / f"{code}.parquet")
+    _write_parquet_atomic(df, d / f"{code}.parquet")
 
 
 def read_minute5(code: str, start: Optional[str] = None, end: Optional[str] = None,
@@ -51,7 +82,13 @@ def read_minute5(code: str, start: Optional[str] = None, end: Optional[str] = No
     p = data_root(data_dir) / "minute5" / f"{code}.parquet"
     if not p.exists():
         return None
-    df = pl.read_parquet(p)
+    try:
+        df = pl.read_parquet(p)
+    except Exception as e:      # noqa: BLE001
+        # 单只坏票不拖死整批回测/更新：隔离坏文件并按「无数据」处理，
+        # 下一次数据更新会当新文件全量重拉（增量合并读不到旧数据即走全量覆盖分支）
+        _quarantine_corrupt(p, e)
+        return None
     if start:
         df = df.filter(pl.col("date") >= start)
     if end:
@@ -70,7 +107,7 @@ def list_minute5_codes(data_dir: Optional[str] = None) -> list[str]:
 
 def write_adj_factor(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
     data_root(data_dir).mkdir(parents=True, exist_ok=True)
-    df.write_parquet(data_root(data_dir) / "adj_factor.parquet")
+    _write_parquet_atomic(df, data_root(data_dir) / "adj_factor.parquet")
 
 
 def read_adj_factor(codes: Optional[list[str]] = None,
@@ -88,7 +125,7 @@ def read_adj_factor(codes: Optional[list[str]] = None,
 
 def write_calendar(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
     data_root(data_dir).mkdir(parents=True, exist_ok=True)
-    df.write_parquet(data_root(data_dir) / "trade_calendar.parquet")
+    _write_parquet_atomic(df, data_root(data_dir) / "trade_calendar.parquet")
 
 
 def read_calendar(data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:
@@ -102,7 +139,7 @@ def write_stock_basic(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
     data_root(data_dir).mkdir(parents=True, exist_ok=True)
     # 统一存纯数字 code（兼容历史 sh.600000 格式输入）
     df = df.with_columns(pl.col("code").str.replace(r"^(sh|sz|bj)\.", "").alias("code"))
-    df.write_parquet(data_root(data_dir) / "stock_basic.parquet")
+    _write_parquet_atomic(df, data_root(data_dir) / "stock_basic.parquet")
 
 
 def read_stock_basic(data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:
@@ -127,7 +164,7 @@ def write_index_constituents(df: pl.DataFrame, data_dir: Optional[str] = None) -
     d = data_root(data_dir)
     d.mkdir(parents=True, exist_ok=True)
     df = df.with_columns(pl.col("code").str.replace(r"^(sh|sz|bj)\.", "").alias("code"))
-    df.write_parquet(d / "index_constituents.parquet")
+    _write_parquet_atomic(df, d / "index_constituents.parquet")
 
 
 def read_index_constituents(data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:
@@ -147,7 +184,7 @@ def write_stock_industry(df: pl.DataFrame, data_dir: Optional[str] = None) -> No
     d = data_root(data_dir)
     d.mkdir(parents=True, exist_ok=True)
     df = df.with_columns(pl.col("code").str.replace(r"^(sh|sz|bj)\.", "").alias("code"))
-    df.write_parquet(d / "stock_industry.parquet")
+    _write_parquet_atomic(df, d / "stock_industry.parquet")
 
 
 def read_stock_industry(data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:

@@ -37,8 +37,8 @@ class UpdateRequest(BaseModel):
 
 @router.post("/update")
 def data_update(req: UpdateRequest, _user: str = Depends(get_current_user)):
-    if req.scope not in ("daily", "minute5", "all", "industry", "stock_basic"):
-        raise HTTPException(status_code=400, detail="scope 需为 daily|minute5|industry|stock_basic|all")
+    if req.scope not in ("daily", "minute5", "all", "industry", "stock_basic", "calendar"):
+        raise HTTPException(status_code=400, detail="scope 需为 daily|minute5|industry|stock_basic|calendar|all")
     if req.stocks is not None and not req.stocks:
         raise HTTPException(status_code=400, detail="stocks 为空时请勿传该字段（全量更新）")
     task_id = "data_" + uuid.uuid4().hex[:12]

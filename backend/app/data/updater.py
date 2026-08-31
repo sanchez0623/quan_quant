@@ -248,15 +248,48 @@ def update_stock_basic(data_dir: Optional[str] = None,
     return stats
 
 
+def update_calendar(data_dir: Optional[str] = None,
+                    progress_cb: Optional[Callable[[float, str], None]] = None,
+                    start_date: str = "1990-01-01",
+                    end_date: str = "2099-12-31") -> dict:
+    """交易日历刷新（scope="calendar"）：基于 baostock query_trade_dates。
+
+    独立分支：不依赖 stock_basic / 日线健康检查。仅写开盘日——
+    _validate_daily 把日历日期无条件当有效交易日使用，写入非交易日会污染校验。
+    """
+    def report(p: float, msg: str) -> None:
+        if progress_cb:
+            progress_cb(p, msg)
+
+    report(5, "交易日历: 定位 baostock 源...")
+    bs = next((s for s in sources.SOURCES if s.name == "baostock" and s.available()), None)
+    if bs is None:
+        raise UpdateError("baostock 不可用（未安装或无法登录），交易日历仅支持 baostock 源")
+    report(20, "健康检查: baostock...")
+    if not bs.health_check(timeout=10):
+        raise UpdateError("baostock 健康检查失败，无法刷新交易日历")
+    report(40, f"拉取交易日历 {start_date} ~ {end_date}...")
+    cal = bs.get_trade_dates(start=start_date, end=end_date)
+    if cal is None or cal.height == 0:
+        # 空结果不落库：避免用空日历覆盖本地有效日历
+        raise UpdateError("baostock 交易日历拉取失败或为空，已拒绝覆盖本地日历")
+    report(80, "写回 trade_calendar.parquet...")
+    store.write_calendar(cal, data_dir)
+    report(100, "交易日历刷新完成")
+    return {"scope": "calendar", "calendar_rows": cal.height,
+            "first": cal["date"].min(), "last": cal["date"].max()}
+
+
 def update(scope: str = "daily", codes: Optional[list[str]] = None,
            data_dir: Optional[str] = None,
            progress_cb: Optional[Callable[[float, str], None]] = None,
            start_date: str = "1990-01-01",
            end_date: str = "2099-12-31") -> dict:
-    """scope: daily | minute5 | industry | stock_basic | all。返回统计。无可用源抛 UpdateError。
+    """scope: daily | minute5 | industry | stock_basic | calendar | all。返回统计。无可用源抛 UpdateError。
     start_date/end_date: 拉取区间（默认全历史；5分钟线受通达信服务器约2年深度限制）。
     industry scope 独立分支：更新指数成分 + 申万三级行业，不需 stock_basic / 日线源。
-    stock_basic scope 独立分支：刷新股票元数据（ST/退市标记），不需日线源。"""
+    stock_basic scope 独立分支：刷新股票元数据（ST/退市标记），不需日线源。
+    calendar scope 独立分支：基于 baostock 交易日查询刷新交易日历，不需 stock_basic / 日线源。"""
 
     def report(p: float, msg: str) -> None:
         if progress_cb:
@@ -269,6 +302,11 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
     # ---- stock_basic scope：刷新股票元数据（ST/退市标记） ----
     if scope == "stock_basic":
         return update_stock_basic(data_dir=data_dir, progress_cb=progress_cb)
+
+    # ---- calendar scope：交易日历刷新（baostock query_trade_dates，仅开盘日） ----
+    if scope == "calendar":
+        return update_calendar(data_dir=data_dir, progress_cb=progress_cb,
+                               start_date=start_date, end_date=end_date)
 
     installed_srcs = [s for s in sources.SOURCES if s.available()]
     _hi = {"i": 0}
@@ -290,7 +328,12 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
     if basic is None:
         raise UpdateError("本地 stock_basic.parquet 不存在，无法确定更新范围。"
                           "请先在有真实数据源的环境初始化，或使用 POST /api/data/demo")
-    all_codes = basic["code"].to_list()   # read_stock_basic 已归一化为纯数字
+    # 退市股不进默认更新范围（防止把已删除的退市股K线从源端重新拉回；
+    # 显式指定 codes 仍可强制拉取）
+    if "delisted" in basic.columns:
+        all_codes = basic.filter(~pl.col("delisted"))["code"].to_list()
+    else:
+        all_codes = basic["code"].to_list()   # read_stock_basic 已归一化为纯数字
     update_codes = _norm_codes(codes) or all_codes
 
     scopes = ["daily", "minute5"] if scope == "all" else [scope]
