@@ -533,13 +533,14 @@ class MomentumSlotStrategy(Strategy):
                 df["date"].str.slice(0, 10).unique().to_list())
         sorted_dates = sorted(all_dates)
 
-        # 预构建每只股票的 signal 列表（按 row order）
-        # 以及 score 列表（用于排序）
+        # 预构建每只股票的 signal/tag/score 列表（按 row order）
         code_signals: dict[str, list[int]] = {}
+        code_tags: dict[str, list[str]] = {}
         code_scores: dict[str, list[float]] = {}
         code_days: dict[str, list[str]] = {}
         for code, df in data.items():
             code_signals[code] = df["signal"].to_list()
+            code_tags[code] = df["tag"].to_list()
             code_scores[code] = df["score"].to_list()
             code_days[code] = df["date"].str.slice(0, 10).to_list()
 
@@ -547,23 +548,28 @@ class MomentumSlotStrategy(Strategy):
         open_count = 0
 
         for day in sorted_dates:
-            # 先处理退出信号（释放槽位）
+            # 先处理退出信号（释放槽位）。
+            # 做T高抛(sig=-1,tag=做T)只是同持仓内部减筹码，不释放槽位。
             for code in data:
                 days = code_days[code]
                 sigs = code_signals[code]
+                tags = code_tags[code]
                 for i, d in enumerate(days):
-                    if d == day and sigs[i] == -1 and held.get(code, False):
+                    if d == day and sigs[i] == -1 and tags[i] != "做T" and held.get(code, False):
                         held[code] = False
                         open_count = max(0, open_count - 1)
 
-            # 再处理建仓信号（检查槽位，按score降序）
+            # 再处理建仓信号（检查槽位，按score降序）。
+            # 做T买回(sig=1,tag=做T)是回补已有持仓的债务，不占新槽位、不参与竞争，
+            # 绝不因槽位已满被置零（否则高抛后永远买不回来，债务拖到期末）。
             entries = []
             for code in data:
                 days = code_days[code]
                 sigs = code_signals[code]
+                tags = code_tags[code]
                 scores = code_scores[code]
                 for i, d in enumerate(days):
-                    if d == day and sigs[i] == 1 and not held.get(code, False):
+                    if d == day and sigs[i] == 1 and tags[i] != "做T" and not held.get(code, False):
                         sc = scores[i]
                         if sc is None:
                             continue  # 跳过无score的条目（如崩溃保护期）
