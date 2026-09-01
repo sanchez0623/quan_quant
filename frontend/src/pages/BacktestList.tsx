@@ -115,8 +115,14 @@ function pickRiskConfig(formRisk: unknown): Record<string, string | number> {
   const src = (formRisk ?? {}) as Record<string, unknown>
   const out: Record<string, string | number> = {}
   RISK_FIELDS.forEach((f) => {
-    const v = src[f.key]
+    let v = src[f.key]
     if (v !== undefined && v !== null && v !== '') {
+      // 布尔型开关统一归一为数字 1/0：后端任务配置存 bool(true/false)（pydantic 强转），
+      // 前端表单 select 用数字选项(1/0)。类型不一致会导致载入后下拉显示空白、
+      // 规则说明判断错（floor===0 对 false 不成立），看起来像"没保存"。
+      if (f.key === 'atr_trail_floor') {
+        v = v === false || v === 0 || v === '0' ? 0 : 1
+      }
       out[f.key] = v as string | number
     } else if (DEFAULT_RISK_CONFIG[f.key] !== undefined) {
       out[f.key] = DEFAULT_RISK_CONFIG[f.key]

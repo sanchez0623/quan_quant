@@ -278,7 +278,7 @@ function describeStopRule(v: Record<string, unknown> | undefined): string {
       return (
         `ATR 移动：止损线 = max( ${base === 'wavg' ? '加权成本' : '首笔开仓价'} − ${k1 ?? '-'}×ATR(${n ?? '-'})，` +
         `最高价 − ${k2 ?? '-'}×ATR(${n ?? '-'}) )，` +
-        `${floor === 0 ? '可随最高价回落' : '棘轮只上不下'}${suffix}`
+        `${floor === 0 || floor === false ? '可随最高价回落' : '棘轮只上不下'}${suffix}`
       )
     default:
       return '未启用止损'
