@@ -104,7 +104,7 @@ def test_chat_cross_provider_switch_on_402(mixed_pool, monkeypatch):
     """deepseek 两个 key 都余额不足 → 无缝跨到 openrouter 成功"""
     calls = []
 
-    def fake(base_url, model, api_key, messages, temperature):
+    def fake(base_url, model, api_key, messages, temperature, timeout=None, max_tokens=None):
         calls.append((base_url, api_key))
         if "deepseek.com" in base_url:
             raise _http_err(402)
@@ -120,7 +120,7 @@ def test_chat_pool_switch_on_timeout_and_limit(mixed_pool, monkeypatch):
     """超时(deepseek) + 限流(openrouter) → 火山方舟成功"""
     calls = []
 
-    def fake(base_url, model, api_key, messages, temperature):
+    def fake(base_url, model, api_key, messages, temperature, timeout=None, max_tokens=None):
         calls.append(base_url)
         if "deepseek.com" in base_url:
             raise TimeoutError("connect timeout")
@@ -137,7 +137,7 @@ def test_chat_pool_filter_by_provider(mixed_pool, monkeypatch):
     """profile 指定服务商：只用该服务商的条目（其余跳过）"""
     calls = []
 
-    def fake(base_url, model, api_key, messages, temperature):
+    def fake(base_url, model, api_key, messages, temperature, timeout=None, max_tokens=None):
         calls.append(api_key)
         if api_key == "sk-ds-1":
             raise _http_err(402)
@@ -213,7 +213,7 @@ def test_chat_db_pool_priority_and_rotation(db_pool, monkeypatch):
     monkeypatch.setenv("LLM_KEY_1", "deepseek|sk-env-should-not-be-used")
     calls = []
 
-    def fake(base_url, model, api_key, messages, temperature):
+    def fake(base_url, model, api_key, messages, temperature, timeout=None, max_tokens=None):
         calls.append(api_key)
         if api_key == "sk-db-1":
             raise _http_err(402)
@@ -227,7 +227,7 @@ def test_chat_db_pool_priority_and_rotation(db_pool, monkeypatch):
 
 def test_chat_db_pool_disabled_entries_skipped(db_pool, monkeypatch):
     monkeypatch.setattr(provider, "_chat_once",
-                        lambda b, m, k, ms, t: (_ for _ in ()).throw(AssertionError("禁用条目不应被调用"))
+                        lambda b, m, k, ms, t, timeout=None, max_tokens=None: (_ for _ in ()).throw(AssertionError("禁用条目不应被调用"))
                         if k == "sk-db-3" else _ok(m))
     result = provider.chat(None, [{"role": "user", "content": "hi"}], username="u")
     assert result["profile"] == "deepseek"
@@ -237,7 +237,7 @@ def test_chat_db_pool_by_key_id(db_pool, monkeypatch):
     """profile 传 key_id（数字）→ 只用该条"""
     calls = []
 
-    def fake(base_url, model, api_key, messages, temperature):
+    def fake(base_url, model, api_key, messages, temperature, timeout=None, max_tokens=None):
         calls.append(api_key)
         return _ok(model)
 
@@ -255,7 +255,7 @@ def test_chat_db_pool_empty_falls_to_env(monkeypatch):
         monkeypatch.delenv(f"LLM_KEY_{i}", raising=False)
     monkeypatch.setenv("LLM_KEY_1", "deepseek|sk-env-1")
     monkeypatch.setattr(prov.db, "list_llm_keys", lambda u, db_path=None: [])
-    monkeypatch.setattr(provider, "_chat_once", lambda b, m, k, ms, t: _ok(m))
+    monkeypatch.setattr(provider, "_chat_once", lambda b, m, k, ms, t, timeout=None, max_tokens=None: _ok(m))
     result = provider.chat(None, [{"role": "user", "content": "hi"}], username="nobody")
     assert result["profile"] == "deepseek"
 
@@ -312,7 +312,7 @@ def test_analyze_backtest_returns_suggestions(monkeypatch):
     monkeypatch.setenv("LLM_KEY_1", "deepseek|sk-x")
     monkeypatch.setattr(
         provider, "_chat_once",
-        lambda b, m, k, ms, t: {"content": "分析正文\n```json\n{\"params\": {\"slow\": 30}}\n```",
+        lambda b, m, k, ms, t, timeout=None, max_tokens=None: {"content": "分析正文\n```json\n{\"params\": {\"slow\": 30}}\n```",
                                 "model": m, "prompt_tokens": 1, "completion_tokens": 1,
                                 "elapsed": 0.1})
     result = analyzer.analyze_backtest(_REPORT)
