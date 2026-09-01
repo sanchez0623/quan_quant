@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   message,
+  Modal,
   Radio,
   Row,
   Select,
@@ -20,7 +21,9 @@ import {
 import {
   ThunderboltOutlined,
   MinusCircleOutlined,
-  PlusOutlined
+  PlusOutlined,
+  ImportOutlined,
+  ExportOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
@@ -108,6 +111,52 @@ const MOMENTUM_T_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: 
       { key: 'trailing_stop_pct', type: 'float', low: 3, high: 8, step: 1 },
       // 单票仓位上限收窄到 30~70%，防止寻优选中 >70% 的激进暴露（审计 B7）
       { key: 'max_position_pct_per_stock', type: 'float', low: 30, high: 70, step: 5 }
+    ]
+  }
+]
+
+/** momentum_slot 预设：4 组分层的搜索空间（选股排序/槽位建仓/退出止损/做T与正向T），
+ *  数值范围以常见基座配置为中心合理扩展；风控键（max_holdings 等）直接作为参数参与搜索 */
+const MOMENTUM_SLOT_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: SpaceRow[] }> = [
+  {
+    name: '选股排序', n_trials: 30,
+    params: [
+      { key: 'mom_short', type: 'int', low: 5, high: 20, step: 5 },
+      { key: 'mom_mid', type: 'int', low: 40, high: 90, step: 10 },
+      { key: 'w_short', type: 'float', low: 0.3, high: 0.6, step: 0.1 },
+      { key: 'w_mid', type: 'float', low: 0.1, high: 0.3, step: 0.1 },
+      { key: 'w_accel', type: 'float', low: 0.1, high: 0.5, step: 0.1 }
+    ]
+  },
+  {
+    name: '槽位与建仓', n_trials: 30,
+    params: [
+      { key: 'pool_n', type: 'int', low: 6, high: 16, step: 2 },
+      { key: 'max_holdings', type: 'int', low: 3, high: 6 },
+      { key: 'base_pct_max', type: 'float', low: 25, high: 50, step: 5 },
+      { key: 'base_pct_min', type: 'float', low: 5, high: 15, step: 5 },
+      { key: 'max_position_pct_per_stock', type: 'float', low: 20, high: 40, step: 5 }
+    ]
+  },
+  {
+    name: '退出与止损', n_trials: 40,
+    params: [
+      { key: 'exit_need', type: 'int', low: 1, high: 3 },
+      { key: 'exit_cooldown', type: 'int', low: 3, high: 10 },
+      { key: 'decay_pct', type: 'float', low: 0.1, high: 0.3, step: 0.05 },
+      { key: 'partial_exit_pct', type: 'float', low: 30, high: 70, step: 10 },
+      { key: 'atr_stop_k', type: 'float', low: -6, high: -2, step: 0.5 },
+      { key: 'atr_trail_mult', type: 'float', low: 4, high: 10, step: 1 },
+      { key: 'take_profit_pct', type: 'float', low: 0, high: 60, step: 10 }
+    ]
+  },
+  {
+    name: '做T与正向T', n_trials: 25,
+    params: [
+      { key: 'max_t_times', type: 'int', low: 4, high: 10, step: 2 },
+      { key: 'grid_atr_mult', type: 'float', low: 0.4, high: 1.2, step: 0.2 },
+      { key: 't_ratio_base', type: 'float', low: 15, high: 35, step: 5 },
+      { key: 'fwd_t_budget_pct', type: 'float', low: 5, high: 20, step: 5 }
     ]
   }
 ]
@@ -246,6 +295,141 @@ function buildSpace(rows?: SpaceRow[]): Record<string, ParamSpaceItem> {
   return space
 }
 
+// ---------------- 参数组 JSON 导入/导出 ----------------
+
+interface ParsedGroup {
+  name: string
+  n_trials: number
+  params: SpaceRow[]
+}
+
+/** 简化 JSON 的参数值 -> SpaceRow。
+ *  [low,high] / [low,high,step]（全整数=int，含小数=float）；
+ *  字符串数组=select 候选；对象 {type,low,high,step} 或 {choices:[...]} */
+function parseParamValue(key: string, v: unknown): SpaceRow {
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x === 'string')) {
+      return { key, type: 'select', choices: v.join(',') }
+    }
+    if (v.length === 2 || v.length === 3) {
+      const nums = v as number[]
+      if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+        throw new Error(`参数 ${key}：数组元素需全为数字或全为字符串`)
+      }
+      const isInt = nums.every((n) => Number.isInteger(n))
+      return {
+        key, type: isInt ? 'int' : 'float',
+        low: nums[0], high: nums[1],
+        step: v.length === 3 ? nums[2] : undefined
+      }
+    }
+    throw new Error(`参数 ${key}：数组需为 [low,high] / [low,high,step] / 候选值列表`)
+  }
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    if (Array.isArray(o.choices)) {
+      return { key, type: 'select', choices: o.choices.join(',') }
+    }
+    if (typeof o.low === 'number' && typeof o.high === 'number') {
+      const isInt = o.type === 'int'
+        || (o.type !== 'float' && Number.isInteger(o.low) && Number.isInteger(o.high))
+      return {
+        key, type: isInt ? 'int' : 'float', low: o.low, high: o.high,
+        step: typeof o.step === 'number' ? o.step : undefined
+      }
+    }
+    throw new Error(`参数 ${key}：对象需为 {type,low,high,step} 或 {choices:[...]}`)
+  }
+  throw new Error(`参数 ${key}：值需为数组或对象`)
+}
+
+/** 解析参数组 JSON -> 组列表。
+ *  支持三种顶层形态：
+ *  1) 数组 [{name?, n_trials?, params:{...}}]
+ *  2) 对象 {组名: {n_trials?, params:{...}}}
+ *  3) 单组对象 {参数名: [low,high,step] / [候选] / {...}}（全部 key 均为参数名时）
+ *  未知参数名直接拒绝（防止打错字后静默无效）。 */
+function parseGroupsJson(text: string, validKeys: Set<string>): ParsedGroup[] {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error('不是合法的 JSON')
+  }
+  let raw: Array<{ name?: string; n_trials?: number; params?: unknown }> = []
+  if (Array.isArray(data)) {
+    raw = data as typeof raw
+  } else if (data && typeof data === 'object') {
+    const entries = Object.entries(data as Record<string, unknown>)
+    if (entries.length && entries.every(
+      ([, v]) => v && typeof v === 'object' && 'params' in (v as Record<string, unknown>)
+    )) {
+      raw = entries.map(([name, v]) => ({ name, ...(v as Record<string, unknown>) }))
+    } else {
+      raw = [{ params: data }]
+    }
+  } else {
+    throw new Error('顶层需为对象或数组')
+  }
+  if (!raw.length) {
+    throw new Error('至少需要一组参数')
+  }
+  return raw.map((g, i) => {
+    if (!g.params || typeof g.params !== 'object' || Array.isArray(g.params)) {
+      throw new Error(`第 ${i + 1} 组缺 params 对象`)
+    }
+    const rows: SpaceRow[] = []
+    const bad: string[] = []
+    for (const [k, v] of Object.entries(g.params as Record<string, unknown>)) {
+      if (!validKeys.has(k)) {
+        bad.push(k)
+        continue
+      }
+      rows.push(parseParamValue(k, v))
+    }
+    if (bad.length) {
+      throw new Error(`未知参数名: ${bad.join(', ')}（须为模板策略参数或风控字段）`)
+    }
+    if (!rows.length) {
+      throw new Error(`第 ${i + 1} 组 params 为空`)
+    }
+    const n = Number(g.n_trials)
+    return {
+      name: String(g.name ?? '').trim() || `参数组${i + 1}`,
+      n_trials: Number.isFinite(n) && n > 0 ? Math.floor(n) : 20,
+      params: rows
+    }
+  })
+}
+
+/** 当前表单参数组 -> 简化 JSON（可直接回贴到导入框） */
+function groupsToJson(groups?: Array<{ name?: string; n_trials?: number; params?: SpaceRow[] }>): string {
+  const out = (groups ?? [])
+    .filter((g) => g.name?.trim() || (g.params ?? []).some((r) => r.key))
+    .map((g) => ({
+      name: g.name?.trim() || undefined,
+      n_trials: g.n_trials,
+      params: Object.fromEntries(
+        (g.params ?? [])
+          .filter((r) => r.key)
+          .map((r) => {
+            if (r.type === 'select') {
+              return [r.key, String(r.choices ?? '')
+                .split(/[,，]/).map((s) => s.trim()).filter(Boolean)]
+            }
+            return [r.key, r.step != null ? [r.low, r.high, r.step] : [r.low, r.high]]
+          })
+      )
+    }))
+  return JSON.stringify(out, null, 2)
+}
+
+/** 策略 -> 分层预设映射 */
+const PRESET_BY_STRATEGY: Record<string, { label: string; groups: Array<{ name: string; n_trials: number; params: SpaceRow[] }> }> = {
+  momentum_t: { label: 'momentum_t 5 组分层预设', groups: MOMENTUM_T_PRESET_GROUPS },
+  momentum_slot: { label: 'momentum_slot 4 组分层预设', groups: MOMENTUM_SLOT_PRESET_GROUPS }
+}
+
 export default function OptimizeList() {
   const [form] = Form.useForm<OptimizeFormValues>()
   const navigate = useNavigate()
@@ -256,6 +440,11 @@ export default function OptimizeList() {
   const [list, setList] = useState<OptimizeListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
   const [mode, setMode] = useState<'flat' | 'grouped'>('flat')
+  // ---- 参数组 JSON 导入/导出 ----
+  const [jsonOpen, setJsonOpen] = useState(false)
+  const [jsonText, setJsonText] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportText, setExportText] = useState('')
 
   const fetchList = useCallback(async () => {
     try {
@@ -332,14 +521,49 @@ export default function OptimizeList() {
     ]
   }, [templateConfig, strategies])
 
-  const applyMomentumPreset = () => {
-    if (!templateConfig || templateConfig.strategy_id !== 'momentum_t') {
-      message.warning('预设仅适用于 momentum_t 策略，请先选择 momentum_t 回测模板')
+  // 合法参数名全集：模板策略 param_schema + 风控字段（导入 JSON 时校验用）
+  const validKeys = useMemo(() => {
+    if (!templateConfig) return new Set<string>()
+    const s = strategies.find((x) => x.id === templateConfig.strategy_id)
+    return new Set<string>([
+      ...(s?.param_schema ?? []).map((p) => p.key),
+      ...RISK_FIELDS.map((f) => f.key)
+    ])
+  }, [templateConfig, strategies])
+
+  const applyPreset = () => {
+    const preset = PRESET_BY_STRATEGY[templateConfig?.strategy_id ?? '']
+    if (!preset) {
+      message.warning('该策略暂无内置预设，可使用「导入JSON」粘贴参数组')
       return
     }
-    form.setFieldsValue({ groups: MOMENTUM_T_PRESET_GROUPS })
+    form.setFieldsValue({ groups: preset.groups })
     setMode('grouped')
-    message.success('已载入 momentum_t 5 组分层次优预设')
+    message.success(`已载入 ${preset.label}`)
+  }
+
+  const onImportJson = () => {
+    try {
+      const groups = parseGroupsJson(jsonText, validKeys)
+      form.setFieldsValue({ groups })
+      setMode('grouped')
+      setJsonOpen(false)
+      const total = groups.reduce((a, g) => a + g.n_trials, 0)
+      message.success(`已导入 ${groups.length} 组（每轮共 ${total} trials）`)
+    } catch (err) {
+      message.error(`导入失败：${(err as Error).message}`)
+    }
+  }
+
+  const onExportJson = () => {
+    const vals = form.getFieldsValue(true) as OptimizeFormValues
+    const text = groupsToJson(vals.groups)
+    if (!text || text === '[]') {
+      message.warning('当前参数组为空，先填好或导入后再导出')
+      return
+    }
+    setExportText(text)
+    setExportOpen(true)
   }
 
   const onFinish = async (values: OptimizeFormValues) => {
@@ -559,11 +783,30 @@ export default function OptimizeList() {
                 <Space>
                   <Button
                     icon={<ThunderboltOutlined />}
-                    disabled={!templateConfig || templateConfig.strategy_id !== 'momentum_t'}
-                    onClick={applyMomentumPreset}
-                    title="填充 momentum_t 5 组分层搜索空间（趋势/仓位/加仓/做T/风控）"
+                    disabled={!templateConfig || !PRESET_BY_STRATEGY[templateConfig.strategy_id]}
+                    onClick={applyPreset}
+                    title="一键填充当前策略的分层搜索空间预设（趋势/仓位/退出/做T等）"
                   >
-                    载入 momentum_t 预设
+                    载入策略预设
+                  </Button>
+                  <Button
+                    icon={<ImportOutlined />}
+                    disabled={!templateConfig}
+                    onClick={() => {
+                      setJsonText('')
+                      setJsonOpen(true)
+                    }}
+                    title="粘贴 JSON 一次填入全部参数组"
+                  >
+                    导入JSON
+                  </Button>
+                  <Button
+                    icon={<ExportOutlined />}
+                    disabled={!templateConfig}
+                    onClick={onExportJson}
+                    title="把当前参数组导出为 JSON（可直接回贴到导入框）"
+                  >
+                    导出JSON
                   </Button>
                 </Space>
               </Col>
@@ -675,6 +918,52 @@ export default function OptimizeList() {
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
         />
       </Card>
+
+      <Modal
+        open={jsonOpen}
+        title="导入参数组 JSON"
+        width={760}
+        onCancel={() => setJsonOpen(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setJsonOpen(false)}>取消</Button>,
+          <Button key="import" type="primary" onClick={onImportJson}>解析并导入</Button>
+        ]}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          支持三种写法：① 数组 <code>[{"{"}name, n_trials, params{"}"}]</code>；② 对象 <code>{"{"}组名: {"{"}n_trials, params{"}"}{"}"}</code>；
+          ③ 单组对象（整体只写 params）。参数值：<code>[low, high]</code> / <code>[low, high, step]</code>
+          （全整数=int，含小数=float）、字符串数组=select 候选、或对象 <code>{"{"}type, low, high, step{"}"}</code>。
+          参数名必须是模板策略参数或风控字段，未知参数名将拒绝导入。
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={14}
+          value={jsonText}
+          onChange={(e) => setJsonText(e.target.value)}
+          placeholder={`[\n  {\n    "name": "选股排序",\n    "n_trials": 30,\n    "params": {\n      "mom_short": [5, 20, 5],\n      "w_accel": [0.1, 0.5, 0.1]\n    }\n  }\n]`}
+        />
+      </Modal>
+
+      <Modal
+        open={exportOpen}
+        title="当前参数组 JSON（可直接回贴到导入框）"
+        width={760}
+        onCancel={() => setExportOpen(false)}
+        footer={[
+          <Button
+            key="copy"
+            type="primary"
+            onClick={() => {
+              navigator.clipboard.writeText(exportText)
+                .then(() => message.success('已复制到剪贴板'))
+                .catch(() => message.warning('复制失败，请手动全选复制'))
+            }}
+          >
+            复制
+          </Button>
+        ]}
+      >
+        <Input.TextArea rows={16} value={exportText} readOnly style={{ fontFamily: 'monospace' }} />
+      </Modal>
     </Space>
   )
 }
