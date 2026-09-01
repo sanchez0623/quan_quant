@@ -515,77 +515,74 @@ class MomentumSlotStrategy(Strategy):
         """槽位管理后处理：强制max_holdings约束。
 
         原理：
-        - 遍历全局交易日历，按时间顺序推进
-        - 维护当前持仓数(open_count)和每只股票的持仓状态
-        - 当某股票产生建仓信号(open=1)且open_count >= max_holdings时，
-          将该信号置0（释放槽位给更高分的候选股）
-        - 当某股票产生退出信号(open=-1)时，open_count减1
+        - 一次性把所有 bar 按交易日归组（day -> [(code_idx, bar_idx)]），
+          避免每天对每只股票全量扫描所有 bar。旧实现为 O(天数×股票数×bar数)
+          （200只×20个月约 30 亿次 Python 迭代，是回测"加载数据"阶段最大瓶颈）；
+          现为 O(总bar数)，毫秒级完成，判定语义完全不变。
+        - 按时间顺序推进，维护当前持仓数(open_count)和每只股票的持仓状态
+        - 当日有建仓信号(open=1)且 open_count >= max_holdings 时置0
+          （释放槽位给更高分的候选股）
+        - 退出信号(open=-1)释放槽位；做T高抛/买回不参与进出场判定
 
         注意：此为策略层近似实现，引擎风控(max_holdings)仍为最终屏障。
         """
         if max_holdings <= 0 or not data:
             return data
 
-        # 收集所有日期（按时间排序）
-        all_dates: set[str] = set()
-        for code, df in data.items():
-            all_dates.update(
-                df["date"].str.slice(0, 10).unique().to_list())
-        sorted_dates = sorted(all_dates)
-
-        # 预构建每只股票的 signal/tag/score 列表（按 row order）
-        code_signals: dict[str, list[int]] = {}
-        code_tags: dict[str, list[str]] = {}
-        code_scores: dict[str, list[float]] = {}
-        code_days: dict[str, list[str]] = {}
-        for code, df in data.items():
-            code_signals[code] = df["signal"].to_list()
-            code_tags[code] = df["tag"].to_list()
-            code_scores[code] = df["score"].to_list()
-            code_days[code] = df["date"].str.slice(0, 10).to_list()
+        codes = list(data)
+        # 每只股票的 signal/tag/score 列（按 row order），按 code 索引取值
+        code_signals: list[list[int]] = []
+        code_tags: list[list[str]] = []
+        code_scores: list[list[float]] = []
+        # 按日归组：day -> [(code_idx, bar_idx)]（仅建一次）
+        day_bars: dict[str, list[tuple[int, int]]] = {}
+        for ci, code in enumerate(codes):
+            df = data[code]
+            sigs = df["signal"].to_list()
+            tags = df["tag"].to_list()
+            scores = df["score"].to_list()
+            days = df["date"].str.slice(0, 10).to_list()
+            code_signals.append(sigs)
+            code_tags.append(tags)
+            code_scores.append(scores)
+            for i, d in enumerate(days):
+                day_bars.setdefault(d, []).append((ci, i))
 
         held: dict[str, bool] = {}
         open_count = 0
 
-        for day in sorted_dates:
+        for day in sorted(day_bars):
+            bars_today = day_bars[day]
             # 先处理退出信号（释放槽位）。
             # 做T高抛(sig=-1,tag=做T)只是同持仓内部减筹码，不释放槽位。
-            for code in data:
-                days = code_days[code]
-                sigs = code_signals[code]
-                tags = code_tags[code]
-                for i, d in enumerate(days):
-                    if d == day and sigs[i] == -1 and tags[i] != "做T" and held.get(code, False):
-                        held[code] = False
-                        open_count = max(0, open_count - 1)
+            for ci, i in bars_today:
+                if (code_signals[ci][i] == -1 and code_tags[ci][i] != "做T"
+                        and held.get(codes[ci], False)):
+                    held[codes[ci]] = False
+                    open_count = max(0, open_count - 1)
 
             # 再处理建仓信号（检查槽位，按score降序）。
             # 做T买回(sig=1,tag=做T)是回补已有持仓的债务，不占新槽位、不参与竞争，
             # 绝不因槽位已满被置零（否则高抛后永远买不回来，债务拖到期末）。
             entries = []
-            for code in data:
-                days = code_days[code]
-                sigs = code_signals[code]
-                tags = code_tags[code]
-                scores = code_scores[code]
-                for i, d in enumerate(days):
-                    if d == day and sigs[i] == 1 and tags[i] != "做T" and not held.get(code, False):
-                        sc = scores[i]
-                        if sc is None:
-                            continue  # 跳过无score的条目（如崩溃保护期）
-                        entries.append((-sc, code, i))  # 负分用于升序排序
+            for ci, i in bars_today:
+                if (code_signals[ci][i] == 1 and code_tags[ci][i] != "做T"
+                        and not held.get(codes[ci], False)):
+                    sc = code_scores[ci][i]
+                    if sc is None:
+                        continue  # 跳过无score的条目（如崩溃保护期）
+                    entries.append((-sc, ci, i))  # 负分用于升序排序
             entries.sort()
-            for neg_score, code, idx in entries:
+            for neg_score, ci, idx in entries:
+                code = codes[ci]
                 if open_count >= max_holdings:
-                    # 槽位已满：将此bar的signal置0
+                    # 槽位已满：将此code当日全部signal置0
                     data[code] = data[code].with_columns(
                         pl.when(pl.col("date").str.slice(0, 10) == day)
                           .then(0)
                           .otherwise(pl.col("signal"))
                           .alias("signal")
                     )
-                    # 更新本地缓存
-                    code_signals[code][idx] = 0
                 else:
                     open_count += 1
                     held[code] = True
