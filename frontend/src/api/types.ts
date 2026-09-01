@@ -632,8 +632,9 @@ export interface OptimizeDetail {
 
 // ---- 对比实验（TREN_T_COMPARISON） ----
 export type ExperimentCell = 'A' | 'B' | 'C' | 'D' | 'E'
-/** 实验矩阵：clock=趋势时钟×T 2×2 / t_mode=做T四机制竞争（T_REFACTOR L3） */
-export type ExperimentMatrix = 'clock' | 't_mode'
+/** 实验矩阵：clock=趋势时钟×T 2×2（momentum_t）/ t_mode=做T四机制竞争（momentum_t+momentum_slot）/
+ *  fwd_t_debt=正向T×债务时限 2×2（momentum_slot） */
+export type ExperimentMatrix = 'clock' | 't_mode' | 'fwd_t_debt'
 
 export interface ExperimentCreateRequest {
   name: string

@@ -30,6 +30,33 @@ const TMODE_CELL_TITLE: Record<ExperimentCell, string> = {
   E: '纯日线15年(参考)'
 }
 
+/** momentum_slot 正向T×债务时限 2×2 的格子标题 */
+const FWD_T_DEBT_CELL_TITLE: Record<ExperimentCell, string> = {
+  A: '关正T×债3天',
+  B: '开正T×债3天',
+  C: '关正T×债10天',
+  D: '开正T×债10天',
+  E: '-'
+}
+
+/** 2×2 归因差值的列标题与轴名（clock 与 fwd_t_debt 的轴语义不同） */
+const DELTA_TITLES: Record<
+  ExperimentMatrix,
+  { t_ac: string; t_bd: string; c_ab: string; c_cd: string; inter: string; a1: string; a2: string }
+> = {
+  clock: {
+    t_ac: 'T边际 A−C', t_bd: 'T边际 B−D',
+    c_ab: '时钟 A−B', c_cd: '时钟 C−D', inter: '交互',
+    a1: 'T开关', a2: '时钟'
+  },
+  t_mode: { t_ac: '', t_bd: '', c_ab: '', c_cd: '', inter: '', a1: '', a2: '' },
+  fwd_t_debt: {
+    t_ac: '债3−债10 A−C', t_bd: '债3−债10 B−D',
+    c_ab: '正T关−开 A−B', c_cd: '正T关−开 C−D', inter: '交互',
+    a1: '债务时限', a2: '正向T'
+  }
+}
+
 export default function ExperimentResult() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -75,7 +102,13 @@ export default function ExperimentResult() {
 
   const matrixType: ExperimentMatrix = detail.matrix_type ?? 'clock'
   const isTmode = matrixType === 't_mode'
-  const cellTitle = (c: ExperimentCell) => (isTmode ? TMODE_CELL_TITLE[c] : CELL_TITLE[c])
+  const dt = DELTA_TITLES[matrixType] ?? DELTA_TITLES.clock
+  const cellTitle = (c: ExperimentCell) =>
+    isTmode
+      ? TMODE_CELL_TITLE[c]
+      : matrixType === 'fwd_t_debt'
+        ? FWD_T_DEBT_CELL_TITLE[c]
+        : CELL_TITLE[c]
 
   const byKey = (cell: ExperimentCell, capital: number) =>
     detail.matrix.find((m) => m.cell === cell && m.capital === capital)
@@ -169,7 +202,7 @@ export default function ExperimentResult() {
       : [
           { title: '指标', dataIndex: 'metric', width: 110, render: (k: string) => METRIC_LABELS[k] ?? k },
           {
-            title: 'T边际 A−C',
+            title: dt.t_ac,
             dataIndex: 't_margin_ac',
             align: 'right',
             render: (v: number | null | undefined, r) => (
@@ -177,7 +210,7 @@ export default function ExperimentResult() {
             )
           },
           {
-            title: 'T边际 B−D',
+            title: dt.t_bd,
             dataIndex: 't_margin_bd',
             align: 'right',
             render: (v: number | null | undefined, r) => (
@@ -185,7 +218,7 @@ export default function ExperimentResult() {
             )
           },
           {
-            title: '时钟 A−B',
+            title: dt.c_ab,
             dataIndex: 'clock_ab',
             align: 'right',
             render: (v: number | null | undefined, r) => (
@@ -193,7 +226,7 @@ export default function ExperimentResult() {
             )
           },
           {
-            title: '时钟 C−D',
+            title: dt.c_cd,
             dataIndex: 'clock_cd',
             align: 'right',
             render: (v: number | null | undefined, r) => (
@@ -201,7 +234,7 @@ export default function ExperimentResult() {
             )
           },
           {
-            title: '交互',
+            title: dt.inter,
             dataIndex: 'interaction',
             align: 'right',
             render: (v: number | null | undefined, r) => (
@@ -246,28 +279,28 @@ export default function ExperimentResult() {
           ) : (
             <>
               <Statistic
-                title="T 边际贡献 A−C"
+                title={`${dt.t_ac} 贡献`}
                 value={a.t_margin_ac ?? undefined}
                 precision={2}
                 valueStyle={{ color: pnlColor(a.t_margin_ac) }}
                 suffix="%"
               />
               <Statistic
-                title="T 边际贡献 B−D"
+                title={`${dt.t_bd} 贡献`}
                 value={a.t_margin_bd ?? undefined}
                 precision={2}
                 valueStyle={{ color: pnlColor(a.t_margin_bd) }}
                 suffix="%"
               />
               <Statistic
-                title="时钟效应 A−B"
+                title={`${dt.c_ab} 效应`}
                 value={a.clock_ab ?? undefined}
                 precision={2}
                 valueStyle={{ color: pnlColor(a.clock_ab) }}
                 suffix="%"
               />
               <Statistic
-                title="时钟效应 C−D"
+                title={`${dt.c_cd} 效应`}
                 value={a.clock_cd ?? undefined}
                 precision={2}
                 valueStyle={{ color: pnlColor(a.clock_cd) }}
@@ -285,10 +318,12 @@ export default function ExperimentResult() {
         </Space>
         {!isTmode && (
           <div style={{ marginTop: 8 }}>
-            {a.t_consistent === true && <Tag color="green">两列 T 估计同向 ✓</Tag>}
-            {a.t_consistent === false && <Tag color="orange">两列 T 估计异向 ⚠（T×时钟交互强）</Tag>}
-            {a.clock_consistent === true && <Tag color="green">两行时钟估计同向 ✓</Tag>}
-            {a.clock_consistent === false && <Tag color="orange">两行时钟估计异向 ⚠</Tag>}
+            {a.t_consistent === true && <Tag color="green">两列{dt.a1}估计同向 ✓</Tag>}
+            {a.t_consistent === false && (
+              <Tag color="orange">两列{dt.a1}估计异向 ⚠（{dt.a1}×{dt.a2}交互强）</Tag>
+            )}
+            {a.clock_consistent === true && <Tag color="green">两行{dt.a2}估计同向 ✓</Tag>}
+            {a.clock_consistent === false && <Tag color="orange">两行{dt.a2}估计异向 ⚠</Tag>}
           </div>
         )}
         <Table

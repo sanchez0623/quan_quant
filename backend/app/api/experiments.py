@@ -41,6 +41,39 @@ TMODE_LABELS = {"A": "网格+双止损(L1)", "B": "回补纪律(L2)",
                 "C": "无T(C)", "D": "时点规律T(D)"}
 TMODE_METRICS = ("total_return", "sharpe", "max_drawdown", "t_pnl", "t_pnl_closed", "commission_total")
 
+# momentum_slot 2×2：正向T × 债务时限（两轴均为独立真旋钮，
+# 回答：正向T是否"逆势接飞刀"的负贡献 + 做T债务时限怎么设）
+FWD_T_DEBT_CELLS = {
+    "A": {"fwd_t": "off", "t_debt_max_days": 3},    # 关正向T × 短债务（推荐）
+    "B": {"fwd_t": "on", "t_debt_max_days": 3},     # 开正向T × 短债务
+    "C": {"fwd_t": "off", "t_debt_max_days": 10},   # 关正向T × 长债务
+    "D": {"fwd_t": "on", "t_debt_max_days": 10},    # 开正向T × 长债务
+}
+FWD_T_DEBT_LABELS = {"A": "关正T×债3", "B": "开正T×债3",
+                     "C": "关正T×债10", "D": "开正T×债10"}
+
+# 矩阵注册表：matrix -> 格子覆盖、标签、支持策略、是否支持E格（纯日线15年参考）
+MATRIX_DEFS = {
+    "clock": {"cells": CELLS, "labels": CELL_LABELS,
+              "strategies": ("momentum_t",), "with_e": True},
+    "t_mode": {"cells": TMODE_CELLS, "labels": TMODE_LABELS,
+               "strategies": ("momentum_t", "momentum_slot"), "with_e": False},
+    "fwd_t_debt": {"cells": FWD_T_DEBT_CELLS, "labels": FWD_T_DEBT_LABELS,
+                   "strategies": ("momentum_slot",), "with_e": False},
+}
+
+# 2×2 归因决策文案（按矩阵配置轴名，通用化）
+_DECISION_WORDS = {
+    "clock": {"a1": "T开关", "a2": "盘中时钟(相对日线)",
+              "a1_neg_advice": "→ 可考虑砍掉做T层（参数少、过拟合风险降）",
+              "a2_pos_advice": "→ 保留5分钟架构",
+              "a2_neg_advice": "→ 趋势层可降级日线"},
+    "fwd_t_debt": {"a1": "债务时限(3天相对10天)", "a2": "正向T(off相对on)",
+                   "a1_neg_advice": "→ 债务时限影响小，取默认3即可",
+                   "a2_pos_advice": "→ 正向T有正贡献，可考虑开启",
+                   "a2_neg_advice": "→ 建议 fwd_t=off（正向T在趋势下行易接飞刀）"},
+}
+
 
 class ExperimentRequest(BaseModel):
     name: str = "对比实验"
@@ -107,13 +140,15 @@ def _attribution_for(m: dict) -> dict:
     }
 
 
-def _decision(per_capital: dict) -> str:
-    """预注册决策规则（文档 §2.6）：基于各资金档归因给出方向性结论"""
+def _decision(per_capital: dict, words: dict) -> str:
+    """2×2 归因决策（通用）：基于各资金档归因给出方向性结论。
+    words: _DECISION_WORDS[matrix]，提供轴名 a1(列 A−C/B−D) 与 a2(行 A−B/C−D) 及建议文案。"""
     t_ac_vals = [a["t_margin_ac"] for a in per_capital.values() if a["t_margin_ac"] is not None]
     t_bd_vals = [a["t_margin_bd"] for a in per_capital.values() if a["t_margin_bd"] is not None]
     c_ab_vals = [a["clock_ab"] for a in per_capital.values() if a["clock_ab"] is not None]
     c_cd_vals = [a["clock_cd"] for a in per_capital.values() if a["clock_cd"] is not None]
     t_con = [a["t_consistent"] for a in per_capital.values() if a["t_consistent"] is not None]
+    a1, a2 = words["a1"], words["a2"]
     lines = []
 
     def _avg(vs):
@@ -129,18 +164,20 @@ def _decision(per_capital: dict) -> str:
         lines.append("⚠ 结论跨资金档翻转 → 路径依赖，各格结论降级为不可采信")
     if t_ac_avg is not None and t_bd_avg is not None:
         if not (t_con and all(t_con)):
-            lines.append("T×时钟交互显著：两列T估计方向不一致，T层结论须分别报告")
+            lines.append(f"{a1}×{a2}交互显著：两行{a1}估计方向不一致，结论须分别报告")
         elif t_ac_avg <= 0 and t_bd_avg <= 0:
-            lines.append("T层无净价值（A−C≈B−D≈0或负）→ 可考虑砍掉做T层（参数少、过拟合风险降）")
+            lines.append(f"{a1} 无净价值（A−C≈B−D≈0或负）{words.get('a1_neg_advice', '')}".rstrip())
         else:
-            lines.append(f"T层有真实增强（A−C={t_ac_avg:+.1%}，B−D={t_bd_avg:+.1%}）")
+            lines.append(f"{a1} 有真实增强（A−C={t_ac_avg:+.1%}，B−D={t_bd_avg:+.1%}）")
     if c_ab_avg is not None and c_cd_avg is not None:
         if c_ab_avg > 0 and c_cd_avg > 0:
-            lines.append(f"盘中触发有价值（A−B={c_ab_avg:+.1%}，C−D={c_cd_avg:+.1%}）→ 保留5分钟架构")
+            lines.append(f"{a2} 有正贡献（A−B={c_ab_avg:+.1%}，C−D={c_cd_avg:+.1%}）"
+                         f"{words.get('a2_pos_advice', '')}".rstrip())
         elif c_ab_avg <= 0 and c_cd_avg <= 0:
-            lines.append(f"日线时钟已够（A−B={c_ab_avg:+.1%}，C−D={c_cd_avg:+.1%}）→ 趋势层可降级日线")
+            lines.append(f"{a2} 无价值或负贡献（A−B={c_ab_avg:+.1%}，C−D={c_cd_avg:+.1%}）"
+                         f"{words.get('a2_neg_advice', '')}".rstrip())
         else:
-            lines.append("时钟效应两行方向不一致 → 分别报告")
+            lines.append(f"{a2} 两行方向不一致 → 分别报告")
     return "；".join(lines) if lines else "数据不足，无法给出归因结论"
 
 
@@ -209,17 +246,19 @@ def _tmode_decision(per_capital: dict) -> str:
 
 @router.post("")
 def create_experiment(req: ExperimentRequest, _user: str = Depends(get_current_user)):
-    if req.matrix not in ("clock", "t_mode"):
-        raise HTTPException(status_code=400, detail=f"matrix 需为 clock/t_mode，非法: {req.matrix}")
-    cell_defs = TMODE_CELLS if req.matrix == "t_mode" else CELLS
-    labels = TMODE_LABELS if req.matrix == "t_mode" else CELL_LABELS
+    if req.matrix not in MATRIX_DEFS:
+        raise HTTPException(status_code=400, detail=f"matrix 需为 {list(MATRIX_DEFS)} 之一，非法: {req.matrix}")
+    mdef = MATRIX_DEFS[req.matrix]
+    cell_defs, labels = mdef["cells"], mdef["labels"]
+    sid = req.base_config.get("strategy_id")
+    if sid not in mdef["strategies"]:
+        raise HTTPException(status_code=400,
+                            detail=f"矩阵 {req.matrix} 不支持策略 {sid}，仅支持: {'/'.join(mdef['strategies'])}")
     bad = [c for c in req.cells if c not in cell_defs]
     if bad:
         raise HTTPException(status_code=400, detail=f"cells 需为 {list(cell_defs)} 的子集，非法: {bad}")
     if not req.cells or not req.capitals:
         raise HTTPException(status_code=400, detail="cells 与 capitals 不能为空")
-    if req.base_config.get("strategy_id") != "momentum_t":
-        raise HTTPException(status_code=400, detail="对比实验仅支持 momentum_t 策略")
     exp_id = "exp_" + uuid.uuid4().hex[:12]
     sub_ids: list[str] = []
     for cell in req.cells:
@@ -241,8 +280,8 @@ def create_experiment(req: ExperimentRequest, _user: str = Depends(get_current_u
             manager.submit("backtest", tid, backtest_config=cfg)
             sub_ids.append(tid)
     stored_cells = list(req.cells)
-    # E 格（纯日线 15 年参考）：单独开关，不进 2×2 归因
-    if req.with_e:
+    # E 格（纯日线 15 年参考）：仅 clock 矩阵支持，单独开关，不进 2×2 归因
+    if req.with_e and mdef["with_e"]:
         e_cfg = dict(req.base_config)
         e_cfg["name"] = f"{req.name} · {CELL_LABELS['E']} · {int(req.capitals[0])}"
         e_cfg["start_date"] = E_START
@@ -322,12 +361,14 @@ def get_experiment(exp_id: str, _user: str = Depends(get_current_user)):
             "status": t["status"], "progress": t["progress"], "message": t["message"],
             "error": t["error"], "metrics": m,
         })
-    if exp.get("matrix") == "t_mode":
+    matrix_key = exp.get("matrix") or "clock"
+    if matrix_key == "t_mode":
         attr_per_capital = {k: _tmode_attribution_for(v) for k, v in per_capital.items()}
         decision = _tmode_decision(attr_per_capital) if attr_per_capital else "数据不足，无法给出归因结论"
     else:
         attr_per_capital = {k: _attribution_for(v) for k, v in per_capital.items()}
-        decision = _decision(attr_per_capital) if attr_per_capital else "数据不足，无法给出归因结论"
+        words = _DECISION_WORDS.get(matrix_key, _DECISION_WORDS["clock"])
+        decision = _decision(attr_per_capital, words) if attr_per_capital else "数据不足，无法给出归因结论"
     attribution = {
         "per_capital": attr_per_capital,
         "decision": decision,

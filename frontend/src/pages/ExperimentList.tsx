@@ -60,9 +60,19 @@ const TMODE_CELLS: Array<{ value: ExperimentCell; label: string; desc: string }>
   { value: 'D', label: 'D · 时点规律T', desc: '每日 09:35 高抛 1/4 底仓、14:50 尾盘买回' }
 ]
 
-const MATRIX_OPTIONS: Array<{ value: ExperimentMatrix; label: string }> = [
-  { value: 'clock', label: '时钟 × 做T（2×2）' },
-  { value: 't_mode', label: '做T四机制竞争（L3）' }
+/** momentum_slot 2×2：正向T × 债务时限 */
+const FWD_T_DEBT_CELLS: Array<{ value: ExperimentCell; label: string; desc: string }> = [
+  { value: 'A', label: 'A · 关正T×债3天', desc: 'fwd_t=off · t_debt_max_days=3（推荐）' },
+  { value: 'B', label: 'B · 开正T×债3天', desc: 'fwd_t=on · t_debt_max_days=3' },
+  { value: 'C', label: 'C · 关正T×债10天', desc: 'fwd_t=off · t_debt_max_days=10' },
+  { value: 'D', label: 'D · 开正T×债10天', desc: 'fwd_t=on · t_debt_max_days=10' }
+]
+
+/** 矩阵注册：每类矩阵支持哪些策略（与后端 MATRIX_DEFS 同步） */
+const MATRIX_OPTIONS: Array<{ value: ExperimentMatrix; label: string; strategies: string[] }> = [
+  { value: 'clock', label: '时钟 × 做T（2×2）', strategies: ['momentum_t'] },
+  { value: 't_mode', label: '做T四机制竞争（L3）', strategies: ['momentum_t', 'momentum_slot'] },
+  { value: 'fwd_t_debt', label: '正向T×债务时限（2×2）', strategies: ['momentum_slot'] }
 ]
 
 const CAPITAL_PRESETS = [
@@ -134,8 +144,25 @@ export default function ExperimentList() {
     return () => window.clearInterval(timer)
   }, [hasActive])
 
+  // 模板策略变化后，若当前矩阵不被该策略支持则切到第一个可用矩阵
+  useEffect(() => {
+    if (!templateConfig?.strategy_id) return
+    const ok = MATRIX_OPTIONS.some(
+      (m) => m.value === matrixWatch && m.strategies.includes(templateConfig.strategy_id)
+    )
+    if (matrixWatch && !ok) {
+      const first = MATRIX_OPTIONS.find((m) => m.strategies.includes(templateConfig.strategy_id))
+      form.setFieldsValue({ matrix: first?.value ?? 't_mode', cells: ['A', 'B', 'C', 'D'] })
+    }
+  }, [matrixWatch, templateConfig, form])
+
+  const experimentStrategies = ['momentum_t', 'momentum_slot']
   const momentumBacktests = backtests.filter(
-    (b) => b.status === 'success' && b.strategy_id === 'momentum_t'
+    (b) => b.status === 'success' && experimentStrategies.includes(b.strategy_id)
+  )
+  // 当前模板策略可用的矩阵（切换策略时矩阵选项随之变化）
+  const availableMatrixOptions = MATRIX_OPTIONS.filter((m) =>
+    m.strategies.includes(templateConfig?.strategy_id ?? '')
   )
 
   const onTemplateChange = async (taskId: string) => {
@@ -146,6 +173,11 @@ export default function ExperimentList() {
       const report = await getBacktestReport(taskId)
       const cfg = report.config
       setTemplateConfig(cfg)
+      // 矩阵随策略切换：取该策略第一个可用矩阵，并重置格子
+      const avail = MATRIX_OPTIONS.find((m) => m.strategies.includes(cfg.strategy_id))
+      if (avail) {
+        form.setFieldsValue({ matrix: avail.value, cells: ['A', 'B', 'C', 'D'] })
+      }
       const curName = form.getFieldValue('name')
       if (!curName) {
         form.setFieldsValue({ name: `${report.name}-对比实验` })
@@ -160,7 +192,7 @@ export default function ExperimentList() {
 
   const onFinish = async (values: ExperimentFormValues) => {
     if (!templateConfig) {
-      message.warning('请先选择 momentum_t 模板回测')
+      message.warning('请先选择模板回测（momentum_t / momentum_slot）')
       return
     }
     if (!values.cells?.length) {
@@ -195,7 +227,7 @@ export default function ExperimentList() {
         capitals,
         start_date: start.format('YYYY-MM-DD'),
         end_date: end.format('YYYY-MM-DD'),
-        with_e: values.matrix === 't_mode' ? false : (values.with_e ?? false),
+        with_e: values.matrix === 'clock' ? (values.with_e ?? false) : false,
         matrix: values.matrix ?? 'clock'
       })
       message.success(`实验已创建，共 ${res.sub_task_ids.length} 个子回测任务`)
@@ -224,8 +256,8 @@ export default function ExperimentList() {
       dataIndex: 'matrix_type',
       width: 110,
       render: (v?: ExperimentMatrix) => (
-        <Tag color={v === 't_mode' ? 'geekblue' : 'default'}>
-          {v === 't_mode' ? '做T四机制' : '时钟×做T'}
+        <Tag color={v === 't_mode' ? 'geekblue' : v === 'fwd_t_debt' ? 'purple' : 'default'}>
+          {v === 't_mode' ? '做T四机制' : v === 'fwd_t_debt' ? '正T×债务' : '时钟×做T'}
         </Tag>
       )
     },
@@ -284,7 +316,9 @@ export default function ExperimentList() {
         title={
           matrixWatch === 't_mode'
             ? '新建机制竞争实验（做T四机制 × 资金档）'
-            : '新建对比实验（趋势×做T 2×2 矩阵 × 资金档）'
+            : matrixWatch === 'fwd_t_debt'
+              ? '新建实验（正向T × 债务时限 2×2 × 资金档）'
+              : '新建对比实验（趋势×做T 2×2 矩阵 × 资金档）'
         }
       >
         <Form<ExperimentFormValues>
@@ -306,11 +340,11 @@ export default function ExperimentList() {
             <Col span={10}>
               <Form.Item
                 name="template"
-                label="模板回测（取其配置，需 momentum_t）"
+                label="模板回测（取其配置，momentum_t / momentum_slot）"
                 rules={[{ required: true, message: '请选择模板回测' }]}
               >
                 <Select
-                  placeholder="选择已成功的 momentum_t 回测作为基座配置"
+                  placeholder="选择已成功的 momentum_t / momentum_slot 回测作为基座配置"
                   showSearch
                   optionFilterProp="label"
                   options={momentumBacktests.map((b) => ({
@@ -376,23 +410,34 @@ export default function ExperimentList() {
                 <Radio.Group
                   optionType="button"
                   buttonStyle="solid"
-                  options={MATRIX_OPTIONS}
+                  options={availableMatrixOptions}
                   onChange={(e) => {
                     const m = e.target.value as ExperimentMatrix
                     form.setFieldsValue({
                       cells: ['A', 'B', 'C', 'D'],
-                      ...(m === 't_mode' ? { with_e: false } : {})
+                      ...(m !== 'clock' ? { with_e: false } : {})
                     })
                   }}
                 />
               </Form.Item>
               <Form.Item
                 name="cells"
-                label={matrixWatch === 't_mode' ? '机制格（做T四机制）' : '实验矩阵（时钟 × 做T）'}
+                label={
+                  matrixWatch === 't_mode'
+                    ? '机制格（做T四机制）'
+                    : matrixWatch === 'fwd_t_debt'
+                      ? '实验矩阵（正向T × 债务时限）'
+                      : '实验矩阵（时钟 × 做T）'
+                }
               >
                 <Checkbox.Group style={{ width: '100%' }}>
                   <Space direction="vertical">
-                    {(matrixWatch === 't_mode' ? TMODE_CELLS : CELLS).map((c) => (
+                    {(matrixWatch === 't_mode'
+                      ? TMODE_CELLS
+                      : matrixWatch === 'fwd_t_debt'
+                        ? FWD_T_DEBT_CELLS
+                        : CELLS
+                    ).map((c) => (
                       <Checkbox key={c.value} value={c.value}>
                         <b>{c.label}</b>
                         <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
@@ -403,7 +448,7 @@ export default function ExperimentList() {
                   </Space>
                 </Checkbox.Group>
               </Form.Item>
-              {matrixWatch !== 't_mode' && (
+              {matrixWatch === 'clock' && (
                 <Form.Item name="with_e" valuePropName="checked" style={{ marginTop: -8 }}>
                   <Checkbox>
                     <b>E · 纯日线15年参考</b>

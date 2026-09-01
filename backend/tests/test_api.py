@@ -340,35 +340,37 @@ def test_data_update_no_source_friendly_error(monkeypatch):
 
 def test_experiment_attribution_logic():
     """归因分解：T边际(A−C/B−D) + 时钟效应(A−B/C−D) + 交互 + 决策规则"""
-    from app.api.experiments import _attribution_for, _decision
+    from app.api.experiments import _DECISION_WORDS, _attribution_for, _decision
     m = {"A": {"total_return": 0.30}, "B": {"total_return": 0.25},
          "C": {"total_return": 0.05}, "D": {"total_return": 0.02}}
     a = _attribution_for(m)
-    assert a["t_margin_ac"] == pytest.approx(0.25)
-    assert a["t_margin_bd"] == pytest.approx(0.23)
-    assert a["clock_ab"] == pytest.approx(0.05)
-    assert a["clock_cd"] == pytest.approx(0.03)
-    assert a["interaction"] == pytest.approx(0.02)
+    assert abs(a["t_margin_ac"] - 0.25) < 1e-9 and abs(a["t_margin_bd"] - 0.23) < 1e-9
+    assert abs(a["clock_ab"] - 0.05) < 1e-9 and abs(a["clock_cd"] - 0.03) < 1e-9
+    assert abs(a["interaction"] - 0.02) < 1e-9
     assert a["t_consistent"] is True
     # 多指标差值分解
     assert "metrics" in a and "sharpe" in a["metrics"]
     assert a["metrics"]["sharpe"]["t_margin_ac"] is not None or a["metrics"]["sharpe"]["t_margin_ac"] is None
-    dec = _decision({"400000": a})
-    assert "T层有真实增强" in dec
+    dec = _decision({"400000": a}, _DECISION_WORDS["clock"])
+    assert "有真实增强" in dec
 
     # T 为负 → 建议砍 T
-    m2 = {"A": {"total_return": 0.05}, "B": {"total_return": 0.06},
+    m2 = {"A": {"total_return": 0.05}, "B": {"total_return": 0.03},
           "C": {"total_return": 0.10}, "D": {"total_return": 0.11}}
     a2 = _attribution_for(m2)
     assert a2["t_margin_ac"] < 0 and a2["t_margin_bd"] < 0
-    assert "砍掉做T层" in _decision({"400000": a2})
+    assert "砍掉做T层" in _decision({"400000": a2}, _DECISION_WORDS["clock"])
 
     # 两列 T 估计方向不一致 → 交互强
     m3 = {"A": {"total_return": 0.10}, "B": {"total_return": 0.02},
           "C": {"total_return": 0.05}, "D": {"total_return": 0.08}}
     a3 = _attribution_for(m3)
     assert a3["t_consistent"] is False
-    assert "交互显著" in _decision({"400000": a3})
+    assert "交互显著" in _decision({"400000": a3}, _DECISION_WORDS["clock"])
+
+    # fwd_t_debt 矩阵：轴名不同，决策仍通用
+    dec_fwd = _decision({"400000": a}, _DECISION_WORDS["fwd_t_debt"])
+    assert "债务时限" in dec_fwd and "正向T" in dec_fwd
 
 
 def test_experiment_flow(client, token):
