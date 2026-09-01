@@ -58,7 +58,10 @@ DEFAULTS = {
     "auto_min_rps": None,      # 全市场 RPS 分位下限（0~100，None=不启用）
     "auto_index": [],          # 候选域：指数成分并集（sz50/hs300/zz500/csi800，空=不限）
     "auto_boards": [],         # 候选域：板块（main/chinext/star/bse，空=不限）；与指数域取交集
-}
+    # ---- 池级趋势开关（POOL_GATE）：环境不适配时禁止开新仓 ----
+    "pool_gate": False,        # 开关：池内动量健康度过低时抑制开仓/加仓（退出与做T照常）
+    "pool_gate_enter_th": 0.15,  # 触发阈值：健康度（动量分为正占比）连续2日低于此值 -> 停开仓
+}                               # 恢复线内置 = 触发阈值 × 2（滞回，不开放配置）
 
 # universe_auto 仅对动量系策略开放（其建仓门槛与预筛口径同源）
 AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
@@ -72,7 +75,7 @@ AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
 BAR_KEEP_COLS = {
     "date", "open", "high", "low", "close", "volume", "adj_factor",
     "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
-    "atr_pct", "d_atr", "atr",
+    "atr_pct", "d_atr", "atr", "pool_gate",
 }
 # 动态访问形态（静态扫描无法捕获 f-string 键，如 f"atr{risk_cfg.atr_period}"）：
 # 新增动态读取形态时同步扩充此处正则。
@@ -174,6 +177,10 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
     strategy_id = cfg["strategy_id"]
     strategy = REGISTRY[strategy_id]
     params = apply_param_defaults(strategy_id, cfg.get("params") or {})
+    # 池级趋势开关（POOL_GATE）：引擎级字段注入 params，供策略 prepare 内
+    # 计算健康度并在信号层抑制开仓（gate off 时全 False，行为与旧版一致）
+    params["pool_gate"] = bool(cfg.get("pool_gate"))
+    params["pool_gate_enter_th"] = cfg.get("pool_gate_enter_th")
     period = cfg.get("period", "daily")
     universe = list(cfg.get("universe") or [])
     start, end = cfg.get("start_date"), cfg.get("end_date")

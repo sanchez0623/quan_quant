@@ -72,91 +72,69 @@ interface OptimizeFormValues {
   groups?: Array<{ name: string; n_trials: number; params?: SpaceRow[] }>
 }
 
-/** momentum_t 预设：5 组分层的搜索空间（docs/OPTIMIZE_AND_AI_PLAN.md 方案A A1.1） */
+/** momentum_t 预设（PARAM_FREEZE 收缩版）：仅核心参数（两轮寻优实证敏感项），
+ *  冻结参数不再出现；风控键仅 max_holdings 参与 */
 const MOMENTUM_T_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: SpaceRow[] }> = [
   {
-    name: '趋势层', n_trials: 40,
+    name: '趋势与选股', n_trials: 30,
     params: [
-      { key: 'trend_ma', type: 'int', low: 30, high: 90, step: 5 },
-      { key: 'slope_n', type: 'int', low: 3, high: 8 }
-    ]
-  },
-  {
-    name: '仓位与选股', n_trials: 40,
-    params: [
-      { key: 'top_n', type: 'int', low: 2, high: 5 },
-      { key: 'base_pct_max', type: 'float', low: 40, high: 90, step: 5 }
-    ]
-  },
-  {
-    name: '加仓与过热', n_trials: 30,
-    params: [
-      { key: 'max_adds', type: 'int', low: 0, high: 3 },
-      { key: 'add_breakout_n', type: 'int', low: 10, high: 40 },
-      { key: 'overheat_k', type: 'float', low: 2, high: 4, step: 0.5 }
-    ]
-  },
-  {
-    name: '做T网格', n_trials: 40,
-    params: [
-      { key: 'grid_atr_mult', type: 'float', low: 0.3, high: 1.0, step: 0.1 },
-      { key: 't_ratio_base', type: 'float', low: 15, high: 40, step: 5 },
-      { key: 'max_t_times', type: 'int', low: 2, high: 6 }
-    ]
-  },
-  {
-    name: '风控', n_trials: 30,
-    params: [
-      { key: 'atr_multiplier', type: 'float', low: 1.0, high: 2.5, step: 0.25 },
-      { key: 'trailing_stop_pct', type: 'float', low: 3, high: 8, step: 1 },
-      // 单票仓位上限收窄到 30~70%，防止寻优选中 >70% 的激进暴露（审计 B7）
-      { key: 'max_position_pct_per_stock', type: 'float', low: 30, high: 70, step: 5 }
-    ]
-  }
-]
-
-/** momentum_slot 预设：4 组分层的搜索空间（选股排序/槽位建仓/退出止损/做T与正向T），
- *  数值范围以常见基座配置为中心合理扩展；风控键（max_holdings 等）直接作为参数参与搜索 */
-const MOMENTUM_SLOT_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: SpaceRow[] }> = [
-  {
-    name: '选股排序', n_trials: 30,
-    params: [
-      { key: 'mom_short', type: 'int', low: 5, high: 20, step: 5 },
-      { key: 'mom_mid', type: 'int', low: 40, high: 90, step: 10 },
+      { key: 'mom_short', type: 'int', low: 10, high: 20, step: 5 },
+      { key: 'mom_mid', type: 'int', low: 60, high: 90, step: 10 },
       { key: 'w_short', type: 'float', low: 0.3, high: 0.6, step: 0.1 },
       { key: 'w_mid', type: 'float', low: 0.1, high: 0.3, step: 0.1 },
       { key: 'w_accel', type: 'float', low: 0.1, high: 0.5, step: 0.1 }
     ]
   },
   {
-    name: '槽位与建仓', n_trials: 30,
+    name: '仓位', n_trials: 20,
     params: [
-      { key: 'pool_n', type: 'int', low: 6, high: 16, step: 2 },
-      { key: 'max_holdings', type: 'int', low: 3, high: 6 },
-      { key: 'base_pct_max', type: 'float', low: 25, high: 50, step: 5 },
-      { key: 'base_pct_min', type: 'float', low: 5, high: 15, step: 5 },
-      { key: 'max_position_pct_per_stock', type: 'float', low: 20, high: 40, step: 5 }
+      { key: 'top_n', type: 'int', low: 2, high: 5 },
+      { key: 'base_pct_max', type: 'float', low: 30, high: 70, step: 5 }
     ]
   },
   {
-    name: '退出与止损', n_trials: 40,
+    name: '做T网格', n_trials: 30,
     params: [
-      { key: 'exit_need', type: 'int', low: 1, high: 3 },
-      { key: 'exit_cooldown', type: 'int', low: 3, high: 10 },
-      { key: 'decay_pct', type: 'float', low: 0.1, high: 0.3, step: 0.05 },
-      { key: 'partial_exit_pct', type: 'float', low: 30, high: 70, step: 10 },
-      { key: 'atr_stop_k', type: 'float', low: -6, high: -2, step: 0.5 },
-      { key: 'atr_trail_mult', type: 'float', low: 4, high: 10, step: 1 },
-      { key: 'take_profit_pct', type: 'float', low: 0, high: 60, step: 10 }
+      { key: 'grid_atr_mult', type: 'float', low: 0.3, high: 1.0, step: 0.1 },
+      { key: 'max_t_times', type: 'int', low: 2, high: 6 },
+      { key: 't_ratio_base', type: 'float', low: 15, high: 40, step: 5 }
+    ]
+  }
+]
+
+/** momentum_slot 预设（PARAM_FREEZE 收缩版）：4 组仅核心参数（选股/槽位/止损/做T）；
+ *  退出组仅 atr_stop_k——exit_need/partial_exit 等已冻结（上轮消融证伪的过拟合源） */
+const MOMENTUM_SLOT_PRESET_GROUPS: Array<{ name: string; n_trials: number; params: SpaceRow[] }> = [
+  {
+    name: '选股排序', n_trials: 25,
+    params: [
+      { key: 'mom_short', type: 'int', low: 10, high: 20, step: 5 },
+      { key: 'mom_mid', type: 'int', low: 60, high: 90, step: 10 },
+      { key: 'w_short', type: 'float', low: 0.3, high: 0.6, step: 0.1 },
+      { key: 'w_mid', type: 'float', low: 0.1, high: 0.3, step: 0.1 },
+      { key: 'w_accel', type: 'float', low: 0.1, high: 0.5, step: 0.1 }
     ]
   },
   {
-    name: '做T与正向T', n_trials: 25,
+    name: '槽位与建仓', n_trials: 20,
     params: [
-      { key: 'max_t_times', type: 'int', low: 4, high: 10, step: 2 },
-      { key: 'grid_atr_mult', type: 'float', low: 0.4, high: 1.2, step: 0.2 },
-      { key: 't_ratio_base', type: 'float', low: 15, high: 35, step: 5 },
-      { key: 'fwd_t_budget_pct', type: 'float', low: 5, high: 20, step: 5 }
+      { key: 'pool_n', type: 'int', low: 8, high: 16, step: 2 },
+      { key: 'max_holdings', type: 'int', low: 3, high: 5 },
+      { key: 'base_pct_max', type: 'float', low: 25, high: 45, step: 5 }
+    ]
+  },
+  {
+    name: '止损', n_trials: 15,
+    params: [
+      { key: 'atr_stop_k', type: 'float', low: -5, high: -3, step: 0.5 }
+    ]
+  },
+  {
+    name: '做T与正向T', n_trials: 20,
+    params: [
+      { key: 'grid_atr_mult', type: 'float', low: 0.4, high: 1.0, step: 0.2 },
+      { key: 'max_t_times', type: 'int', low: 4, high: 8, step: 2 },
+      { key: 't_ratio_base', type: 'float', low: 15, high: 30, step: 5 }
     ]
   }
 ]
@@ -519,6 +497,8 @@ export default function OptimizeList() {
   const paramOptions = useMemo<GroupedOption[]>(() => {
     if (!templateConfig) return []
     const s = strategies.find((x) => x.id === templateConfig.strategy_id)
+    // PARAM_FREEZE 约定：frozen 标记的参数不进入寻优空间（默认值即推荐值）
+    const schemaItems = (s?.param_schema ?? []).filter((p) => !p.frozen)
     const bucket = (
       items: Array<{ key: string; label: string; group?: string }>,
       prefix: string
@@ -531,19 +511,21 @@ export default function OptimizeList() {
       }
       return [...map].map(([g, options]) => ({ label: `${prefix} · ${g}`, options }))
     }
+    // 风控键仅放开核心（其余冻结：两轮寻优实证不敏感或已调定）
+    const riskItems = RISK_FIELDS.filter((f) => f.key === 'max_holdings')
     return [
-      ...bucket(s?.param_schema ?? [], '策略参数'),
-      ...bucket(RISK_FIELDS, '风控')
+      ...bucket(schemaItems, '策略参数'),
+      ...bucket(riskItems, '风控')
     ]
   }, [templateConfig, strategies])
 
-  // 合法参数名全集：模板策略 param_schema + 风控字段（导入 JSON 时校验用）
+  // 合法参数名全集：模板策略非 frozen 参数 + 核心风控键（导入 JSON 时校验用）
   const validKeys = useMemo(() => {
     if (!templateConfig) return new Set<string>()
     const s = strategies.find((x) => x.id === templateConfig.strategy_id)
     return new Set<string>([
-      ...(s?.param_schema ?? []).map((p) => p.key),
-      ...RISK_FIELDS.map((f) => f.key)
+      ...(s?.param_schema ?? []).filter((p) => !p.frozen).map((p) => p.key),
+      'max_holdings'
     ])
   }, [templateConfig, strategies])
 

@@ -56,64 +56,64 @@ class MomentumTStrategy(Strategy):
         {"key": "top_n", "label": "最大持仓只数", "type": "int", "default": 3, "min": 1, "max": 10,
          "group": "核心开关", "description": "universe 内按动量分排名，仅前 top_n 可建仓（可少于该数）"},
         # ---- G2 趋势判据：决定何时进/出，三重确认建仓 + 双确认清仓 ----
-        {"key": "macd_fast", "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
+        {"key": "macd_fast", "frozen": True, "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
          "group": "趋势判据"},
-        {"key": "macd_slow", "label": "MACD慢线", "type": "int", "default": 26, "min": 10, "max": 60,
+        {"key": "macd_slow", "frozen": True, "label": "MACD慢线", "type": "int", "default": 26, "min": 10, "max": 60,
          "group": "趋势判据"},
-        {"key": "macd_signal", "label": "MACD信号线", "type": "int", "default": 9, "min": 3, "max": 20,
+        {"key": "macd_signal", "frozen": True, "label": "MACD信号线", "type": "int", "default": 9, "min": 3, "max": 20,
          "group": "趋势判据"},
-        {"key": "trend_ma", "label": "趋势慢线周期", "type": "int", "default": 60, "min": 20, "max": 120,
+        {"key": "trend_ma", "frozen": True, "label": "趋势慢线周期", "type": "int", "default": 60, "min": 20, "max": 120,
          "group": "趋势判据", "description": "站上/跌破该均线是建仓与清仓的硬条件"},
-        {"key": "slope_n", "label": "斜率确认窗口", "type": "int", "default": 5, "min": 2, "max": 10,
+        {"key": "slope_n", "frozen": True, "label": "斜率确认窗口", "type": "int", "default": 5, "min": 2, "max": 10,
          "group": "趋势判据", "description": "均线斜率向上才算三重确认（试仓升级满配的触发条件）"},
         # ---- G3 选股排序：决定买谁（多周期风险调整动量）----
         {"key": "mom_short", "label": "短周期动量", "type": "int", "default": 20, "min": 5, "max": 40,
          "unit": "日", "group": "选股排序"},
         {"key": "mom_mid", "label": "中周期动量", "type": "int", "default": 60, "min": 30, "max": 90,
          "unit": "日", "group": "选股排序"},
-        {"key": "mom_long", "label": "长周期动量", "type": "int", "default": 120, "min": 90, "max": 200,
+        {"key": "mom_long", "frozen": True, "label": "长周期动量", "type": "int", "default": 120, "min": 90, "max": 200,
          "unit": "日", "group": "选股排序"},
         {"key": "w_short", "label": "短周期权重", "type": "float", "default": 0.5, "min": 0, "max": 1,
          "step": 0.1, "group": "选股排序"},
         {"key": "w_mid", "label": "中周期权重", "type": "float", "default": 0.3, "min": 0, "max": 1,
          "step": 0.1, "group": "选股排序", "description": "长周期权重 = 1 - 短 - 中"},
         # ---- G4 建仓与加仓：决定仓位曲线 ----
-        {"key": "base_pct_min", "label": "试仓资金占比", "type": "float", "default": 10,
+        {"key": "base_pct_min", "frozen": True, "label": "试仓资金占比", "type": "float", "default": 10,
          "min": 5, "max": 40, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "仅金叉+站上慢线（未确认斜率）时的首仓比例"},
         {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 50,
          "min": 30, "max": 90, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "三重确认后的目标仓位；实际仍受风控个股上限约束"},
-        {"key": "max_adds", "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 4,
+        {"key": "max_adds", "frozen": True, "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 4,
          "group": "建仓与加仓"},
-        {"key": "add_scale", "label": "加仓规模递减系数", "type": "float", "default": 0.5,
+        {"key": "add_scale", "frozen": True, "label": "加仓规模递减系数", "type": "float", "default": 0.5,
          "min": 0.2, "max": 0.8, "step": 0.1, "group": "建仓与加仓",
          "description": "第 n 次加仓预算 = 满配 × 系数^n（金字塔越加越小）"},
-        {"key": "add_cooldown", "label": "加仓冷却期", "type": "int", "default": 5, "min": 1, "max": 20,
+        {"key": "add_cooldown", "frozen": True, "label": "加仓冷却期", "type": "int", "default": 5, "min": 1, "max": 20,
          "unit": "交易日", "group": "建仓与加仓"},
-        {"key": "add_breakout_n", "label": "新高突破窗口", "type": "int", "default": 20, "min": 5, "max": 60,
+        {"key": "add_breakout_n", "frozen": True, "label": "新高突破窗口", "type": "int", "default": 20, "min": 5, "max": 60,
          "unit": "日", "group": "建仓与加仓", "description": "创 N 日新高才允许金字塔加仓"},
         # ---- G5 过热减仓：决定何时主动锁盈 ----
-        {"key": "overheat_k", "label": "过热乖离倍数", "type": "float", "default": 3.0,
+        {"key": "overheat_k", "frozen": True, "label": "过热乖离倍数", "type": "float", "default": 3.0,
          "min": 1, "max": 6, "step": 0.5, "unit": "×ATR", "group": "过热减仓",
          "description": "价格高于慢线 N 倍 ATR 视为过热，触发减仓"},
-        {"key": "reduce_pct", "label": "过热减仓比例", "type": "float", "default": 33,
+        {"key": "reduce_pct", "frozen": True, "label": "过热减仓比例", "type": "float", "default": 33,
          "min": 10, "max": 50, "step": 1, "unit": "%", "group": "过热减仓"},
-        {"key": "reduce_cooldown", "label": "减仓冷却期", "type": "int", "default": 10, "min": 1, "max": 30,
+        {"key": "reduce_cooldown", "frozen": True, "label": "减仓冷却期", "type": "int", "default": 10, "min": 1, "max": 30,
          "unit": "交易日", "group": "过热减仓"},
         # ---- G6 做T·网格：T 收益的主要来源（grid/discipline 模式有效）----
-        {"key": "atr_period", "label": "ATR周期", "type": "int", "default": 14, "min": 5, "max": 30,
+        {"key": "atr_period", "frozen": True, "label": "ATR周期", "type": "int", "default": 14, "min": 5, "max": 30,
          "group": "做T·网格", "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "网格阈值 = ATR%/close × 网格ATR倍数"},
         {"key": "grid_atr_mult", "label": "网格ATR倍数", "type": "float", "default": 1.0,
          "min": 0.1, "max": 2, "step": 0.1, "group": "做T·网格",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "倍数越大网格越宽，触发越少、单笔幅度越大"},
-        {"key": "grid_floor_pct", "label": "网格阈值下限", "type": "float", "default": 0.4,
+        {"key": "grid_floor_pct", "frozen": True, "label": "网格阈值下限", "type": "float", "default": 0.4,
          "min": 0.2, "max": 1.0, "step": 0.1, "unit": "%", "group": "做T·网格",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "往返成本约0.07%+滑点，阈值低于此必亏，故设下限兜底"},
-        {"key": "asym_bias", "label": "趋势非对称系数", "type": "float", "default": 0.3,
+        {"key": "asym_bias", "frozen": True, "label": "趋势非对称系数", "type": "float", "default": 0.3,
          "min": 0, "max": 0.6, "step": 0.1, "group": "做T·网格",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "上行时放宽卖出阈值、收窄买回（防卖飞），走弱时反之"},
@@ -121,63 +121,63 @@ class MomentumTStrategy(Strategy):
          "min": 10, "max": 50, "step": 1, "unit": "%", "group": "做T·网格",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "单次做T动用底仓的比例，再乘波动乘数与日内衰减"},
-        {"key": "t_decay", "label": "T比例日内衰减", "type": "float", "default": 0.7,
+        {"key": "t_decay", "frozen": True, "label": "T比例日内衰减", "type": "float", "default": 0.7,
          "min": 0.5, "max": 0.95, "step": 0.05, "group": "做T·网格",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "当日第 n 次 T 单比例 × t_decay^n（越晚越轻）"},
-        {"key": "asym_sell_cap", "label": "卖飞保护乖离", "type": "float", "default": 2.0,
+        {"key": "asym_sell_cap", "frozen": True, "label": "卖飞保护乖离", "type": "float", "default": 2.0,
          "min": 0, "max": 6, "step": 0.1, "unit": "×ATR", "group": "做T·网格",
          "advanced": True, "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "乖离超过该值禁止网格卖出（仅买回），治强趋势卖飞"},
         # ---- G7 做T·波动定档：二次微调（高波放宽/低波收窄）----
-        {"key": "vol_window", "label": "波动中位数窗口", "type": "int", "default": 120, "min": 30, "max": 250,
+        {"key": "vol_window", "frozen": True, "label": "波动中位数窗口", "type": "int", "default": 120, "min": 30, "max": 250,
          "unit": "日", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "ATR% 滚动分位的回看窗口，用于判断当前处于高波还是低波"},
-        {"key": "vol_q_hi", "label": "高波分位数", "type": "float", "default": 0.7,
+        {"key": "vol_q_hi", "frozen": True, "label": "高波分位数", "type": "float", "default": 0.7,
          "min": 0.5, "max": 0.95, "step": 0.05, "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "ATR% 高于该分位视为高波"},
-        {"key": "vol_q_lo", "label": "低波分位数", "type": "float", "default": 0.3,
+        {"key": "vol_q_lo", "frozen": True, "label": "低波分位数", "type": "float", "default": 0.3,
          "min": 0.05, "max": 0.5, "step": 0.05, "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "ATR% 低于该分位视为低波"},
-        {"key": "vol_grid_hi", "label": "高波网格放宽", "type": "float", "default": 1.3,
+        {"key": "vol_grid_hi", "frozen": True, "label": "高波网格放宽", "type": "float", "default": 1.3,
          "min": 1.0, "max": 2.5, "step": 0.1, "unit": "×", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "高波时网格阈值放宽倍数（防噪声打穿）"},
-        {"key": "vol_grid_lo", "label": "低波网格收窄", "type": "float", "default": 0.8,
+        {"key": "vol_grid_lo", "frozen": True, "label": "低波网格收窄", "type": "float", "default": 0.8,
          "min": 0.5, "max": 1.0, "step": 0.05, "unit": "×", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "低波时网格阈值收窄倍数（保证触发）"},
-        {"key": "t_vol_hi", "label": "高波T比例乘数", "type": "float", "default": 1.3333,
+        {"key": "t_vol_hi", "frozen": True, "label": "高波T比例乘数", "type": "float", "default": 1.3333,
          "min": 1.0, "max": 2.0, "step": 0.05, "unit": "×", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "高波时 T 单比例乘数上限"},
-        {"key": "t_vol_lo", "label": "低波T比例乘数", "type": "float", "default": 0.6667,
+        {"key": "t_vol_lo", "frozen": True, "label": "低波T比例乘数", "type": "float", "default": 0.6667,
          "min": 0.3, "max": 1.0, "step": 0.05, "unit": "×", "group": "做T·波动定档", "advanced": True,
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "低波时 T 单比例乘数下限"},
         # ---- G8 做T·机制专属：随 t_mode 切换显示 ----
-        {"key": "t_debt_max_days", "label": "债务时限", "type": "int", "default": 2, "min": 1, "max": 10,
+        {"key": "t_debt_max_days", "frozen": True, "label": "债务时限", "type": "int", "default": 2, "min": 1, "max": 10,
          "unit": "交易日", "group": "做T·机制专属",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "做T债务超过N交易日未回补 -> 作废转正式减仓"},
-        {"key": "t_max_chase_pct", "label": "追回价格上限", "type": "float", "default": 3.0,
+        {"key": "t_max_chase_pct", "frozen": True, "label": "追回价格上限", "type": "float", "default": 3.0,
          "min": 0, "max": 20, "step": 0.5, "unit": "%", "group": "做T·机制专属",
          "show_if": {"t_mode": ["grid"]},
          "description": "grid模式：买回价高于卖出均价N%即放弃追回（封右尾）"},
-        {"key": "reentry_discount", "label": "回补限价折让", "type": "float", "default": 1.0,
+        {"key": "reentry_discount", "frozen": True, "label": "回补限价折让", "type": "float", "default": 1.0,
          "min": 0, "max": 10, "step": 0.1, "unit": "%", "group": "做T·机制专属",
          "show_if": {"t_mode": ["discipline"]},
          "description": "discipline模式：仅当价格回到卖出价下方N%才回补"},
         # ---- G9 风控·崩溃保护：防追高连板（σ自适应 + 绝对上限双保险）----
-        {"key": "crash_sigma", "label": "动量崩溃阈值(σ)", "type": "float", "default": 2.0,
+        {"key": "crash_sigma", "frozen": True, "label": "动量崩溃阈值(σ)", "type": "float", "default": 2.0,
          "min": 1, "max": 4, "step": 0.5, "group": "崩溃保护", "advanced": True,
          "description": "近5日涨幅 > σ×自身波动√5 -> 动量分作废不入榜"},
-        {"key": "crash_vol_n", "label": "崩溃波动窗口", "type": "int", "default": 60,
+        {"key": "crash_vol_n", "frozen": True, "label": "崩溃波动窗口", "type": "int", "default": 60,
          "min": 20, "max": 120, "unit": "日", "group": "崩溃保护", "advanced": True},
-        {"key": "crash_abs_cap", "label": "崩溃绝对涨幅上限", "type": "float", "default": 30,
+        {"key": "crash_abs_cap", "frozen": True, "label": "崩溃绝对涨幅上限", "type": "float", "default": 30,
          "min": 10, "max": 60, "step": 1, "unit": "%", "group": "崩溃保护", "advanced": True,
          "description": "近5日涨幅超此值硬性禁入（σ自适应阈值作第二道），"
                         "防高波股连板后σ阈值自动放宽而仍被满配"},
@@ -199,6 +199,13 @@ class MomentumTStrategy(Strategy):
         feats = {code: self._daily_features(df, p) for code, df in data.items()}
         # 2. 横截面动量排名：day -> top_n 的 code 集合（T-1 语义，见 _rank_days）
         top_days = self._rank_days(feats, int(p["top_n"]))
+        # 2.5 池级趋势开关（POOL_GATE）：健康度=池内动量分>0 占比，
+        #  滞回双阈值（触发 enter_th / 恢复 2×enter_th，确认 2 日，T-1 对齐）；
+        #  关闭时全 False，行为与旧版一致
+        if p.get("pool_gate"):
+            gate_df = mc.pool_gate_column(feats, float(p.get("pool_gate_enter_th") or 0.15))
+        else:
+            gate_df = None
         # 3. 每股状态机
         out: dict[str, pl.DataFrame] = {}
         for code, df in data.items():
@@ -209,6 +216,11 @@ class MomentumTStrategy(Strategy):
             feats_t1 = feats[code].with_columns(
                 pl.col("day").shift(-1).alias("day")).drop_nulls("day")
             df = df.join(feats_t1, on="day", how="left")
+            if gate_df is not None:
+                df = df.join(gate_df, on="day", how="left").with_columns(
+                    pl.col("pool_gate").fill_null(False))
+            else:
+                df = df.with_columns(pl.lit(False).alias("pool_gate"))
             cols = self._walk(df, p, top_days.get(code, set()), start_date)
             df = df.with_columns(cols)
             out[code] = df.drop("day")
@@ -266,7 +278,10 @@ class MomentumTStrategy(Strategy):
         reduce_cd = int(p["reduce_cooldown"])
 
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
-                "dif", "dea", "ma_slow", "slope", "day_idx"]
+                "dif", "dea", "ma_slow", "slope", "day_idx", "pool_gate"]
+        # pool_gate 由 prepare 注入（POOL_GATE）；直调 _walk 的旧路径兜底补列
+        if "pool_gate" not in df.columns:
+            df = df.with_columns(pl.lit(False).alias("pool_gate"))
         # trend_clock=daily：趋势信号只在当日最后一根bar评估（is_eod），次日开盘成交；
         # 做T网格不受门控，仍盘中逐bar运行（阈值用T-1 ATR/vol_pos，无泄漏）。
         trend_clock = str(p.get("trend_clock") or "intraday")
@@ -283,7 +298,7 @@ class MomentumTStrategy(Strategy):
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
-             dif, dea, ma_slow, slope, day_idx) = row
+             dif, dea, ma_slow, slope, day_idx, pool_gate) = row
             day = date[:10]
             if start_date and day < start_date:
                 continue  # 预热期：不推进状态机
@@ -309,7 +324,8 @@ class MomentumTStrategy(Strategy):
 
             if not opened:
                 # ---- 2) 建仓：初步确认试仓 / 三重确认满配 ----
-                if macd_ok and above and day in top_days and trend_ok:
+                # 池级开关（pool_gate）：环境不适配时抑制建仓（POOL_GATE）
+                if macd_ok and above and day in top_days and trend_ok and not pool_gate:
                     if confirmed:
                         budgets[i] = base_max
                         reasons[i] = "三重确认（金叉+站上慢线+斜率向上），满配建仓"
@@ -322,7 +338,7 @@ class MomentumTStrategy(Strategy):
                 continue
 
             # ---- 3) 试仓升级：确认升级后补到满配 ----
-            if not full and confirmed and trend_ok:
+            if not full and confirmed and trend_ok and not pool_gate:
                 signals[i] = 1
                 tags[i] = "加仓"
                 budgets[i] = max(0.0, base_max - base_min)
@@ -332,7 +348,8 @@ class MomentumTStrategy(Strategy):
 
             # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
             if (full and breakout and adds_done < max_adds
-                    and (day_idx - last_add_idx) >= add_cd and trend_ok):
+                    and (day_idx - last_add_idx) >= add_cd and trend_ok
+                    and not pool_gate):
                 budget = base_max * (add_scale ** (adds_done + 1))
                 if budget >= 1.0:
                     signals[i] = 1

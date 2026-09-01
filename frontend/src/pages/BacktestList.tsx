@@ -79,6 +79,9 @@ interface BacktestFormValues {
   auto_min_rps?: number
   auto_index?: string[]
   auto_boards?: string[]
+  // ---- 池级趋势开关（POOL_GATE）----
+  pool_gate?: boolean
+  pool_gate_enter_th?: number
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
   capital_preset?: string
@@ -176,6 +179,7 @@ export default function BacktestList() {
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
   // 动态选股开关与开始日期联动（StockPicker 动量预筛需要 startDate，无后视镜）
   const universeAuto = Form.useWatch('universe_auto', form)
+  const poolGate = Form.useWatch('pool_gate', form)
   const dateRangeWatch = Form.useWatch('dateRange', form)
   const startDate = dateRangeWatch?.[0] ? (dateRangeWatch[0] as Dayjs).format('YYYY-MM-DD') : undefined
 
@@ -231,6 +235,8 @@ export default function BacktestList() {
       auto_min_rps: values.auto_min_rps ?? null,
       auto_index: values.auto_index ?? [],
       auto_boards: values.auto_boards ?? [],
+      pool_gate: values.pool_gate ?? false,
+      pool_gate_enter_th: values.pool_gate_enter_th ?? 0.15,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
       period: (values.period as 'daily' | 'minute5') ?? 'daily',
@@ -273,7 +279,9 @@ export default function BacktestList() {
         auto_with_accel: cfg.auto_with_accel ?? false,
         ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {}),
         auto_index: cfg.auto_index ?? [],
-        auto_boards: cfg.auto_boards ?? []
+        auto_boards: cfg.auto_boards ?? [],
+        pool_gate: cfg.pool_gate ?? false,
+        ...(cfg.pool_gate_enter_th != null ? { pool_gate_enter_th: cfg.pool_gate_enter_th } : {})
       }
       if (cfg.start_date && cfg.end_date) {
         values.dateRange = [dayjs(cfg.start_date), dayjs(cfg.end_date)]
@@ -568,6 +576,8 @@ export default function BacktestList() {
             auto_with_accel: false,
             auto_index: [],
             auto_boards: [],
+            pool_gate: false,
+            pool_gate_enter_th: 0.15,
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
           }}
         >
@@ -698,6 +708,29 @@ export default function BacktestList() {
                 <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
                   每段池子以「段首前一交易日」收盘的动量预筛生成（无后视镜）；全市场无票过门槛时保持空仓，绝不硬买。
                 </Typography.Text>
+              )}
+              <Form.Item
+                name="pool_gate"
+                valuePropName="checked"
+                style={{ marginBottom: 8 }}
+                tooltip="池级趋势开关（POOL_GATE）：池内动量分为正的票占比连续 2 日低于触发阈值时，抑制开新仓/加仓；持仓退出与做T照常。健康度回升至 2×阈值连续 2 日后自动恢复。"
+              >
+                <Checkbox>
+                  池级趋势开关：环境不适配时自动停开新仓（治「下跌市反复开仓反复止损」的环境税）
+                  {strategyId && !['momentum_t', 'momentum_slot'].includes(strategyId)
+                    ? '（仅支持 momentum_t / momentum_slot）' : ''}
+                </Checkbox>
+              </Form.Item>
+              {poolGate && (
+                <Space size={4} style={{ marginBottom: 8 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>触发阈值（健康度）：</Typography.Text>
+                  <Form.Item name="pool_gate_enter_th" noStyle>
+                    <InputNumber size="small" min={0.02} max={0.49} step={0.05} style={{ width: 80 }} />
+                  </Form.Item>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    （恢复线 = 2×触发值，内置）
+                  </Typography.Text>
+                </Space>
               )}
             </Col>
             <Col span={6}>

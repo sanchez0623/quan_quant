@@ -272,6 +272,65 @@ def next_after(mf: MarketFeatures, day: str) -> Optional[str]:
     return mf.calendar[i] if i < len(mf.calendar) else None
 
 
+# ------------------------------------------------------------------
+# 池级趋势开关（POOL_GATE）
+# ------------------------------------------------------------------
+
+# 确认天数固定 2（防抖动；不开放为参数，避免新的过拟合旋钮）
+POOL_GATE_CONFIRM_DAYS = 2
+
+
+def _pool_gate_map(day_health: list[tuple[str, float]],
+                   enter_th: float) -> dict[str, bool]:
+    """池级趋势开关状态机。
+
+    输入按交易日升序的 (day, 健康度)——健康度 = 当日池内动量分>0 的票数占比；
+    输出 day -> 是否停开仓（True=抑制）。语义：
+    - 触发：健康度连续 POOL_GATE_CONFIRM_DAYS 日 < enter_th -> 停开仓
+    - 恢复：健康度连续 2 日 >= enter_th*2（滞回恢复线=触发线×2，内置不开放）
+    - 返回值已是 **T-1 对齐**：第 i 日的 bar 只能看见第 i-1 日收盘的状态
+      （无后视镜：当日收盘健康度当日不可知），首日视为开启。
+    - 中间地带（enter_th ~ 2×enter_th）保持现状（滞回区，防抖动）。
+    """
+    gates: list[bool] = []
+    on = False
+    low = 0
+    high = 0
+    for _day, h in day_health:
+        if on:
+            high = high + 1 if h >= enter_th * 2 else 0
+            if high >= POOL_GATE_CONFIRM_DAYS:
+                on = False
+        else:
+            low = low + 1 if h < enter_th else 0
+            if low >= POOL_GATE_CONFIRM_DAYS:
+                on = True
+        gates.append(on)
+    # T-1 对齐：当日 bar 看前一日收盘状态；首日无前日 -> 开启
+    out: dict[str, bool] = {}
+    for i, (day, _h) in enumerate(day_health):
+        out[day] = gates[i - 1] if i > 0 else False
+    return out
+
+
+def pool_gate_column(feats: dict[str, pl.DataFrame], enter_th: float) -> pl.DataFrame:
+    """由各股特征表（含 day/score 列）计算池级 gate 表 (day, pool_gate)。
+
+    健康度 = 当日 universe 内动量分>0 的票数 / 有分数票数（剔停牌稀释）。
+    供策略 prepare 内 join（T-1 对齐由 _pool_gate_map 保证）。"""
+    frames = [f.select(pl.col("day"), pl.col("score")) for f in feats.values()]
+    sc = pl.concat(frames)
+    daily = (sc.group_by("day")
+               .agg([(pl.col("score") > 0).sum().alias("pos"),
+                     pl.col("score").is_not_null().sum().alias("n")])
+               .with_columns(
+                   (pl.col("pos") / pl.col("n").clip(lower_bound=1)).alias("h"))
+               .sort("day"))
+    gate_map = _pool_gate_map(list(daily.select(["day", "h"]).iter_rows()), enter_th)
+    return pl.DataFrame({"day": list(gate_map.keys()),
+                         "pool_gate": list(gate_map.values())})
+
+
 def _empty_pick() -> pl.DataFrame:
     return pl.DataFrame(schema=_PICK_SCHEMA)
 

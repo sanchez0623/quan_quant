@@ -45,9 +45,13 @@ def test_bar_whitelist_covers_engine_reads():
 
 def test_bar_whitelist_no_dead_entries():
     """反向守卫：白名单不应有从未被引擎读取的死键（防长期腐化）。
-    动态规则覆盖的键（atr{N}/adaptive_*）不在静态扫描范围，不在此列。"""
+    动态规则覆盖的键（atr{N}/adaptive_*）不在静态扫描范围，不在此列。
+    豁免：pool_gate 由策略 prepare 动态注入、_walk 经 cols 解构消费
+    （非 bar.get 形态，静态扫描不可见）。"""
     found: dict = {}
     for mod in (broker, risk, runner):
         found.update(_literal_bar_keys(mod))
-    dead = sorted(k for k in runner.BAR_KEEP_COLS if k not in found)
+    injected = {"pool_gate"}  # prepare 注入列（见 momentum 系 prepare / runner 文档）
+    dead = sorted(k for k in runner.BAR_KEEP_COLS
+                  if k not in found and k not in injected)
     assert not dead, f"白名单存在从未被引擎读取的死键: {dead}（确认后删除）"

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Button, Col, Collapse, Form, Input, InputNumber, Row, Select, Switch, Tag, Tooltip, Typography } from 'antd'
-import { QuestionCircleOutlined } from '@ant-design/icons'
+import { LockOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import type { Rule } from 'antd/es/form'
 import type { ParamSchema } from '../api/types'
 
@@ -42,9 +42,9 @@ function ParamField({ p }: { p: ParamSchema }) {
 
   let control
   if (p.type === 'bool') {
-    control = <Switch />
+    control = <Switch disabled={p.frozen} />
   } else if (p.type === 'select' || p.type === 'categorical') {
-    control = <Select options={(p.choices ?? []).map((c) => ({ value: c, label: c }))} allowClear />
+    control = <Select options={(p.choices ?? []).map((c) => ({ value: c, label: c }))} allowClear disabled={p.frozen} />
   } else if (p.type === 'str') {
     control = <Input />
   } else {
@@ -55,6 +55,7 @@ function ParamField({ p }: { p: ParamSchema }) {
         max={p.max}
         step={p.step ?? (p.type === 'int' ? 1 : undefined)}
         precision={p.type === 'int' ? 0 : undefined}
+        disabled={p.frozen}
       />
     )
   }
@@ -64,7 +65,14 @@ function ParamField({ p }: { p: ParamSchema }) {
       <Form.Item
         name={['params', p.key]}
         label={
-          p.description ? (
+          p.frozen ? (
+            <span>
+              {label}
+              <Tooltip title="已冻结（PARAM_FREEZE 约定）：默认值即推荐值，不进入寻优空间。两轮寻优实证显示该参数不敏感或已调定。">
+                <LockOutlined style={{ marginLeft: 4, color: '#faad14' }} />
+              </Tooltip>
+            </span>
+          ) : p.description ? (
             <span>
               {label}
               <Tooltip title={p.description}>

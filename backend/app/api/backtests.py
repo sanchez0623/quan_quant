@@ -63,6 +63,9 @@ class BacktestRequest(BaseModel):
     auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
     auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
     auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）
+    # ---- 池级趋势开关（POOL_GATE，仅 momentum_t/momentum_slot）----
+    pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
+    pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
     start_date: str
     end_date: str
     end_date_today: bool = False
@@ -177,7 +180,17 @@ def validate_backtest_config(cfg: dict) -> dict:
         if bad_boards:
             raise HTTPException(status_code=400,
                                 detail=f"auto_boards 含未知板块: {bad_boards}（合法: main/chinext/star/bse）")
-    elif not universe:
+    # ---- 池级趋势开关校验（POOL_GATE）----
+    if cfg.get("pool_gate"):
+        if cfg.get("strategy_id") not in ("momentum_t", "momentum_slot"):
+            raise HTTPException(status_code=400,
+                                detail="池级趋势开关仅支持 momentum_t / momentum_slot")
+        th = cfg.get("pool_gate_enter_th")
+        if th is not None and (not isinstance(th, (int, float))
+                               or not 0 < float(th) < 0.5):
+            raise HTTPException(status_code=400,
+                                detail="pool_gate_enter_th 需为 0~0.5 之间的小数（默认 0.15）")
+    if not auto_mode and not universe:
         raise HTTPException(status_code=400, detail="universe 不能为空")
     cfg = dict(cfg)
     cfg["universe"] = universe

@@ -34,6 +34,8 @@ export interface ParamSchema {
   group?: string
   /** 高级参数：组内默认收起，需手动展开（二次微调项，非核心） */
   advanced?: boolean
+  /** 冻结参数：默认值即推荐值，表单灰显且不进入寻优空间（PARAM_FREEZE 约定） */
+  frozen?: boolean
   /** 条件显示：{ 依赖参数key: 允许的值数组 }，全部满足才显示；依赖值未设置时不隐藏 */
   show_if?: Record<string, (string | number)[]>
 }
@@ -233,6 +235,10 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_index?: string[]
   /** 候选域：板块并集（空=不限，与指数域取交集） */
   auto_boards?: string[]
+  /** 池级趋势开关：池内动量健康度过低时抑制开仓/加仓 */
+  pool_gate?: boolean
+  /** gate 触发阈值（健康度占比），恢复线=×2 内置 */
+  pool_gate_enter_th?: number
   start_date: string
   end_date: string
   period: Period
