@@ -2,9 +2,16 @@
 """数据读取：Parquet → 后复权 DataFrame + LRU 缓存
 后复权价 = 原始价 * adj_factor（因子累计，最早日=1；合成数据恒为1）。
 同时保留 raw_close 供展示换算。
+
+P1 并行加载：逐票读取/复权 join 为独立任务，线程池并行执行
+（polars 读取/变换主要释放 GIL，SSD+多核下 200 只分钟线加载提速数倍）；
+LRU 缓存加锁保证多线程安全。
 """
+import os
+import threading
 from collections import OrderedDict
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 
 import polars as pl
 
@@ -12,17 +19,32 @@ from ..data import store
 
 _CACHE: "OrderedDict[tuple, pl.DataFrame]" = OrderedDict()
 _CACHE_MAX = 64
+_CACHE_LOCK = threading.Lock()
+# 单票加载为独立 I/O+CPU 任务；8 并发已足够 saturate SSD，避免线程过多争抢
+_LOAD_WORKERS = max(4, min(8, os.cpu_count() or 4))
 
 
 def _cached(key: tuple, loader) -> pl.DataFrame:
-    if key in _CACHE:
-        _CACHE.move_to_end(key)
-        return _CACHE[key]
+    """线程安全 LRU：命中加锁快路径；未命中在锁外执行 loader（并发下可能
+    重复加载同一票，结果一致且幂等，属可接受代价）"""
+    with _CACHE_LOCK:
+        if key in _CACHE:
+            _CACHE.move_to_end(key)
+            return _CACHE[key]
     df = loader()
-    _CACHE[key] = df
-    if len(_CACHE) > _CACHE_MAX:
-        _CACHE.popitem(last=False)
+    with _CACHE_LOCK:
+        _CACHE[key] = df
+        if len(_CACHE) > _CACHE_MAX:
+            _CACHE.popitem(last=False)
     return df
+
+
+def _pmap(fn: Callable, items: list) -> list:
+    """小任务并行映射；单任务直接串行（省去线程池开销）"""
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=_LOAD_WORKERS) as ex:
+        return list(ex.map(fn, items))
 
 
 def _attach_adj(df: pl.DataFrame, adj: Optional[pl.DataFrame]) -> pl.DataFrame:
@@ -60,7 +82,8 @@ def load_daily(codes: list[str], start: Optional[str] = None, end: Optional[str]
     if all_daily is None:
         return out
     adj = store.read_adj_factor(codes, data_dir)
-    for code in codes:
+
+    def _one(code: str):
         def _load(c=code):
             df = all_daily.filter(pl.col("code") == c)
             if start:
@@ -72,7 +95,9 @@ def load_daily(codes: list[str], start: Optional[str] = None, end: Optional[str]
             df_a = adj.filter(pl.col("code") == c) if adj is not None else None
             return _attach_adj(df.sort("date"), df_a)
 
-        df = _cached(("daily", code, str(start), str(end), str(data_dir)), _load)
+        return code, _cached(("daily", code, str(start), str(end), str(data_dir)), _load)
+
+    for code, df in _pmap(_one, list(codes)):
         if df.height:
             out[code] = df
     return out
@@ -83,7 +108,8 @@ def load_minute5(codes: list[str], start: Optional[str] = None, end: Optional[st
     """按股票返回窗口内后复权 5 分钟数据"""
     out: dict[str, pl.DataFrame] = {}
     adj = store.read_adj_factor(codes, data_dir)
-    for code in codes:
+
+    def _one(code: str):
         def _load(c=code):
             df = store.read_minute5(c, start, end, data_dir)
             if df is None or df.height == 0:
@@ -91,11 +117,14 @@ def load_minute5(codes: list[str], start: Optional[str] = None, end: Optional[st
             df_a = adj.filter(pl.col("code") == c) if adj is not None else None
             return _attach_adj(df.sort("date"), df_a)
 
-        df = _cached(("minute5", code, str(start), str(end), str(data_dir)), _load)
+        return code, _cached(("minute5", code, str(start), str(end), str(data_dir)), _load)
+
+    for code, df in _pmap(_one, list(codes)):
         if df is not None and df.height:
             out[code] = df
     return out
 
 
 def clear_cache() -> None:
-    _CACHE.clear()
+    with _CACHE_LOCK:
+        _CACHE.clear()

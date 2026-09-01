@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, config, db
@@ -56,6 +57,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# P1-2：响应 GZip 压缩——回测报告 JSON（含数万条交易日志）传输体积降约 90%，
+# 前端详情页打开显著提速；浏览器 fetch 自动解压，前端零改动
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.include_router(api_auth.router)
 app.include_router(strategies.router)

@@ -55,6 +55,11 @@ DATA_START_DATE = _get("DATA_START_DATE", "")
 # 调度器开关（默认禁用）
 ENABLE_SCHEDULER = _get("ENABLE_SCHEDULER", "0") not in ("0", "false", "False")
 
+# 寻优 trial 并行度（默认 1=串行批处理）。设为 2/3 时每组 trial 分给多个
+# 子进程波次并行执行；单 trial 内存峰值可达数 GB，请保证
+# 并行度 × 单trial峰值 < 可用物理内存，否则会被系统杀进程。
+OPTIMIZE_PARALLEL_TRIALS = max(1, int(_get("OPTIMIZE_PARALLEL_TRIALS", "1") or 1))
+
 # 派生路径
 META_DB_PATH = DATA_DIR / "meta.db"
 REPORTS_DIR = DATA_DIR / "reports"

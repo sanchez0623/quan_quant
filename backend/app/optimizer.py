@@ -9,6 +9,8 @@
 """
 import math
 import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -44,6 +46,13 @@ _WINDOW_COL = {"annual_return": "ann", "total_return": "ret",
                "sharpe": "sharpe", "calmar": "calmar"}
 
 
+def _make_storage(storage_url: str) -> optuna.storages.RDBStorage:
+    """RDBStorage：SQLite 写超时加固——trial 并行（P1-3）时多进程并发写
+    同一 study，默认超时下偶发 database is locked 会把 trial 误记 FAIL。"""
+    return optuna.storages.RDBStorage(
+        url=storage_url, engine_kwargs={"connect_args": {"timeout": 60}})
+
+
 def _merged_config(base_config: dict, suggested: dict) -> dict:
     cfg = dict(base_config)
     params = dict(apply_param_defaults(cfg.get("strategy_id", ""), cfg.get("params") or {}))
@@ -59,13 +68,16 @@ def _merged_config(base_config: dict, suggested: dict) -> dict:
 
 
 def _split_date(backtest_config: dict, data_dir: str) -> Optional[str]:
-    """时间轴前 70% 为样本内：返回分割日"""
-    period = backtest_config.get("period", "daily")
-    loader = datafeed.load_minute5 if period == "minute5" else datafeed.load_daily
-    data = loader(list(backtest_config.get("universe") or []),
-                  backtest_config.get("start_date"), backtest_config.get("end_date"), data_dir)
-    all_dates = sorted({d for df in data.values() for d in
-                        (df["date"].str.slice(0, 10).unique().to_list())})
+    """时间轴前 70% 为样本内：返回分割日。
+
+    P1-4：交易日历改由日线派生（单 parquet 秒级读取），不再全量加载分钟线
+    （旧实现在 200 只分钟线场景下，仅为取日期集合就空耗 1~2 分钟）。
+    日线与分钟线同源自更新管道，各自窗口内的交易日集合一致。"""
+    data = datafeed.load_daily(list(backtest_config.get("universe") or []),
+                               backtest_config.get("start_date"),
+                               backtest_config.get("end_date"), data_dir)
+    all_dates = sorted({d for df in data.values()
+                        for d in (df["date"].str.slice(0, 10).unique().to_list())})
     if len(all_dates) < 10:
         return None
     return all_dates[int(len(all_dates) * 0.7) - 1]
@@ -290,18 +302,20 @@ def _run_robustness(config: dict, data_dir: str, best_params: dict) -> dict:
 # ---------------- 主流程 ----------------
 
 def _optuna_batch_worker(payload: dict) -> int:
-    """P0-3 子进程入口：载入既有 study（SQLite），连续执行 n 个 trial 后退出。
+    """P0-3/P1-3 子进程入口：载入既有 study（SQLite），连续执行 n 个 trial 后退出。
 
     与主流程同源的行为：默认 TPE sampler（历史驱动，从 storage 读取）、
     MedianPruner、探针剪枝、窗口评分。单 trial 异常按 FAIL 记账并继续
     （catch=(Exception,)），不再放大为整个寻优任务失败。
-    进度按与主流程同一公式直写 SQLite。返回本批实际执行的 trial 数。"""
+    进度按「组起始完成数 + study 内已完成 trial 数」直写 SQLite——
+    trial 并行（P1-3）下多 worker 各自推进，该口径天然一致。
+    返回本批实际执行的 trial 数。"""
     import gc
     from . import db as app_db
     from .engine import datafeed
     datafeed.clear_cache()
     study = optuna.load_study(
-        study_name=payload["study_name"], storage=payload["storage"],
+        study_name=payload["study_name"], storage=_make_storage(payload["storage"]),
         pruner=optuna.pruners.MedianPruner(n_warmup_steps=5))
     config: dict = payload["config"]
     g_space: dict = payload["g_space"]
@@ -315,10 +329,9 @@ def _optuna_batch_worker(payload: dict) -> int:
     n = int(payload["n_trials"])
     task_id = payload["task_id"]
     db_path = payload["db_path"]
-    done_base = int(payload["done_base"])
+    done_base_group = int(payload["done_base_group"])
     total = max(1, int(payload["total_trials"]))
     label: str = payload["label"]
-    trial_base = int(payload["trial_base"])
     g_trials = int(payload["g_trials"])
 
     def objective(trial: optuna.Trial) -> float:
@@ -351,12 +364,14 @@ def _optuna_batch_worker(payload: dict) -> int:
     for i in range(n):
         study.optimize(objective, n_trials=1, catch=(Exception,))
         ran += 1
-        done_now = done_base + i + 1
+        # 并行安全进度口径：组起始完成数 + study 内已完成数（多 worker 一致）
+        finished = sum(1 for t in study.trials if t.state.is_finished())
+        done_now = done_base_group + finished
         pct = min(98.0, 3 + done_now / total * 95)
         try:
             app_db.update_progress(
                 task_id, pct,
-                f"寻优中: {label} · trial {min(trial_base + i + 1, g_trials)}/{g_trials}",
+                f"寻优中: {label} · trial {min(finished, g_trials)}/{g_trials}",
                 db_path)
         except Exception:  # noqa: BLE001
             pass
@@ -372,6 +387,8 @@ def run_optimize(task_id: str, config: dict, *,
     from . import config as app_config
     data_dir = data_dir or str(app_config.DATA_DIR)
     optuna_dir = optuna_dir or str(app_config.OPTUNA_DIR)
+    # P1-3：trial 波次并行度（env OPTIMIZE_PARALLEL_TRIALS，默认 1=串行批处理）
+    parallel_trials = max(1, int(getattr(app_config, "OPTIMIZE_PARALLEL_TRIALS", 1) or 1))
     Path(optuna_dir).mkdir(parents=True, exist_ok=True)
 
     metric = objective.get("metric") if objective.get("metric") in METRICS else "annual_return"
@@ -427,7 +444,7 @@ def run_optimize(task_id: str, config: dict, *,
             if not g_space or g_trials <= 0:
                 continue
             study_name = f"{task_id}__g{gi}__r{rnd}"
-            study = optuna.create_study(study_name=study_name, storage=storage,
+            study = optuna.create_study(study_name=study_name, storage=_make_storage(storage),
                                         direction="maximize", load_if_exists=True,
                                         pruner=optuna.pruners.MedianPruner(n_warmup_steps=5))
             last_study[gi] = study
@@ -440,45 +457,61 @@ def run_optimize(task_id: str, config: dict, *,
             remaining = max(0, g_trials - existing)
             label = f"轮次 {rnd}/{rounds} · 组 {gi + 1}/{len(groups)}（{gname}）"
             batch = BATCH_TRIALS
+            parallel = parallel_trials
             while remaining > 0:
-                n = min(batch, remaining)
-                payload = {
-                    "task_id": task_id, "db_path": db_path,
-                    "study_name": study_name, "storage": storage,
-                    "config": config, "g_space": g_space,
-                    "best_params": best_params, "split": split,
-                    "metric": metric, "n_windows": n_windows,
-                    "variance_penalty": variance_penalty, "dd_floor": dd_floor,
-                    "data_dir": data_dir, "n_trials": n,
-                    "done_base": done, "total_trials": total_trials,
-                    "label": label, "trial_base": existing, "g_trials": g_trials,
-                }
+                # 波次并行（P1-3）：k 个 worker 各领一批同组 trial 并发执行；
+                # 组内 trial 相互独立（同一 best_params 基线），TPE 从 storage
+                # 读历史，跨进程并发语义安全
+                k = max(1, min(parallel, remaining))
+                per = min(batch, -(-remaining // k))   # ceil 均分且不超批上限
+                payloads = []
+                left = remaining
+                for _w in range(k):
+                    if left <= 0:
+                        break
+                    n_w = min(per, left)
+                    payloads.append({
+                        "task_id": task_id, "db_path": db_path,
+                        "study_name": study_name, "storage": storage,
+                        "config": config, "g_space": g_space,
+                        "best_params": best_params, "split": split,
+                        "metric": metric, "n_windows": n_windows,
+                        "variance_penalty": variance_penalty, "dd_floor": dd_floor,
+                        "data_dir": data_dir, "n_trials": n_w,
+                        "done_base_group": group_done_base,
+                        "total_trials": total_trials,
+                        "label": label, "g_trials": g_trials,
+                    })
+                    left -= n_w
                 try:
-                    # 每批独占一个全新子进程（max_tasks_per_child=1），
-                    # 批结束进程退出、内存由 OS 彻底回收（P0-3）
-                    from concurrent.futures import ProcessPoolExecutor
-                    from concurrent.futures.process import BrokenProcessPool
-                    with ProcessPoolExecutor(max_workers=1,
+                    # max_tasks_per_child=1：每个 worker 任务独占全新进程，
+                    # 任务结束进程退出、内存由 OS 彻底回收（P0-3）
+                    with ProcessPoolExecutor(max_workers=len(payloads),
                                              max_tasks_per_child=1) as ex:
-                        ex.submit(_optuna_batch_worker, payload).result()
+                        futs = [ex.submit(_optuna_batch_worker, p) for p in payloads]
+                        for f in futs:
+                            f.result()
                 except BrokenProcessPool:
-                    # 子进程被系统终止（疑似内存不足）：批减半重试；
-                    # 已完成 trial 已持久化在 storage，重试只补剩余
-                    batch //= 2
+                    # 波次中有子进程被系统终止（疑似内存不足）：
+                    # 先降并行度再减批；已完成 trial 已持久化，重算后只补剩余
+                    if parallel > 1:
+                        parallel = max(1, parallel // 2)
+                    elif batch > 1:
+                        batch = max(1, batch // 2)
+                    else:
+                        raise RuntimeError(
+                            "寻优子进程连续被系统终止（疑似内存不足）；"
+                            "请减小股票池或试验数后重试") from None
                     study = optuna.load_study(
-                        study_name=study_name, storage=storage,
+                        study_name=study_name, storage=_make_storage(storage),
                         pruner=optuna.pruners.MedianPruner(n_warmup_steps=5))
                     existing = sum(1 for t in study.trials if t.state.is_finished())
                     done = group_done_base + existing
                     remaining = max(0, g_trials - existing)
-                    if batch < 1:
-                        raise RuntimeError(
-                            "寻优子进程连续被系统终止（疑似内存不足）；"
-                            "请减小股票池或试验数后重试") from None
                     continue
-                # 批结束：以 storage 为准重算（prune/fail 均计入 finished）
+                # 波次结束：以 storage 为准重算（prune/fail 均计入 finished）
                 study = optuna.load_study(
-                    study_name=study_name, storage=storage,
+                    study_name=study_name, storage=_make_storage(storage),
                     pruner=optuna.pruners.MedianPruner(n_warmup_steps=5))
                 existing = sum(1 for t in study.trials if t.state.is_finished())
                 done = group_done_base + existing
