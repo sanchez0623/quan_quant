@@ -574,11 +574,26 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                "log": []}
 
     # bars: code -> list[dict]；index: code -> {date: idx}
-    # 逐只物化并即时释放 df 本体（pop）：大池分钟线下 df 全集与 dict 全集
-    # 同时存活会让峰值翻倍（寻优反复 trial 时是 OOM 的主因之一）
+    # 白名单物化：主循环/撮合/风控实际只访问下方键；dif/dea/ma/slope/bias/score
+    # 等特征列在策略信号层已消费完，不进 bar dict——大池分钟线下 dict 体量
+    # 近似减半（寻优反复 trial 的内存峰值大项），to_dicts 时间同步减半。
+    bar_keep = {
+        "date", "open", "high", "low", "close", "volume", "adj_factor",
+        "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
+        "atr_pct", "d_atr", "atr",
+    }
+    all_cols: set[str] = set()
+    for df in prepared.values():
+        all_cols.update(df.columns)
+    keep = {c for c in all_cols if c in bar_keep
+            or (c.startswith("atr") and c[3:].isdigit())   # atr{N} 动态止损列
+            or c.startswith("adaptive_")}                   # 自适应止损列
+    # 逐只物化并即时释放 df 本体（pop）：消除「df 全集+dict 全集」双份峰值并存
     bars, index = {}, {}
     for code in list(prepared.keys()):
-        recs = prepared.pop(code).to_dicts()
+        df = prepared.pop(code)
+        sub = df.select([c for c in df.columns if c in keep])
+        recs = sub.to_dicts()
         bars[code] = recs
         index[code] = {r["date"]: i for i, r in enumerate(recs)}
     timeline = sorted({r["date"] for recs in bars.values() for r in recs})
