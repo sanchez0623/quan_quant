@@ -574,9 +574,11 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                "log": []}
 
     # bars: code -> list[dict]；index: code -> {date: idx}
+    # 逐只物化并即时释放 df 本体（pop）：大池分钟线下 df 全集与 dict 全集
+    # 同时存活会让峰值翻倍（寻优反复 trial 时是 OOM 的主因之一）
     bars, index = {}, {}
-    for code, df in prepared.items():
-        recs = df.to_dicts()
+    for code in list(prepared.keys()):
+        recs = prepared.pop(code).to_dicts()
         bars[code] = recs
         index[code] = {r["date"]: i for i, r in enumerate(recs)}
     timeline = sorted({r["date"] for recs in bars.values() for r in recs})

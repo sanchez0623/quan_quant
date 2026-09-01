@@ -127,6 +127,7 @@ class TaskManager:
         self.reports_dir = reports_dir or str(config.REPORTS_DIR)
         self.optuna_dir = optuna_dir or str(config.OPTUNA_DIR)
         self._executor: Optional[ProcessPoolExecutor] = None
+        self._optimize_executor: Optional[ProcessPoolExecutor] = None
         self._lock = threading.Lock()
 
     def executor(self) -> ProcessPoolExecutor:
@@ -136,11 +137,26 @@ class TaskManager:
                 self._executor = ProcessPoolExecutor(max_workers=3)
             return self._executor
 
+    def optimize_executor(self) -> ProcessPoolExecutor:
+        """寻优专用池：max_tasks_per_child=1，每任务独占全新进程、跑完即退出。
+
+        寻优单个 trial 需对大池分钟线做全量 bar dict 物化（数百只 × 数万根，
+        峰值数 GB）。常驻 worker 反复 trial 会因堆碎片/分配器保留导致 RSS
+        只涨不跌，数十个 trial 后被系统杀掉（表现为「进程池异常终止」）。
+        一次性进程由 OS 在任务结束时彻底回收全部内存，根治累积。"""
+        with self._lock:
+            if self._optimize_executor is None:
+                self._optimize_executor = ProcessPoolExecutor(
+                    max_workers=1, max_tasks_per_child=1)
+            return self._optimize_executor
+
     def submit(self, kind: str, task_id: str, **kwargs) -> None:
         payload = {"task_id": task_id, "db_path": self.db_path,
                    "data_dir": self.data_dir, "reports_dir": self.reports_dir,
                    "optuna_dir": self.optuna_dir, **kwargs}
-        fut = self.executor().submit(run_task, kind, payload)
+        # 寻优任务独占一次性进程；其余任务沿用常驻 3-worker 池
+        ex = self.optimize_executor() if kind == "optimize" else self.executor()
+        fut = ex.submit(run_task, kind, payload)
         fut.add_done_callback(lambda f, tid=task_id: self._on_done(f, tid))
 
     def _on_done(self, fut, task_id: str) -> None:
@@ -161,6 +177,9 @@ class TaskManager:
             if self._executor is not None:
                 self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
+            if self._optimize_executor is not None:
+                self._optimize_executor.shutdown(wait=False, cancel_futures=True)
+                self._optimize_executor = None
 
 
 manager = TaskManager()

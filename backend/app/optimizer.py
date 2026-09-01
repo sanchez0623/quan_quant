@@ -383,12 +383,16 @@ def run_optimize(task_id: str, config: dict, *,
             existing = sum(1 for t in study.trials if t.state.is_finished())
             done += existing
             remaining = max(0, g_trials - existing)
+            import gc
             for i in range(remaining):
                 done += 1
                 pct = min(98.0, 3 + done / max(total_trials, 1) * 95)
                 cb(pct, f"寻优中: 轮次 {rnd}/{rounds} · 组 {gi + 1}/{len(groups)}（{gname}）"
                         f" · trial {i + 1}/{g_trials}")
                 study.optimize(lambda t, sp=g_space: objective_fn(t, sp), n_trials=1)
+                # 每 trial 后回收：大池分钟线回测的 bar dict 与探针报告体量大，
+                # 引用计数释放后仍需 collect 兜底循环引用，抑制常驻进程 RSS 爬升
+                gc.collect()
 
             gbest = study.best_trial
             g_value = float(gbest.value) if gbest.value is not None else -9e9
