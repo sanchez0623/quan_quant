@@ -35,6 +35,8 @@ interface KeyFormValues {
   base_url?: string | null
   label?: string
   sort_order?: number
+  timeout?: number
+  max_tokens?: number
 }
 
 /** Key 管理：当前用户私有的 LLM Key 池（增删改、启停、优先级） */
@@ -87,7 +89,9 @@ export default function KeyManagement() {
       model: record.model ?? undefined,
       base_url: record.base_url ?? undefined,
       label: record.label,
-      sort_order: record.sort_order
+      sort_order: record.sort_order,
+      timeout: record.timeout ?? undefined,
+      max_tokens: record.max_tokens ?? undefined
       // api_key 留空 = 不修改
     })
     setModalOpen(true)
@@ -103,7 +107,9 @@ export default function KeyManagement() {
           model: values.model ?? null,
           base_url: values.provider === 'custom' ? (values.base_url ?? null) : null,
           label: values.label ?? '',
-          sort_order: values.sort_order ?? 0
+          sort_order: values.sort_order ?? 0,
+          timeout: values.timeout,
+          max_tokens: values.max_tokens
         }
         if (values.api_key) payload.api_key = values.api_key // 留空不改 key
         await updateKey(editing.id, payload)
@@ -115,7 +121,9 @@ export default function KeyManagement() {
           model: values.provider === 'custom' ? values.model ?? null : values.model ?? null,
           base_url: values.provider === 'custom' ? values.base_url ?? null : null,
           label: values.label ?? '',
-          sort_order: values.sort_order ?? 0
+          sort_order: values.sort_order ?? 0,
+          timeout: values.timeout,
+          max_tokens: values.max_tokens
         })
         message.success('Key 已添加')
       }
@@ -184,6 +192,17 @@ export default function KeyManagement() {
         render: (v: string | null, record) => v || (registry[record.provider]?.default_model ?? '-')
       },
       { title: '备注', dataIndex: 'label', width: 140, render: (v: string) => v || '-' },
+      {
+        title: '超时/Tokens',
+        key: 'limits',
+        width: 120,
+        render: (_, record) => (
+          <Typography.Text type="secondary">
+            {record.timeout ? `${record.timeout}s` : '默认'} /{' '}
+            {record.max_tokens ? record.max_tokens : '默认'}
+          </Typography.Text>
+        )
+      },
       {
         title: 'API Key（脱敏）',
         dataIndex: 'api_key',
@@ -337,6 +356,24 @@ export default function KeyManagement() {
             </Form.Item>
             <Form.Item name="sort_order" label="优先级" tooltip="数字越小越先用">
               <InputNumber min={0} style={{ width: 120 }} />
+            </Form.Item>
+          </Space>
+          <Space size="middle" style={{ display: 'flex' }}>
+            <Form.Item
+              name="timeout"
+              label="超时（秒）"
+              tooltip="留空用全局默认（300秒）。长输出/大模型建议加大"
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={1} style={{ width: '100%' }} placeholder="默认 300" />
+            </Form.Item>
+            <Form.Item
+              name="max_tokens"
+              label="输出 Token 上限"
+              tooltip="留空用全局默认（32768）。限制单次回复长度，防止超时"
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={1} step={1024} style={{ width: '100%' }} placeholder="默认 32768" />
             </Form.Item>
           </Space>
         </Form>

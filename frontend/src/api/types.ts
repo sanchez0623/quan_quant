@@ -869,6 +869,8 @@ export interface LlmKeyItem {
   label: string
   sort_order: number
   enabled: boolean
+  timeout: number | null // 请求超时秒（空=用全局默认）
+  max_tokens: number | null // 单次输出最大 token（空=用全局默认）
   created_at: string
   updated_at: string | null
 }
@@ -892,6 +894,8 @@ export interface KeyCreateRequest {
   base_url?: string | null
   label?: string
   sort_order?: number
+  timeout?: number | null
+  max_tokens?: number | null
 }
 
 export interface KeyUpdateRequest {
@@ -902,6 +906,8 @@ export interface KeyUpdateRequest {
   label?: string
   sort_order?: number
   enabled?: boolean
+  timeout?: number | null
+  max_tokens?: number | null
 }
 
 export interface KeyTestResult {
