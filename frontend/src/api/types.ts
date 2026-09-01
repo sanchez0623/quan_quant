@@ -477,6 +477,7 @@ export interface KLineMark {
   side: 'buy' | 'sell'
   type: string
   trade_id: number
+  volume: number
   /** 前端扩展：由 trade_log 按 trade_id 关联出的交易理由 */
   reason?: string | null
 }

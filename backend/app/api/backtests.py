@@ -391,6 +391,6 @@ def backtest_kline(task_id: str, code: str = Query(...),
     def _mark_time(t: dict) -> str:
         return t["time"][:10] if period == "daily" else t["time"]
     marks = [{"time": _mark_time(t), "price": t["price"], "side": t["side"],
-              "type": t["type"], "trade_id": t["trade_id"]}
+              "type": t["type"], "trade_id": t["trade_id"], "volume": t["volume"]}
              for t in report.get("trade_log", []) if t["code"] == code]
     return {"code": code, "name": name, "bars": bars, "marks": marks}

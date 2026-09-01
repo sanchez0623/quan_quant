@@ -33,6 +33,7 @@ interface TradeMarkPoint {
   side: string
   type: string
   time: string
+  volume: number
   reason?: string | null
 }
 
@@ -140,7 +141,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
           return
         }
         const parts = ms.map(
-          (m) => `${m.side === 'buy' ? '买' : '卖'}${TYPE_SHORT[m.type] ?? m.type}@${m.price}`
+          (m) => `${m.side === 'buy' ? '买' : '卖'}${TYPE_SHORT[m.type] ?? m.type}@${m.price}×${m.volume}`
         )
         setHoverInfo(`${ms.length}笔 · ${parts.join(' ')}`)
       })
@@ -187,7 +188,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
     for (const m of marks) {
       const di = tsIndex.get(parseTs(m.time))
       if (di === undefined) continue
-      points.push({ dataIndex: di, price: m.price, side: m.side, type: m.type, time: m.time, reason: m.reason ?? null })
+      points.push({ dataIndex: di, price: m.price, side: m.side, type: m.type, time: m.time, volume: m.volume, reason: m.reason ?? null })
     }
     markPointsRef.current = points
     try {
@@ -224,6 +225,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
               </div>
               <div>时间：{m.time}</div>
               <div>价格：{m.price}</div>
+              <div>股数：{m.volume}</div>
               {m.reason ? <div>理由：{m.reason}</div> : null}
             </div>
           ))}
