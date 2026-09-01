@@ -53,6 +53,14 @@ def _validate_space(space: dict) -> None:
 @router.post("")
 def create_optimize(req: OptimizeRequest, _user: str = Depends(get_current_user)):
     cfg = validate_backtest_config(req.backtest_config)
+    if cfg.get("universe_auto"):
+        # 动态选股的 universe 由引擎运行时生成，寻优的样本内划分/每 trial 回测
+        # 都依赖静态池（空池会导致"数据量不足"）。前端选模板时会把动态池
+        # 固化为原回测各段实际交易股票的并集；此处拦截 API 直调兜底。
+        raise HTTPException(
+            status_code=400,
+            detail="动态选股（universe_auto）回测不能直接作为寻优模板："
+                   "请在寻优页重新选择该模板，前端会自动把动态池固化为静态池")
     if req.groups:
         # ---- 新格式：分组坐标轮换 ----
         groups = []

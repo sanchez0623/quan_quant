@@ -490,7 +490,23 @@ export default function OptimizeList() {
     if (!taskId) return
     try {
       const report = await getBacktestReport(taskId)
-      setTemplateConfig(report.config)
+      let cfg = report.config
+      // 动态选股模板的 universe 由引擎运行时生成（config.universe 为空），
+      // 寻优依赖静态池：固化为原回测各段实际交易股票的并集
+      if (cfg?.universe_auto) {
+        const segs = report.auto_segments ?? []
+        const pool = [...new Set(segs.flatMap((s) => s.universe ?? []))]
+        if (!pool.length) {
+          message.error('该模板为动态选股回测，但报告中缺少段池信息，无法作为寻优模板')
+          return
+        }
+        // universe_auto=false 后其余 auto_* 键自动失效，保留无害
+        cfg = { ...cfg, universe: pool, universe_auto: false }
+        message.info(
+          `动态选股模板已固化：取原回测 ${segs.length} 段实际交易池并集 ${pool.length} 只作为寻优静态池`
+        )
+      }
+      setTemplateConfig(cfg)
       const curName = form.getFieldValue('name')
       if (!curName) {
         form.setFieldsValue({ name: `${report.name}-寻优` })
