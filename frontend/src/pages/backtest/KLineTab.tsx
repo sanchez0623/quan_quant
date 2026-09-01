@@ -17,11 +17,26 @@ const PERIOD_OPTIONS: Array<{ value: Period; label: string }> = [
 ]
 
 export default function KLineTab({ taskId, universe, trades, reportPeriod }: Props) {
-  const [code, setCode] = useState<string>(universe[0] ?? '')
+  // 股票候选：静态池用 config.universe；动态选股(universe_auto)池为空 ->
+  // 回退用实际交易过的股票（trades 已含 code），否则下拉无选项、K线无法展示
+  const stockOptions = useMemo(() => {
+    const fromUniverse = (universe ?? []).filter(Boolean)
+    if (fromUniverse.length > 0) return fromUniverse
+    return Array.from(new Set((trades ?? []).map((t) => t.code).filter(Boolean)))
+  }, [universe, trades])
+
+  const [code, setCode] = useState<string>(stockOptions[0] ?? '')
   // 图表周期默认日线（交易点更易观察；5分钟回测也能切回分钟级看细节）
   const [period, setPeriod] = useState<Period>('daily')
   const [data, setData] = useState<KLineResponse | null>(null)
   const [loading, setLoading] = useState(false)
+
+  // 候选列表就绪后确保当前选中的 code 有效
+  useEffect(() => {
+    if (stockOptions.length > 0 && !stockOptions.includes(code)) {
+      setCode(stockOptions[0])
+    }
+  }, [code, stockOptions])
 
   useEffect(() => {
     if (!code) return
@@ -68,7 +83,7 @@ export default function KLineTab({ taskId, universe, trades, reportPeriod }: Pro
           placeholder="选择股票"
           showSearch
           optionFilterProp="label"
-          options={universe.map((c) => ({ value: c, label: c }))}
+          options={stockOptions.map((c) => ({ value: c, label: c }))}
         />
         <Typography.Text>周期：</Typography.Text>
         <Select<Period>
