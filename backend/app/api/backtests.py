@@ -61,6 +61,8 @@ class BacktestRequest(BaseModel):
     auto_above_ma: int = 60        # 站上均线锚周期（60=momentum_t / 20=momentum_slot）
     auto_with_accel: bool = False  # 动量分叠加加速度项（对齐 momentum_slot）
     auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
+    auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
+    auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）
     start_date: str
     end_date: str
     end_date_today: bool = False
@@ -165,6 +167,16 @@ def validate_backtest_config(cfg: dict) -> dict:
         if min_rps is not None and (not isinstance(min_rps, (int, float))
                                     or not 0 <= float(min_rps) <= 100):
             raise HTTPException(status_code=400, detail="auto_min_rps 需为 0~100 的数值")
+        from ..data.sources import INDEX_REGISTRY, INDEX_CSI800, BOARD_LABELS
+        bad_idx = [k for k in (cfg.get("auto_index") or [])
+                   if k not in {INDEX_CSI800, *INDEX_REGISTRY}]
+        if bad_idx:
+            raise HTTPException(status_code=400,
+                                detail=f"auto_index 含未知指数: {bad_idx}（合法: sz50/hs300/zz500/csi800）")
+        bad_boards = [b for b in (cfg.get("auto_boards") or []) if b not in BOARD_LABELS]
+        if bad_boards:
+            raise HTTPException(status_code=400,
+                                detail=f"auto_boards 含未知板块: {bad_boards}（合法: main/chinext/star/bse）")
     elif not universe:
         raise HTTPException(status_code=400, detail="universe 不能为空")
     cfg = dict(cfg)

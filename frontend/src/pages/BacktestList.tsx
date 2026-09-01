@@ -77,6 +77,8 @@ interface BacktestFormValues {
   auto_above_ma?: number
   auto_with_accel?: boolean
   auto_min_rps?: number
+  auto_index?: string[]
+  auto_boards?: string[]
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
   capital_preset?: string
@@ -136,6 +138,20 @@ const CAPITAL_PRESETS: Record<string, { label: string; initial_capital: number; 
   '50w': { label: '50万档', initial_capital: 500000, max_holdings: 3, monthly_withdraw_base: 6000, min_t_amount: 30000 },
   '300w': { label: '300万档', initial_capital: 3000000, max_holdings: 5, monthly_withdraw_base: 20000, min_t_amount: 80000 }
 }
+
+/** 动态选股候选域选项（与后端 INDEX_REGISTRY / BOARD_LABELS 对齐） */
+const AUTO_INDEX_OPTIONS = [
+  { value: 'sz50', label: '上证50' },
+  { value: 'hs300', label: '沪深300' },
+  { value: 'zz500', label: '中证500' },
+  { value: 'csi800', label: '中证800（=沪深300+中证500）' }
+]
+const AUTO_BOARD_OPTIONS = [
+  { value: 'main', label: '主板' },
+  { value: 'chinext', label: '创业板' },
+  { value: 'star', label: '科创板' },
+  { value: 'bse', label: '北交所' }
+]
 
 export default function BacktestList() {
   const [form] = Form.useForm<BacktestFormValues>()
@@ -213,6 +229,8 @@ export default function BacktestList() {
       auto_above_ma: values.auto_above_ma ?? 60,
       auto_with_accel: values.auto_with_accel ?? false,
       auto_min_rps: values.auto_min_rps ?? null,
+      auto_index: values.auto_index ?? [],
+      auto_boards: values.auto_boards ?? [],
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
       period: (values.period as 'daily' | 'minute5') ?? 'daily',
@@ -253,7 +271,9 @@ export default function BacktestList() {
         auto_top_x: cfg.auto_top_x ?? 30,
         auto_above_ma: cfg.auto_above_ma ?? 60,
         auto_with_accel: cfg.auto_with_accel ?? false,
-        ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {})
+        ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {}),
+        auto_index: cfg.auto_index ?? [],
+        auto_boards: cfg.auto_boards ?? []
       }
       if (cfg.start_date && cfg.end_date) {
         values.dateRange = [dayjs(cfg.start_date), dayjs(cfg.end_date)]
@@ -546,6 +566,8 @@ export default function BacktestList() {
             auto_top_x: 30,
             auto_above_ma: 60,
             auto_with_accel: false,
+            auto_index: [],
+            auto_boards: [],
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
           }}
         >
@@ -644,6 +666,30 @@ export default function BacktestList() {
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>RPS≥：</Typography.Text>
                     <Form.Item name="auto_min_rps" noStyle>
                       <InputNumber size="small" min={0} max={100} placeholder="不限" style={{ width: 70 }} />
+                    </Form.Item>
+                  </Space>
+                </Space>
+              )}
+              {universeAuto && (
+                <Space size="large" wrap style={{ marginBottom: 8 }}>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>指数域：</Typography.Text>
+                    <Form.Item name="auto_index" noStyle>
+                      <Select
+                        mode="multiple"
+                        maxTagCount="responsive"
+                        allowClear
+                        placeholder="全市场"
+                        options={AUTO_INDEX_OPTIONS}
+                        style={{ width: 260 }}
+                        size="small"
+                      />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>板块域：</Typography.Text>
+                    <Form.Item name="auto_boards" noStyle>
+                      <Checkbox.Group options={AUTO_BOARD_OPTIONS} />
                     </Form.Item>
                   </Space>
                 </Space>

@@ -2,7 +2,7 @@
 """股票查询：本地 stock_basic.parquet 模糊匹配 code 或 name；
 条件选股：指数成分 / 申万行业 / 板块 过滤 + 可复现随机抽样（UNIVERSE_PICKER 方案 §6）。"""
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import polars as pl
@@ -138,7 +138,8 @@ class MomentumPick(BaseModel):
 
 
 class PickFilters(BaseModel):
-    index: Optional[str] = None               # 单选：sz50|hs300|zz500|csi800
+    # 指数成分：单选或多选（多选=并集）sz50|hs300|zz500|csi800；兼容历史单字符串
+    index: Optional[Union[str, list[str]]] = None
     industry_l1: list[str] = Field(default_factory=list)
     industry_l2: list[str] = Field(default_factory=list)
     industry_l3: list[str] = Field(default_factory=list)
@@ -170,14 +171,20 @@ def _pick_matched(filters: PickFilters) -> tuple[list[str], dict[str, str]]:
     # 退市股（delisted）无条件排除
     codes -= set(basic.filter(pl.col("delisted"))["code"].to_list())
 
-    if filters.index:
+    idx_keys = filters.index
+    if isinstance(idx_keys, str):
+        idx_keys = [idx_keys]
+    idx_keys = [k.strip() for k in (idx_keys or []) if k and k.strip()]
+    if idx_keys:
         idx = store.read_index_constituents()
         if idx is None or idx.height == 0:
             raise HTTPException(status_code=400, detail="指数成分数据未就绪，请先在数据管理页更新行业与成分")
         allowed = {sources.INDEX_CSI800, *sources.INDEX_REGISTRY}
-        if filters.index not in allowed:
-            raise HTTPException(status_code=400, detail=f"未知指数: {filters.index}")
-        idx_codes = set(idx.filter(pl.col("index_key") == filters.index)["code"].to_list())
+        bad = [k for k in idx_keys if k not in allowed]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"未知指数: {bad}")
+        # 多选=并集（维度内 OR）；与行业/板块维度间 AND
+        idx_codes = set(idx.filter(pl.col("index_key").is_in(idx_keys))["code"].to_list())
         codes &= idx_codes
 
     l1 = [s.strip() for s in filters.industry_l1 if s.strip()]

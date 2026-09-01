@@ -29,12 +29,13 @@ FLAT = 0.0
 NOISE = 0.0005
 
 
-def _write_market(tmp_path, plans, n_days=N_DAYS):
-    """构造全市场日线：plans = {code: [(起始日序, 结束日序, 日收益), ...]} 分段收益"""
+def _write_market(tmp_path, plans, n_days=N_DAYS, seed0=42):
+    """构造全市场日线：plans = {code: [(起始日序, 结束日序, 日收益), ...]} 分段收益。
+    seed0 供域测试选定「全票 MACD 金叉成立」的种子（固定种子->结果恒定）"""
     dates = synthetic.trade_dates(n_days)
     rows = []
     for ci, (code, segs) in enumerate(plans.items()):
-        rng = np.random.default_rng(42 + ci)
+        rng = np.random.default_rng(seed0 + ci)
         prev = 10.0
         for di, d in enumerate(dates):
             ret = next((r for (s, e, r) in segs if s <= di < e), FLAT)
@@ -174,6 +175,66 @@ def test_auto_all_bear_keeps_cash(tmp_path):
     tail = [e["equity"] for e in report["equity_curve"] if e["date"] > trig]
     assert tail, "触发日之后应有净值点"
     assert all(abs(v - tail[0]) < 1e-6 for v in tail), "空池段净值应恒定"
+
+
+# ---------------- 候选域（auto_index / auto_boards） ----------------
+
+def _write_constituents(tmp_path, mapping: dict[str, list[str]]):
+    rows = []
+    for key, codes in mapping.items():
+        for c in codes:
+            rows.append({"index_key": key, "code": c, "name": f"股{c}",
+                         "update_date": "2026-01-01", "snapshot_date": "2026-01-01"})
+    store.write_index_constituents(pl.DataFrame(rows), str(tmp_path))
+
+
+def test_auto_domain_boards_and_index(tmp_path):
+    """板块域：仅创业板 -> 池子=300001；指数域并集 hs300+zz500 -> 三只；
+    指数∩板块交集；空交集 -> 诚实报错（候选域内无票）。"""
+    dates = _write_market(tmp_path, {
+        "600000": [(0, N_DAYS, UP)],   # 主板
+        "600036": [(0, N_DAYS, UP)],   # 主板
+        "300001": [(0, N_DAYS, UP)],   # 创业板
+        "000001": [(0, N_DAYS, UP)],   # 主板(深)
+    }, seed0=70)  # 70：按本测试精确配置扫描选定的「全票基准日金叉成立」种子
+    _write_constituents(tmp_path, {
+        "hs300": ["600000", "600036"],
+        "zz500": ["000001", "300001"],
+    })
+    start, end = dates[SEG_START], dates[N_DAYS - 1]
+
+    # 板块域：仅创业板
+    rep = run_backtest(_auto_cfg(start, end, auto_top_x=5, auto_boards=["chinext"]),
+                       data_dir=str(tmp_path))
+    assert set(rep["auto_segments"][0]["universe"]) == {"300001"}
+
+    # 指数域并集：hs300 ∪ zz500 = 全部 4 只（top_x=5 全取）
+    rep = run_backtest(_auto_cfg(start, end, auto_top_x=5,
+                                 auto_index=["hs300", "zz500"]), data_dir=str(tmp_path))
+    assert set(rep["auto_segments"][0]["universe"]) == {"600000", "600036", "000001", "300001"}
+
+    # 指数 ∩ 板块：hs300 ∩ 创业板 = 空集 -> 初始池为空（诚实报错，不回退全市场）
+    with pytest.raises(RuntimeError, match="初始池为空"):
+        run_backtest(_auto_cfg(start, end, auto_index=["hs300"], auto_boards=["chinext"]),
+                     data_dir=str(tmp_path))
+
+    # 指数 ∩ 板块有交集：hs300 ∩ 主板 = 两只主板
+    rep = run_backtest(_auto_cfg(start, end, auto_top_x=5,
+                                 auto_index=["hs300"], auto_boards=["main"]),
+                       data_dir=str(tmp_path))
+    assert set(rep["auto_segments"][0]["universe"]) == {"600000", "600036"}
+
+
+def test_validate_auto_domain_params():
+    # 非法指数/板块被拦截
+    with pytest.raises(HTTPException):
+        validate_backtest_config(_base_cfg(auto_index=["nasdaq"]))
+    with pytest.raises(HTTPException):
+        validate_backtest_config(_base_cfg(auto_boards=["nyse"]))
+    # 合法组合通过
+    out = validate_backtest_config(_base_cfg(auto_index=["hs300", "zz500"],
+                                             auto_boards=["main"]))
+    assert out["auto_index"] == ["hs300", "zz500"]
 
 
 # ---------------- validate 校验 ----------------

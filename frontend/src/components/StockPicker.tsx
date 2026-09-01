@@ -85,7 +85,7 @@ export default function StockPicker({
   // ---- 条件选股：选项 / 筛选 / 抽样 / 预览 ----
   const [options, setOptions] = useState<PickOptions | null>(null)
   const [optionsLoading, setOptionsLoading] = useState(false)
-  const [index, setIndex] = useState<string | undefined>(undefined)
+  const [index, setIndex] = useState<string[]>([])
   const [industryKeys, setIndustryKeys] = useState<string[]>([])
   const [boards, setBoards] = useState<string[]>([])
   const [excludeSt, setExcludeSt] = useState(true)
@@ -362,19 +362,35 @@ export default function StockPicker({
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
               <div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  限定候选域（可选，缺省=全市场剔ST/退市）：
+                  限定候选域（可选，缺省=全市场剔ST/退市）——指数成分（多选=并集）：
                 </Typography.Text>
                 <Select
                   placeholder="全市场"
                   allowClear
+                  mode="multiple"
+                  maxTagCount="responsive"
                   value={index}
                   onChange={setIndex}
                   options={(options?.indices ?? []).map((i) => ({
                     value: i.key,
                     label: `${i.name}（${i.count}）`
                   }))}
-                  style={{ width: 220 }}
+                  style={{ width: '100%' }}
                   size="small"
+                  disabled={disabled}
+                />
+              </div>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  板块（多选=并集；与指数域取交集）：
+                </Typography.Text>
+                <Checkbox.Group
+                  value={boards}
+                  onChange={(v) => setBoards(v as string[])}
+                  options={(options?.boards ?? []).map((b) => ({
+                    value: b.key,
+                    label: `${b.name}（${b.count}）`
+                  }))}
                   disabled={disabled}
                 />
               </div>
@@ -474,19 +490,35 @@ export default function StockPicker({
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
               <div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  指数成分（单选）：
+                  指数成分（可多选，并集）：
                 </Typography.Text>
                 <Select
                   placeholder="不限指数"
                   allowClear
+                  mode="multiple"
+                  maxTagCount="responsive"
                   value={index}
                   onChange={setIndex}
                   options={(options?.indices ?? []).map((i) => ({
                     value: i.key,
                     label: `${i.name}（${i.count}）`
                   }))}
-                  style={{ width: 220 }}
+                  style={{ width: '100%' }}
                   size="small"
+                  disabled={disabled}
+                />
+              </div>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  板块（可多选，并集）：
+                </Typography.Text>
+                <Checkbox.Group
+                  value={boards}
+                  onChange={(v) => setBoards(v as string[])}
+                  options={(options?.boards ?? []).map((b) => ({
+                    value: b.key,
+                    label: `${b.name}（${b.count}）`
+                  }))}
                   disabled={disabled}
                 />
               </div>
@@ -507,20 +539,6 @@ export default function StockPicker({
                   maxTagCount="responsive"
                   style={{ width: '100%' }}
                   size="small"
-                  disabled={disabled}
-                />
-              </div>
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  板块（多选）：
-                </Typography.Text>
-                <Checkbox.Group
-                  value={boards}
-                  onChange={(v) => setBoards(v as string[])}
-                  options={(options?.boards ?? []).map((b) => ({
-                    value: b.key,
-                    label: `${b.name}（${b.count}）`
-                  }))}
                   disabled={disabled}
                 />
               </div>

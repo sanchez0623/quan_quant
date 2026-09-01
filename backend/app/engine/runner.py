@@ -18,7 +18,7 @@ from .portfolio import Portfolio
 from .risk import RiskConfig, RiskManager
 from .stats import build_metrics, monthly_returns
 from .strategies import REGISTRY, apply_param_defaults
-from ..data import store
+from ..data import store, sources
 
 DEFAULTS = {
     "initial_capital": 1_000_000.0,
@@ -55,6 +55,8 @@ DEFAULTS = {
     "auto_above_ma": 60,       # 站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot）
     "auto_with_accel": False,  # 动量分叠加加速度项（对齐 momentum_slot）
     "auto_min_rps": None,      # 全市场 RPS 分位下限（0~100，None=不启用）
+    "auto_index": [],          # 候选域：指数成分并集（sz50/hs300/zz500/csi800，空=不限）
+    "auto_boards": [],         # 候选域：板块（main/chinext/star/bse，空=不限）；与指数域取交集
 }
 
 # universe_auto 仅对动量系策略开放（其建仓门槛与预筛口径同源）
@@ -226,12 +228,13 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         progress_cb(2.0, "计算全市场动量特征…")
     mf = mc.market_features(data_dir=data_dir, window_start=_shift_back(start, 280),
                             window_end=end, p=pick_p)
+    domain = _auto_domain(cfg, data_dir)
     as_of = mc.as_of_before(mf, start)
     if as_of is None:
         raise RuntimeError(f"无后视镜基准日缺失：{start} 之前无行情数据")
-    picked = mc.select_top(mf, as_of, top_x, min_rps)
+    picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
     if picked.height == 0:
-        raise RuntimeError(f"初始池为空：基准日 {as_of} 全市场无符合动量趋势条件的股票")
+        raise RuntimeError(f"初始池为空：基准日 {as_of} 候选域内无符合动量趋势条件的股票")
 
     # ---- 2) 段循环 ----
     acc: dict = {"trades": [], "equity": [], "snaps": [], "cycles": [],
@@ -274,7 +277,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         info["end"] = trig
         info["trigger_day"] = trig
         info["trigger_reason"] = f"全空仓持续{idle_n}个交易日"
-        picked = mc.select_top(mf, as_of, top_x, min_rps)
+        picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
         info["next_picked"] = _picked_rows(picked, data_dir)
         seg_infos.append(info)
         nxt = mc.next_after(mf, trig)
@@ -282,13 +285,13 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
             break
         if picked.height == 0:
             # 空池：现金推进到下一个能选出票的交易日（或回测结束）
-            resume = _next_pickable_day(mf, nxt, end, top_x, min_rps)
+            resume = _next_pickable_day(mf, nxt, end, top_x, min_rps, domain)
             _fill_idle(acc, mf, nxt, resume, carry_cash,
                        float(carry_w.get("total") or 0.0))
             if resume is None:
                 break
             as_of = resume
-            picked = mc.select_top(mf, as_of, top_x, min_rps)
+            picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
             seg_start = mc.next_after(mf, resume)
             if seg_start is None or seg_start >= end:
                 break
@@ -335,6 +338,37 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     if cfg.get("task_id"):
         report["task_id"] = cfg["task_id"]
     return report
+
+
+def _auto_domain(cfg: dict, data_dir) -> Optional[set]:
+    """universe_auto 候选域：指数成分（多选并集）∩ 板块（多选并集）；均空=全市场。
+
+    与手动选股 _pick_matched 维度语义一致：指数/板块各自维度内 OR，维度间 AND。
+    ST/退市剔除由 market_features 统一处理；返回空集表示候选域内无票（诚实空池）。"""
+    idx_keys = [k for k in (cfg.get("auto_index") or []) if k]
+    boards = [b for b in (cfg.get("auto_boards") or []) if b]
+    if not idx_keys and not boards:
+        return None
+    dom: Optional[set] = None
+    if idx_keys:
+        allowed_idx = {sources.INDEX_CSI800, *sources.INDEX_REGISTRY}
+        bad = [k for k in idx_keys if k not in allowed_idx]
+        if bad:
+            raise RuntimeError(f"auto_index 含未知指数: {bad}（合法: {sorted(allowed_idx)}）")
+        idx = store.read_index_constituents(data_dir)
+        if idx is None or idx.height == 0:
+            raise RuntimeError("指数成分数据未就绪，请先在数据管理页更新行业与成分")
+        dom = set(idx.filter(pl.col("index_key").is_in(idx_keys))["code"].to_list())
+    if boards:
+        bad_b = [b for b in boards if b not in sources.BOARD_LABELS]
+        if bad_b:
+            raise RuntimeError(f"auto_boards 含未知板块: {bad_b}（合法: {list(sources.BOARD_LABELS)}）")
+        want = set(boards)
+        basic = store.read_stock_basic(data_dir)
+        bset = ({c for c in basic["code"].to_list() if sources.derive_board(c) in want}
+                if basic is not None and basic.height else set())
+        dom = bset if dom is None else (dom & bset)
+    return dom
 
 
 def _find_refresh_point(rep: dict, idle_n: int) -> Optional[str]:
@@ -413,14 +447,14 @@ def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
 
 
 def _next_pickable_day(mf, from_day: str, end: str, top_x: int,
-                       min_rps) -> Optional[str]:
+                       min_rps, domain: Optional[set] = None) -> Optional[str]:
     """from_day 起第一个能选出票的交易日（空池段的恢复日）；找不到返回 None"""
     for d in mf.calendar:
         if d < from_day:
             continue
         if d > end:
             return None
-        if mc.select_top(mf, d, top_x, min_rps).height:
+        if mc.select_top(mf, d, top_x, min_rps, domain=domain).height:
             return d
     return None
 

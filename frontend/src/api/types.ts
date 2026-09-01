@@ -58,7 +58,8 @@ export interface StockItem {
 export interface UniverseMeta {
   source: string
   filters: {
-    index?: string | null
+    /** 指数成分（多选=并集；历史模板可能为单字符串） */
+    index?: string | string[] | null
     industry_l1?: string[]
     industry_l2?: string[]
     industry_l3?: string[]
@@ -127,7 +128,8 @@ export interface MomentumPickItem {
 }
 
 export interface PickFiltersInput {
-  index?: string | null
+  /** 指数成分（多选=并集） */
+  index?: string[] | null
   industry_l1?: string[]
   industry_l2?: string[]
   industry_l3?: string[]
@@ -227,6 +229,10 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_above_ma?: number
   auto_with_accel?: boolean
   auto_min_rps?: number | null
+  /** 候选域：指数成分并集（空=不限） */
+  auto_index?: string[]
+  /** 候选域：板块并集（空=不限，与指数域取交集） */
+  auto_boards?: string[]
   start_date: string
   end_date: string
   period: Period
