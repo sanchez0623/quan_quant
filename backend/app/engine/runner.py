@@ -6,6 +6,7 @@
 position_snapshots / withdrawal_log
 """
 from datetime import datetime, timedelta
+import re
 from typing import Callable, Optional
 
 import polars as pl
@@ -61,6 +62,25 @@ DEFAULTS = {
 
 # universe_auto 仅对动量系策略开放（其建仓门槛与预筛口径同源）
 AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
+
+# ---- 引擎层 bar dict 物化白名单（P0-1/P0-1b）----
+# _simulate 物化 bars 时只保留这些列 + 动态规则列；dif/dea/ma/slope/bias/score
+# 等策略特征列在信号层已消费完，不进 dict（大池分钟线下内存/时间近似减半）。
+# 守卫：broker/risk/runner 对 bar 的所有**字面量**读取必须被本表覆盖，
+# tests/test_bar_whitelist.py 静态扫描三个模块做断言——引擎新增读取字段时
+# 先在此登记，否则测试显式失败（防止 .get 静默 None）。
+BAR_KEEP_COLS = {
+    "date", "open", "high", "low", "close", "volume", "adj_factor",
+    "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
+    "atr_pct", "d_atr", "atr",
+}
+# 动态访问形态（静态扫描无法捕获 f-string 键，如 f"atr{risk_cfg.atr_period}"）：
+# 新增动态读取形态时同步扩充此处正则。
+_BAR_KEEP_DYNAMIC = (re.compile(r"^atr\d+$"), re.compile(r"^adaptive_"))
+
+
+def _bar_col_allowed(col: str) -> bool:
+    return col in BAR_KEEP_COLS or any(p.match(col) for p in _BAR_KEEP_DYNAMIC)
 
 
 def _shift_back(d: str, trading_days: int) -> str:
@@ -574,25 +594,11 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                "log": []}
 
     # bars: code -> list[dict]；index: code -> {date: idx}
-    # 白名单物化：主循环/撮合/风控实际只访问下方键；dif/dea/ma/slope/bias/score
-    # 等特征列在策略信号层已消费完，不进 bar dict——大池分钟线下 dict 体量
-    # 近似减半（寻优反复 trial 的内存峰值大项），to_dicts 时间同步减半。
-    bar_keep = {
-        "date", "open", "high", "low", "close", "volume", "adj_factor",
-        "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
-        "atr_pct", "d_atr", "atr",
-    }
-    all_cols: set[str] = set()
-    for df in prepared.values():
-        all_cols.update(df.columns)
-    keep = {c for c in all_cols if c in bar_keep
-            or (c.startswith("atr") and c[3:].isdigit())   # atr{N} 动态止损列
-            or c.startswith("adaptive_")}                   # 自适应止损列
-    # 逐只物化并即时释放 df 本体（pop）：消除「df 全集+dict 全集」双份峰值并存
+    # 白名单物化（P0-1）：只保留引擎实际读取的列（见 BAR_KEEP_COLS 守卫说明）
     bars, index = {}, {}
     for code in list(prepared.keys()):
         df = prepared.pop(code)
-        sub = df.select([c for c in df.columns if c in keep])
+        sub = df.select([c for c in df.columns if _bar_col_allowed(c)])
         recs = sub.to_dicts()
         bars[code] = recs
         index[code] = {r["date"]: i for i, r in enumerate(recs)}
