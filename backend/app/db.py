@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS llm_keys(
   label TEXT DEFAULT '',            -- 备注名
   sort_order INTEGER DEFAULT 0,     -- 轮换优先级（小者先）
   enabled INTEGER DEFAULT 1,
+  timeout REAL,                     -- 请求超时秒（空=用全局默认 LLM_TIMEOUT/300）
+  max_tokens INTEGER,               -- 单次输出最大 token（空=用全局默认 LLM_MAX_TOKENS/32768）
   created_at TEXT NOT NULL,
   updated_at TEXT
 );
@@ -138,6 +140,11 @@ def _migrate(c: sqlite3.Connection) -> None:
     ecols = {r[1] for r in c.execute("PRAGMA table_info(experiments)")}
     if "matrix" not in ecols:
         c.execute("ALTER TABLE experiments ADD COLUMN matrix TEXT DEFAULT 'clock'")
+    kcols = {r[1] for r in c.execute("PRAGMA table_info(llm_keys)")}
+    if "timeout" not in kcols:
+        c.execute("ALTER TABLE llm_keys ADD COLUMN timeout REAL")
+    if "max_tokens" not in kcols:
+        c.execute("ALTER TABLE llm_keys ADD COLUMN max_tokens INTEGER")
 
 
 # ---------------- users ----------------
@@ -179,7 +186,7 @@ def delete_user(username: str, db_path: Optional[str] = None) -> bool:
 
 # ---------------- llm_keys（每用户私有 Key 池） ----------------
 
-_KEY_COLS = "id,username,provider,model,base_url,api_key,label,sort_order,enabled,created_at,updated_at"
+_KEY_COLS = "id,username,provider,model,base_url,api_key,label,sort_order,enabled,timeout,max_tokens,created_at,updated_at"
 
 
 def _mask_key(key: str) -> str:
@@ -191,12 +198,14 @@ def _mask_key(key: str) -> str:
 
 def add_llm_key(username: str, provider: str, api_key: str, model: Optional[str] = None,
                 base_url: Optional[str] = None, label: str = "", sort_order: int = 0,
+                timeout: Optional[float] = None, max_tokens: Optional[int] = None,
                 db_path: Optional[str] = None) -> int:
     with conn(db_path) as c:
         cur = c.execute(
             "INSERT INTO llm_keys(username,provider,model,base_url,api_key,label,sort_order,"
-            "enabled,created_at) VALUES(?,?,?,?,?,?,?,1,?)",
-            (username, provider, model, base_url, api_key, label, int(sort_order), _now()))
+            "enabled,timeout,max_tokens,created_at) VALUES(?,?,?,?,?,?,?,1,?,?,?)",
+            (username, provider, model, base_url, api_key, label, int(sort_order),
+             timeout, max_tokens, _now()))
     return int(cur.lastrowid)
 
 
@@ -208,13 +217,15 @@ def list_llm_keys(username: str, db_path: Optional[str] = None) -> list[dict]:
             (username,)).fetchall()
     return [{"id": r[0], "username": r[1], "provider": r[2], "model": r[3], "base_url": r[4],
              "api_key": r[5], "label": r[6], "sort_order": r[7], "enabled": bool(r[8]),
-             "created_at": r[9], "updated_at": r[10]} for r in rows]
+             "timeout": r[9], "max_tokens": r[10], "created_at": r[11], "updated_at": r[12]}
+            for r in rows]
 
 
 def update_llm_key(key_id: int, username: str, db_path: Optional[str] = None,
                    **fields: Any) -> bool:
     """只允许属主修改自己的 key"""
-    allowed = {"provider", "model", "base_url", "api_key", "label", "sort_order", "enabled"}
+    allowed = {"provider", "model", "base_url", "api_key", "label", "sort_order", "enabled",
+               "timeout", "max_tokens"}
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not updates:
         return False

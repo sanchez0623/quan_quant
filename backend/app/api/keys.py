@@ -32,6 +32,8 @@ class KeyCreate(BaseModel):
     base_url: Optional[str] = None
     label: str = ""
     sort_order: int = 0
+    timeout: Optional[float] = Field(default=None, gt=0)
+    max_tokens: Optional[int] = Field(default=None, gt=0)
 
 
 @router.post("")
@@ -46,7 +48,8 @@ def add_key(req: KeyCreate, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="内置服务商无需填写 base_url")
     key_id = db.add_llm_key(user, provider, req.api_key.strip(), model=req.model or None,
                             base_url=req.base_url or None, label=req.label,
-                            sort_order=req.sort_order)
+                            sort_order=req.sort_order,
+                            timeout=req.timeout, max_tokens=req.max_tokens)
     return {"id": key_id, "status": "ok"}
 
 
@@ -58,6 +61,8 @@ class KeyUpdate(BaseModel):
     label: Optional[str] = None
     sort_order: Optional[int] = None
     enabled: Optional[bool] = None
+    timeout: Optional[float] = Field(default=None, gt=0)
+    max_tokens: Optional[int] = Field(default=None, gt=0)
 
 
 @router.put("/{key_id}")
@@ -80,6 +85,10 @@ def update_key(key_id: int, req: KeyUpdate, user: str = Depends(get_current_user
         fields["sort_order"] = int(req.sort_order)
     if req.enabled is not None:
         fields["enabled"] = 1 if req.enabled else 0
+    if req.timeout is not None:
+        fields["timeout"] = req.timeout
+    if req.max_tokens is not None:
+        fields["max_tokens"] = int(req.max_tokens)
     if not db.update_llm_key(key_id, user, **fields):
         raise HTTPException(status_code=404, detail="Key 不存在或不属于当前用户")
     return {"status": "ok"}

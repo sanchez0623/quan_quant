@@ -217,7 +217,8 @@ def db_key_entries(username: str, db_path: Optional[str] = None) -> list[dict]:
             label = reg["label"]
         entries.append({"index": len(entries) + 1, "provider": provider, "label": label,
                         "base_url": base_url, "model": model, "api_key": k["api_key"],
-                        "key_id": k["id"], "key_label": k["label"]})
+                        "key_id": k["id"], "key_label": k["label"],
+                        "timeout": k.get("timeout"), "max_tokens": k.get("max_tokens")})
     return entries
 
 
@@ -251,13 +252,33 @@ def profiles_info(username: Optional[str] = None, db_path: Optional[str] = None)
 
 # ================= 调用 =================
 
+def _llm_timeout() -> float:
+    """LLM 请求超时（秒），可用环境变量 LLM_TIMEOUT 覆盖，默认 300。"""
+    raw = os.environ.get("LLM_TIMEOUT", "").strip()
+    try:
+        return float(raw) if raw else 300.0
+    except ValueError:
+        return 300.0
+
+
+def _llm_max_tokens() -> int:
+    """单次输出最大 token 数，可用环境变量 LLM_MAX_TOKENS 覆盖，默认 32768。"""
+    raw = os.environ.get("LLM_MAX_TOKENS", "").strip()
+    try:
+        return int(raw) if raw else 32768
+    except ValueError:
+        return 32768
+
+
 def _chat_once(base_url: str, model: str, api_key: str, messages: list,
-               temperature: float, timeout: float = 120.0) -> dict:
+               temperature: float, timeout: Optional[float] = None,
+               max_tokens: Optional[int] = None) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
-    body = {"model": model, "messages": messages, "temperature": temperature}
+    body = {"model": model, "messages": messages, "temperature": temperature,
+            "max_tokens": max_tokens if max_tokens is not None else _llm_max_tokens()}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     t0 = time.time()
-    with httpx.Client(timeout=timeout, trust_env=False) as client:
+    with httpx.Client(timeout=timeout or _llm_timeout(), trust_env=False) as client:
         resp = client.post(url, json=body, headers=headers)
     elapsed = round(time.time() - t0, 3)
     resp.raise_for_status()
@@ -300,7 +321,9 @@ def _chat_via_pool(profile_name: Optional[str], messages: list,
     for entry in pool:
         try:
             result = _chat_once(entry["base_url"], entry["model"], entry["api_key"],
-                                messages, temperature)
+                                messages, temperature,
+                                timeout=entry.get("timeout"),
+                                max_tokens=entry.get("max_tokens"))
             _record_usage(entry["provider"], result, db_path)
             return {"content": result["content"], "model": result["model"],
                     "tokens": result["prompt_tokens"] + result["completion_tokens"],
