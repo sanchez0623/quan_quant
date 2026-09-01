@@ -1,0 +1,24 @@
+# 项目协作规则
+
+## 沟通与输出格式
+
+- **参数中英对照**：对话与文档中提到回测/寻优参数时，英文 key 后必须附中文标签（首次出现时），如 `mom_short（短周期动量）`、`exit_need（衰退信号满足数）`。中文标签以 `param_schema[].label` 与 RiskConfigForm 的字段名为准。
+
+- 性能/待办类结论记录到 `docs/PERF_TODO.md`、调优硬编码记录到 `docs/TUNING_TODOS.md`；API 变更必须同步 `docs/API_CONTRACT.md`。
+
+- 后端测试命令：`cd backend; python -m pytest tests/ -q`；前端类型检查：`cd frontend; npx tsc --noEmit`。
+
+- 完成代码改动后默认 commit + push（用户明确要求过的工作流）。
+
+## 关键业务约定（易错点）
+
+- 无后视镜：选股/重选基准日 = 严格早于段首的最近交易日（T-1），任何新选股逻辑不得引入未来数据。
+
+- 动态选股（universe\_auto）仅支持 momentum\_t / momentum\_slot；寻优模板必须是静态池（前端会自动固化动态池）。
+
+- 寻优防过拟合三件套默认开启：多窗口（n\_windows≥3）、跨窗方差惩罚（λ≥0.5）、回撤熔断线（dd\_floor）。
+
+- momentum\_slot 的 pool\_n（候选池大小）必须 > max\_holdings（最大持仓只数），否则轮动机制失效。
+
+- SQLite executescript 中 SQL 注释只能用 `--`，不能用 `#`。
+
