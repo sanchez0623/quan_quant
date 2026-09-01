@@ -196,7 +196,7 @@ class MomentumSlotStrategy(Strategy):
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "低波时 T 单比例乘数下限"},
         # ---- G8 做T·机制专属（随 t_mode 切换显示）----
-        {"key": "t_debt_max_days", "label": "债务时限", "type": "int", "default": 2, "min": 1, "max": 10,
+        {"key": "t_debt_max_days", "label": "债务时限", "type": "int", "default": 3, "min": 1, "max": 10,
          "unit": "交易日", "group": "做T·机制专属",
          "show_if": {"t_mode": ["grid", "discipline"]},
          "description": "做T债务超过N交易日未回补 -> 作废转正式减仓"},

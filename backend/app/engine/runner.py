@@ -45,7 +45,7 @@ DEFAULTS = {
     "stop_fill": "next_open",
     # ---- 做T机制重构（T_REFACTOR）：双止损 + 回补纪律 + 时点规律 ----
     "t_mode": "grid",          # grid=网格(双止损)/discipline=回补纪律/time=时点规律/off=关闭做T
-    "t_debt_max_days": 2,      # 债务时限（交易日）：超过未回补 -> 作废转正式减仓
+    "t_debt_max_days": 3,      # 债务时限（交易日）：超过未回补 -> 作废转正式减仓（默认3，防崩盘接飞刀）
     "t_max_chase_pct": 3.0,    # 追回价格上限（%）：买回价 > 卖出均价×(1+N%) -> 不追
     "reentry_discount": 1.0,   # 回补限价折让（%）：discipline 模式下卖出价下方 N% 才回补
     # ---- 动态选股（universe_auto）：分段滚动重选 ----
@@ -520,7 +520,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     reduce_fb = float(cfg.get("reduce_pct_fallback") or 33.3333)
     # ---- 做T机制（T_REFACTOR）：双止损/回补纪律/时点规律 参数（策略 schema 优先，DEFAULTS 兜底）----
     t_mode = str(params.get("t_mode") or cfg.get("t_mode") or "grid")
-    t_debt_max_days = max(1, int(params.get("t_debt_max_days") if params.get("t_debt_max_days") is not None else (cfg.get("t_debt_max_days") or 2)))
+    t_debt_max_days = max(1, int(params.get("t_debt_max_days") if params.get("t_debt_max_days") is not None else (cfg.get("t_debt_max_days") or 3)))
     t_max_chase_pct = float(params.get("t_max_chase_pct") if params.get("t_max_chase_pct") is not None else (cfg.get("t_max_chase_pct") or 3.0))
     reentry_discount = float(params.get("reentry_discount") if params.get("reentry_discount") is not None else (cfg.get("reentry_discount") or 1.0))
 
