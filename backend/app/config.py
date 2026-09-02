@@ -77,6 +77,9 @@ LLM_KEY_ENVS = [
     "OLLAMA_API_KEY",
 ]
 
+# 飞书机器人 webhook（实盘信号推送，LIVE_SIGNAL_SYSTEM §6；.env 中配置，严禁入库）
+FEISHU_WEBHOOK_URL = _get("FEISHU_WEBHOOK_URL", "")
+
 
 def ensure_dirs() -> None:
     """确保运行期目录存在"""
