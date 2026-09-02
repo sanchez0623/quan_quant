@@ -13,6 +13,7 @@ import AiAnalysis from './pages/AiAnalysis'
 import DataManagement from './pages/DataManagement'
 import KeyManagement from './pages/KeyManagement'
 import UserManagement from './pages/UserManagement'
+import LiveSignals from './pages/LiveSignals'
 
 function RequireAuth({ children }: { children: ReactElement }) {
   const { token } = useAuth()
@@ -45,6 +46,7 @@ export default function App() {
           }
         >
           <Route index element={<Navigate to="/backtests" replace />} />
+          <Route path="live" element={<LiveSignals />} />
           <Route path="backtests" element={<BacktestList />} />
           <Route path="backtests/:id" element={<BacktestResult />} />
           <Route path="optimize" element={<OptimizeList />} />

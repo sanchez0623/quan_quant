@@ -4,6 +4,21 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 认证：除 `/api/auth/login` 外全部接口需要 `Authorization: Bearer <JWT>`。
 错误统一格式：`{"detail": "错误描述"}`（FastAPI 默认）。
 
+## 0. 实盘信号机（LIVE_SIGNAL_SYSTEM，详见 docs/LIVE_SIGNAL_SYSTEM.md）
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/live/premarket` | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}` |
+| `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`） |
+| `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息 |
+| `POST /api/live/fills` | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交 |
+| `GET /api/live/positions` | 虚拟持仓 |
+| `POST /api/live/positions/sync` | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建） |
+| `GET/POST /api/live/config` | 盘前流程参数（above_ma/rank_key/top_x/exit_need/enter_th/initial_capital/suggest_pct/候选域...） |
+| `GET /api/live/summary` | 概览（池子/gate/持仓/信号/回填/feishu_configured/config） |
+
+飞书 webhook 从 `.env` 的 `FEISHU_WEBHOOK_URL` 读取（不入库）；未配置时推送静默跳过。
+
 ## 1. 认证
 
 ### POST /api/auth/login
@@ -68,7 +83,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
 
 - `index`：单字符串（历史兼容）或数组；**数组=并集**（沪深300+中证500 直接多选）。
 
-- `momentum` 传入即走动量趋势预筛（MOMENTUM\_CORE 与策略同口径：门槛\[金叉+站上均线+动量为正+崩溃保护内置]→全市场RPS→按分排序→取前x）；此时 `as_of` 必填（传回测开始日，后端取**严格早于它的最近交易日**为基准日，无后视镜），RPS 恒为全市场口径，指数/行业/板块作为候选域叠加。`rank_key`（排序键）∈ {score=累计强度(默认) / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值}：门槛不变，只改过门槛者的座次，非法值 400。
+- `momentum` 传入即走动量趋势预筛（MOMENTUM\_CORE 与策略同口径：门槛\[金叉+站上均线+动量为正+崩溃保护内置]→全市场RPS→按分排序→取前x）；此时 `as_of` 必填（传回测开始日，后端取**严格早于它的最近交易日**为基准日，无后视镜），RPS 恒为全市场口径，指数/行业/板块作为候选域叠加。`rank_key`（排序键）∈ {score=累计强度(默认) / accel=加速度 / fresh=金叉新鲜度 / mom\_gap=短中差值}：门槛不变，只改过门槛者的座次，非法值 400。
 
 - 响应：`{"codes","name_map","total_matched","total_picked","seed_used","truncated","meta", "items"?}`；
   动量预筛额外返回 `items:[{rank,code,name,score,rps}]`（按 rank 排序的分数明细），meta 带 `snapshot_date`（实际基准日）与 `momentum` 参数。
@@ -136,7 +151,9 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 ### 基准对比（BENCHMARK，全策略通用）
 
 - `benchmark`（基准指数）∈ {000905=中证500(默认) / 000300=沪深300}；需先在数据管理页拉取指数日线（scope=index\_daily，独立 index\_daily.parquet，与个股数据隔离）；
+
 - 报告生成时按 equity\_curve 日期对齐指数收盘（缺失日前值填充），归一化到初始资金：报告新增 `benchmark={index_key,name,curve:[{date,close,equity}],return}`；metrics 新增 `benchmark_return`（同期基准收益）与 `excess_return`（超额=策略−基准），均小数口径；
+
 - 指数数据缺失（未拉取/区间不覆盖）时**静默降级**：不写 benchmark、不加指标，回测不受影响。
 
 ### GET /api/backtests

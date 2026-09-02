@@ -466,6 +466,102 @@ export interface BenchmarkInfo {
   curve: Array<{ date: string; close: number; equity: number }>
 }
 
+// ---- 实盘信号机（LIVE_SIGNAL_SYSTEM）----
+export interface LiveSignalItem {
+  id: number
+  ts: string
+  kind: 'premarket' | 'intraday'
+  code: string | null
+  name: string
+  stype: string
+  reason: string
+  suggest_amount: number | null
+  ref_price: number | null
+  status: string
+  extra: Record<string, unknown>
+  created_at: string
+}
+
+export interface LivePosition {
+  code: string
+  name: string
+  volume: number
+  cost_price: number
+  open_day: string | null
+  group_id: number | null
+  updated_at: string
+}
+
+export interface LivePoolState {
+  pool: Array<{ code: string; name?: string }>
+  as_of: string | null
+  gate_state: number
+  health_history: Array<{ day: string; health: number }>
+  idle_start: string | null
+  updated_at: string | null
+}
+
+export interface LiveFill {
+  id: number
+  signal_id: number | null
+  code: string
+  side: 'buy' | 'sell'
+  fill_price: number
+  fill_volume: number
+  fee: number
+  fill_time: string | null
+  note: string
+  created_at: string
+}
+
+export interface LiveConfig {
+  above_ma: number
+  with_accel: boolean
+  rank_key: string
+  top_x: number
+  auto_idle_days: number
+  exit_need: number
+  enter_th: number
+  pool_n: number
+  min_rps?: number | null
+  initial_capital: number
+  suggest_pct: number
+  auto_index: string[]
+  auto_boards: string[]
+}
+
+export interface LivePremarketResult {
+  as_of: string
+  health: number | null
+  gate_state: number
+  gate_changed: boolean
+  rebalanced: boolean
+  pool: Array<{ code: string; name?: string }>
+  positions: number
+  idle_days: number
+  signals: Array<{
+    id: number
+    code: string
+    stype: string
+    name: string
+    reason: string
+    suggest_amount: number
+    ref_price: number | null
+  }>
+  warns: Array<{ id: number; code: string; stype: string; name: string; reason: string }>
+  message: string
+  pushed: boolean
+}
+
+export interface LiveSummary {
+  pool: LivePoolState
+  positions: LivePosition[]
+  signals: LiveSignalItem[]
+  fills: LiveFill[]
+  feishu_configured: boolean
+  config: LiveConfig
+}
+
 // ---- 做T重构（T_REFACTOR） ----
 export interface TOpenDebt {
   code: string

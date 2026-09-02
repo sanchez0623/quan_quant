@@ -13,6 +13,10 @@ import type {
   DataStatus,
   ExperimentCreateRequest,
   ExperimentDetail,
+  LiveConfig,
+  LivePremarketResult,
+  LivePosition,
+  LiveSummary,
   ExperimentListItem,
   KeyCreateRequest,
   KeyTestResult,
@@ -282,6 +286,51 @@ export async function getBsMonitor(): Promise<BsMonitor> {
 
 export async function checkBs(): Promise<BsCheckResult> {
   const res = await api.post<BsCheckResult>('/data/bs_check')
+  return res.data
+}
+
+// ---- 实盘信号机（LIVE_SIGNAL_SYSTEM）----
+export async function getLiveSummary(): Promise<LiveSummary> {
+  const res = await api.get<LiveSummary>('/live/summary')
+  return res.data
+}
+
+export async function runPremarket(): Promise<LivePremarketResult> {
+  const res = await api.post<LivePremarketResult>('/live/premarket')
+  return res.data
+}
+
+export async function setLiveSignalStatus(id: number, status: string): Promise<void> {
+  await api.post(`/live/signals/${id}/status`, { status })
+}
+
+export async function addLiveFill(body: {
+  signal_id?: number | null
+  code: string
+  side: 'buy' | 'sell'
+  fill_price: number
+  fill_volume: number
+  fee?: number
+  note?: string
+}): Promise<{ fill_id: number; positions: LivePosition[] }> {
+  const res = await api.post('/live/fills', body)
+  return res.data
+}
+
+export async function syncLivePositions(
+  positions: Array<{ code: string; name?: string; volume: number; cost_price: number }>
+): Promise<{ positions: LivePosition[] }> {
+  const res = await api.post('/live/positions/sync', { positions })
+  return res.data
+}
+
+export async function getLiveConfig(): Promise<LiveConfig> {
+  const res = await api.get<LiveConfig>('/live/config')
+  return res.data
+}
+
+export async function saveLiveConfig(cfg: LiveConfig): Promise<LiveConfig> {
+  const res = await api.post<LiveConfig>('/live/config', cfg)
   return res.data
 }
 

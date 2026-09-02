@@ -111,6 +111,75 @@ CREATE TABLE IF NOT EXISTS bs_blacklist(
   release_at TEXT,              -- 预计自动解除时间（空=未知，等5分钟刷新）
   last_check TEXT
 );
+-- ---------------- 实盘信号机（LIVE_SIGNAL_SYSTEM） ----------------
+CREATE TABLE IF NOT EXISTS sig_pool(
+  id INTEGER PRIMARY KEY CHECK (id = 1),    -- 单行滚动状态
+  pool_json TEXT DEFAULT '[]',              -- 当前池子 [{code,name}]
+  as_of TEXT,                               -- 最近一次选股基准日（T-1）
+  gate_state INTEGER DEFAULT 0,             -- 池级开关 0=开 1=停开仓
+  health_history TEXT DEFAULT '[]',         -- [{day,health}] 最近30日（滞回状态机输入）
+  idle_start TEXT,                          -- 空仓开始日（重选判定）
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sig_config(
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  cfg_json TEXT DEFAULT '{}',               -- 盘前流程参数（above_ma/rank_key/top_x/...）
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sig_signal_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,                         -- 产生时间
+  kind TEXT NOT NULL,                       -- premarket 盘前 / intraday 盘中
+  code TEXT,                                -- 空=组合级消息（池子/对账）
+  name TEXT DEFAULT '',
+  stype TEXT NOT NULL,                      -- 开仓/加仓/减仓/止损/清仓/池子/预警/对账
+  reason TEXT DEFAULT '',
+  suggest_amount REAL,
+  ref_price REAL,
+  status TEXT DEFAULT '待执行',              -- 待执行/已成交/已忽略/已过期/信息
+  extra_json TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sig_signal_created ON sig_signal_log(created_at DESC);
+CREATE TABLE IF NOT EXISTS sig_fills(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id INTEGER,                        -- 关联信号（空=手动补录）
+  code TEXT NOT NULL,
+  side TEXT NOT NULL,                       -- buy/sell
+  fill_price REAL NOT NULL,
+  fill_volume INTEGER NOT NULL,
+  fee REAL DEFAULT 0,
+  fill_time TEXT,
+  note TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sig_position(
+  code TEXT PRIMARY KEY,
+  name TEXT DEFAULT '',
+  volume INTEGER NOT NULL,
+  cost_price REAL NOT NULL,
+  open_day TEXT,
+  group_id INTEGER,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sig_t_debt(
+  code TEXT PRIMARY KEY,
+  sold INTEGER DEFAULT 0,
+  bought INTEGER DEFAULT 0,
+  sell_amt REAL DEFAULT 0,
+  buy_amt REAL DEFAULT 0,
+  open_day TEXT,
+  deadline_day TEXT
+);
+CREATE TABLE IF NOT EXISTS sig_withdraw(
+  month TEXT PRIMARY KEY,
+  total REAL DEFAULT 0,
+  t_profit REAL DEFAULT 0,
+  topup REAL DEFAULT 0,
+  shortfall REAL DEFAULT 0,
+  recover REAL DEFAULT 0,
+  log_json TEXT DEFAULT '[]'
+);
 """
 
 
@@ -566,3 +635,147 @@ def _jload(s: Optional[str]) -> Any:
         return json.loads(s)
     except json.JSONDecodeError:
         return None
+
+
+# ---------------- 实盘信号机（LIVE_SIGNAL_SYSTEM） ----------------
+
+def get_live_config(db_path: Optional[str] = None) -> dict:
+    """盘前流程参数（above_ma/rank_key/top_x/exit_need/initial_capital/...）"""
+    with conn(db_path) as c:
+        row = c.execute("SELECT cfg_json FROM sig_config WHERE id=1").fetchone()
+    return _jload(row[0]) if row and row[0] else {}
+
+
+def save_live_config(cfg: dict, db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO sig_config(id, cfg_json, updated_at) VALUES(1, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET cfg_json=excluded.cfg_json, "
+            "updated_at=excluded.updated_at",
+            (json.dumps(cfg, ensure_ascii=False), _now()))
+
+
+def get_live_pool(db_path: Optional[str] = None) -> dict:
+    """池子滚动状态（pool/as_of/gate_state/health_history/idle_start）"""
+    with conn(db_path) as c:
+        row = c.execute(
+            "SELECT pool_json, as_of, gate_state, health_history, idle_start, updated_at "
+            "FROM sig_pool WHERE id=1").fetchone()
+    if not row:
+        return {}
+    return {"pool": _jload(row[0]) or [], "as_of": row[1], "gate_state": row[2] or 0,
+            "health_history": _jload(row[3]) or [], "idle_start": row[4],
+            "updated_at": row[5]}
+
+
+def save_live_pool(pool: list, as_of: Optional[str], gate_state: int,
+                   health_history: list, idle_start: Optional[str],
+                   db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO sig_pool(id, pool_json, as_of, gate_state, health_history, "
+            "idle_start, updated_at) VALUES(1, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET pool_json=excluded.pool_json, "
+            "as_of=excluded.as_of, gate_state=excluded.gate_state, "
+            "health_history=excluded.health_history, idle_start=excluded.idle_start, "
+            "updated_at=excluded.updated_at",
+            (json.dumps(pool, ensure_ascii=False), as_of, int(gate_state),
+             json.dumps(health_history, ensure_ascii=False), idle_start, _now()))
+
+
+def add_live_signal(kind: str, stype: str, code: Optional[str], name: str,
+                    reason: str, suggest_amount: Optional[float],
+                    ref_price: Optional[float], status: str = "待执行",
+                    extra: Optional[dict] = None,
+                    db_path: Optional[str] = None) -> int:
+    with conn(db_path) as c:
+        cur = c.execute(
+            "INSERT INTO sig_signal_log(ts, kind, code, name, stype, reason, "
+            "suggest_amount, ref_price, status, extra_json, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (_now(), kind, code, name, stype, reason, suggest_amount,
+             ref_price, status, json.dumps(extra or {}, ensure_ascii=False), _now()))
+        return int(cur.lastrowid)
+
+
+def list_live_signals(limit: int = 100, status: Optional[str] = None,
+                      db_path: Optional[str] = None) -> list[dict]:
+    q = ("SELECT id, ts, kind, code, name, stype, reason, suggest_amount, ref_price, "
+         "status, extra_json, created_at FROM sig_signal_log")
+    args: list = []
+    if status:
+        q += " WHERE status=?"
+        args.append(status)
+    q += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    with conn(db_path) as c:
+        rows = c.execute(q, args).fetchall()
+    out = []
+    for r in rows:
+        d = dict(zip(["id", "ts", "kind", "code", "name", "stype", "reason",
+                      "suggest_amount", "ref_price", "status", "extra", "created_at"], r))
+        d["extra"] = _jload(d.get("extra")) or {}
+        out.append(d)
+    return out
+
+
+def set_live_signal_status(signal_id: int, status: str,
+                           db_path: Optional[str] = None) -> bool:
+    with conn(db_path) as c:
+        cur = c.execute("UPDATE sig_signal_log SET status=? WHERE id=?",
+                        (status, signal_id))
+    return cur.rowcount > 0
+
+
+def add_live_fill(signal_id: Optional[int], code: str, side: str,
+                  fill_price: float, fill_volume: int, fee: float = 0.0,
+                  fill_time: Optional[str] = None, note: str = "",
+                  db_path: Optional[str] = None) -> int:
+    with conn(db_path) as c:
+        cur = c.execute(
+            "INSERT INTO sig_fills(signal_id, code, side, fill_price, fill_volume, "
+            "fee, fill_time, note, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (signal_id, code, side, fill_price, fill_volume, fee, fill_time,
+             note, _now()))
+        return int(cur.lastrowid)
+
+
+def list_live_fills(limit: int = 200, db_path: Optional[str] = None) -> list[dict]:
+    with conn(db_path) as c:
+        rows = c.execute(
+            "SELECT id, signal_id, code, side, fill_price, fill_volume, fee, "
+            "fill_time, note, created_at FROM sig_fills "
+            "ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    return [dict(zip(["id", "signal_id", "code", "side", "fill_price",
+                      "fill_volume", "fee", "fill_time", "note", "created_at"], r))
+            for r in rows]
+
+
+def upsert_live_position(code: str, name: str, volume: int, cost_price: float,
+                         open_day: Optional[str] = None,
+                         group_id: Optional[int] = None,
+                         db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO sig_position(code, name, volume, cost_price, open_day, "
+            "group_id, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(code) DO UPDATE SET name=excluded.name, "
+            "volume=excluded.volume, cost_price=excluded.cost_price, "
+            "open_day=excluded.open_day, group_id=excluded.group_id, "
+            "updated_at=excluded.updated_at",
+            (code, name, volume, cost_price, open_day, group_id, _now()))
+
+
+def list_live_positions(db_path: Optional[str] = None) -> list[dict]:
+    with conn(db_path) as c:
+        rows = c.execute(
+            "SELECT code, name, volume, cost_price, open_day, group_id, updated_at "
+            "FROM sig_position ORDER BY code").fetchall()
+    return [dict(zip(["code", "name", "volume", "cost_price", "open_day",
+                      "group_id", "updated_at"], r)) for r in rows]
+
+
+def remove_live_position(code: str, db_path: Optional[str] = None) -> bool:
+    with conn(db_path) as c:
+        cur = c.execute("DELETE FROM sig_position WHERE code=?", (code,))
+    return cur.rowcount > 0

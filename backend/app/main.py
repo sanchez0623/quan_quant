@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import auth, config, db
 from .api import (ai, auth as api_auth, backtests, data as api_data, experiments, keys,
-                  optimize, stocks, strategies, users)
+                  live, optimize, stocks, strategies, users)
 from .task_manager import manager
 
 FINAL_STATES = ("success", "failed", "cancelled")
@@ -80,6 +80,7 @@ app.include_router(optimize.router)
 app.include_router(experiments.router)
 app.include_router(ai.router)
 app.include_router(api_data.router)
+app.include_router(live.router)
 app.include_router(keys.router)
 app.include_router(users.router)
 

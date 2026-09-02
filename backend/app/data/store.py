@@ -53,9 +53,38 @@ def _quarantine_corrupt(path: Path, err: Exception) -> None:
 # ---------------- daily ----------------
 
 def write_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
+    """写日线 parquet，内置完整性守卫（DATA_GUARD，实盘信号机前置安全件）：
+    已有库非空时，若新表导致「票数缩水 >10%」或「日期起点大幅推迟（老历史丢失特征）」
+    则拒绝写库——防御任何绕过"读旧表->concat->去重"纪律的覆盖式写回
+    （2026-08/09 两次数据事故的制度性根因）。"""
     d = data_root(data_dir)
     d.mkdir(parents=True, exist_ok=True)
-    _write_parquet_atomic(df, d / "daily.parquet")
+    p = d / "daily.parquet"
+    if p.exists():
+        try:
+            old = pl.read_parquet(p)
+        except Exception:
+            old = None
+        if old is not None and old.height and df.height:
+            new_codes = df["code"].n_unique()
+            old_codes = old["code"].n_unique()
+            if new_codes < old_codes * 0.9:
+                raise ValueError(
+                    f"[DATA_GUARD] 拒绝写日线：票数 {old_codes} -> {new_codes} "
+                    f"缩水超过 10%（疑似覆盖式写回丢失历史）。"
+                    f"正确写法：读旧表 -> concat -> 按(code,date)去重 -> 原子写。")
+            old_start, new_start = str(old["date"].min()), str(df["date"].min())
+            if new_start > old_start:
+                from datetime import date as _d
+                try:
+                    gap = (_d.fromisoformat(new_start) - _d.fromisoformat(old_start)).days
+                except ValueError:
+                    gap = 0
+                if gap > 30:
+                    raise ValueError(
+                        f"[DATA_GUARD] 拒绝写日线：日期起点 {old_start} -> {new_start} "
+                        f"推迟 {gap} 天（老历史丢失特征）。请补全历史后合并写回。")
+    _write_parquet_atomic(df, p)
 
 
 def read_daily(codes: Optional[list[str]] = None,

@@ -6,6 +6,7 @@ import {
   KeyOutlined,
   LineChartOutlined,
   LogoutOutlined,
+  NotificationOutlined,
   RobotOutlined,
   TeamOutlined,
   UserOutlined
@@ -22,6 +23,7 @@ export default function MainLayout() {
   const selectedKey = '/' + (location.pathname.split('/')[1] ?? '')
 
   const menuItems: MenuProps['items'] = [
+    { key: '/live', icon: <NotificationOutlined />, label: '实盘信号' },
     { key: '/backtests', icon: <LineChartOutlined />, label: '回测中心' },
     { key: '/optimize', icon: <ExperimentOutlined />, label: '参数寻优' },
     { key: '/experiments', icon: <ApartmentOutlined />, label: '对比实验' },
