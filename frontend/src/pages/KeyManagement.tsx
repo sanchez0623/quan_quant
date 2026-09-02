@@ -77,7 +77,7 @@ export default function KeyManagement() {
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ provider: 'deepseek', sort_order: (keys.length + 1) * 10 })
+    form.setFieldsValue({ provider: 'deepseek', sort_order: keys.length + 1 })
     setModalOpen(true)
   }
 
@@ -354,8 +354,12 @@ export default function KeyManagement() {
             <Form.Item name="label" label="备注" style={{ flex: 1 }}>
               <Input placeholder="例如：我的主力Key" />
             </Form.Item>
-            <Form.Item name="sort_order" label="优先级" tooltip="数字越小越先用">
-              <InputNumber min={0} style={{ width: 120 }} />
+            <Form.Item
+              name="sort_order"
+              label="优先级"
+              tooltip="1=最优先（最先用）。编辑后其他 Key 自动顺延，排序始终为唯一 1..N"
+            >
+              <InputNumber min={1} style={{ width: 120 }} />
             </Form.Item>
           </Space>
           <Space size="middle" style={{ display: 'flex' }}>

@@ -50,6 +50,10 @@ def add_key(req: KeyCreate, user: str = Depends(get_current_user)):
                             base_url=req.base_url or None, label=req.label,
                             sort_order=req.sort_order,
                             timeout=req.timeout, max_tokens=req.max_tokens)
+    # 优先级归一化：新 key 放到指定位置（1-based，<=0 视为末位），其余顺延
+    n = len(db.list_llm_keys(user))
+    target = req.sort_order if req.sort_order and req.sort_order > 0 else n
+    _renumber_keys(user, key_id, target)
     return {"id": key_id, "status": "ok"}
 
 
@@ -91,6 +95,9 @@ def update_key(key_id: int, req: KeyUpdate, user: str = Depends(get_current_user
         fields["max_tokens"] = int(req.max_tokens)
     if not db.update_llm_key(key_id, user, **fields):
         raise HTTPException(status_code=404, detail="Key 不存在或不属于当前用户")
+    # 改了优先级：移动到指定位置（1-based），其余整体顺延（重排为唯一 1..N）
+    if req.sort_order is not None:
+        _renumber_keys(user, key_id, req.sort_order)
     return {"status": "ok"}
 
 
@@ -99,6 +106,25 @@ def remove_key(key_id: int, user: str = Depends(get_current_user)):
     if not db.delete_llm_key(key_id, user):
         raise HTTPException(status_code=404, detail="Key 不存在或不属于当前用户")
     return {"status": "ok"}
+
+
+def _renumber_keys(user: str, moved_id: int, target_pos: int) -> None:
+    """优先级归一化：把 key(moved_id) 移到第 target_pos 位（1-based），
+    其余按当前顺序顺延，最终所有 key 的 sort_order 重排为唯一 1..N。
+
+    语义：优先级 = 位置（1=最先用）；越界自动钳制到首/末位。
+    同时把历史任意权重（如 10/20/30）一次归一化。"""
+    keys = db.list_llm_keys(user)
+    moved = next((k for k in keys if k["id"] == moved_id), None)
+    if moved is None:
+        return
+    others = [k for k in keys if k["id"] != moved_id]
+    others.sort(key=lambda k: (k["sort_order"], k["id"]))
+    pos = max(1, min(int(target_pos), len(keys)))
+    ordered = others[: pos - 1] + [moved] + others[pos - 1:]
+    with db.conn() as c:
+        for i, k in enumerate(ordered, start=1):
+            c.execute("UPDATE llm_keys SET sort_order=? WHERE id=?", (i, k["id"]))
 
 
 def _http_error_detail(e: httpx.HTTPStatusError) -> str:
