@@ -108,6 +108,11 @@ def test_premarket_rebalance(tmp_path):
     assert result["pushed"] is False, "未配置飞书时应静默降级"
     assert 1 <= len(result["signals"]) <= 2, \
         f"开仓信号应与过门槛票数(≤top_x)一致: {result['signals']}"
+    for s in result["signals"]:
+        assert s["ref_price"] is not None, \
+            "参考价应为 T-1 收盘价（d_close），而非动量分"
+        assert 0 < s["ref_price"] < 1000
+        assert s["name"] != s["code"], "名称应来自 stock_basic 而非回退代码"
     assert result["gate_state"] == 0
     # 池子状态滚动
     pool = db.get_live_pool()

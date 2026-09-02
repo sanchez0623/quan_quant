@@ -539,6 +539,9 @@ export interface LivePremarketResult {
   pool: Array<{ code: string; name?: string }>
   positions: number
   idle_days: number
+  /** 数据滞后检测：数据截止日距今天 >4 个自然日 */
+  stale: boolean
+  stale_days: number
   signals: Array<{
     id: number
     code: string

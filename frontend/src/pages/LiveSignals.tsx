@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, Button, Card, Col, InputNumber, Modal, Row, Space, Statistic, Table,
-  Tag, Typography, message
+  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Row, Select, Space,
+  Statistic, Table, Tag, Typography, message
 } from 'antd'
-import { NotificationOutlined, SyncOutlined } from '@ant-design/icons'
+import { NotificationOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import type { LivePosition, LiveSignalItem } from '../api/types'
+import type { LiveConfig, LivePosition, LiveSignalItem } from '../api/types'
 import {
-  addLiveFill, getLiveSummary, runPremarket, setLiveSignalStatus,
-  syncLivePositions
+  addLiveFill, getLiveSummary, runPremarket, saveLiveConfig,
+  setLiveSignalStatus, syncLivePositions
 } from '../api/client'
 import { fmtMoney } from '../utils/format'
 
@@ -18,12 +18,37 @@ const STYPE_TAG: Record<string, string> = {
   池子: 'geekblue', 对账: 'blue'
 }
 
+const RANK_KEY_OPTS = [
+  { value: 'score', label: '累计强度（score）' },
+  { value: 'accel', label: '加速度（accel）' },
+  { value: 'fresh', label: '金叉新鲜（fresh）' },
+  { value: 'mom_gap', label: '短中差值（mom_gap）' }
+]
+
+const INDEX_OPTS = [
+  { value: 'zz500', label: '中证500' },
+  { value: 'hs300', label: '沪深300' },
+  { value: 'csi1000', label: '中证1000' },
+  { value: 'kcb50', label: '科创50' }
+]
+
+const BOARD_OPTS = [
+  { value: 'kcb', label: '科创板' },
+  { value: 'cyb', label: '创业板' },
+  { value: 'zxb', label: '中小板/主板' }
+]
+
 function statusTag(s: string) {
   if (s === '已成交') return <Tag color="success">已成交</Tag>
   if (s === '已忽略') return <Tag>已忽略</Tag>
   if (s === '已过期') return <Tag color="default">已过期</Tag>
   if (s === '信息') return <Tag color="blue">信息</Tag>
   return <Tag color="processing">待执行</Tag>
+}
+
+function staleDays(asOf: string | null | undefined): number {
+  if (!asOf) return 0
+  return Math.floor((Date.now() - new Date(asOf).getTime()) / 86400000)
 }
 
 export default function LiveSignals() {
@@ -33,11 +58,15 @@ export default function LiveSignals() {
   const [fillTarget, setFillTarget] = useState<LiveSignalItem | null>(null)
   const [fillPrice, setFillPrice] = useState<number | null>(null)
   const [fillVolume, setFillVolume] = useState<number | null>(null)
+  const [cfg, setCfg] = useState<LiveConfig | null>(null)
+  const [cfgSaving, setCfgSaving] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setSummary(await getLiveSummary())
+      const s = await getLiveSummary()
+      setSummary(s)
+      setCfg((prev) => prev ?? s.config)
     } finally {
       setLoading(false)
     }
@@ -49,9 +78,15 @@ export default function LiveSignals() {
     setPremarketLoading(true)
     try {
       const r = await runPremarket()
-      message.success(
-        `盘前流程完成：${r.rebalanced ? `重选新池 ${r.pool.length} 只` : '未触发重选'}；` +
-        `推送${r.pushed ? '成功' : '未配置（仅落库）'}`)
+      if (r.stale) {
+        message.warning(
+          `盘前流程完成，但数据截至 ${r.as_of}（滞后 ${r.stale_days} 天）——` +
+          '请先在数据管理页更新日线，池子基于残缺数据')
+      } else {
+        message.success(
+          `盘前流程完成：${r.rebalanced ? `重选新池 ${r.pool.length} 只` : '未触发重选'}；` +
+          `推送${r.pushed ? '成功' : '未配置（仅落库）'}`)
+      }
       await refresh()
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
@@ -86,13 +121,24 @@ export default function LiveSignals() {
 
   const onSync = async () => {
     if (!summary) return
-    // 以系统虚拟持仓为准回写校准（M1 简化：对账差异人工核对后点此刷新状态）
     await syncLivePositions(
       summary.positions.map((p: LivePosition) => ({
         code: p.code, name: p.name, volume: p.volume, cost_price: p.cost_price
       })))
     message.success('已按当前虚拟持仓校准')
     await refresh()
+  }
+
+  const onSaveCfg = async () => {
+    if (!cfg) return
+    setCfgSaving(true)
+    try {
+      await saveLiveConfig(cfg)
+      message.success('配置已保存，下次盘前流程生效')
+      await refresh()
+    } finally {
+      setCfgSaving(false)
+    }
   }
 
   const signalCols: ColumnsType<LiveSignalItem> = [
@@ -106,6 +152,10 @@ export default function LiveSignals() {
     {
       title: '建议金额', dataIndex: 'suggest_amount', width: 110, align: 'right',
       render: (v) => (v != null ? fmtMoney(v) : '-')
+    },
+    {
+      title: '参考价', dataIndex: 'ref_price', width: 90, align: 'right',
+      render: (v) => (v != null ? v.toFixed(3) : '-')
     },
     {
       title: '状态', dataIndex: 'status', width: 90,
@@ -131,17 +181,42 @@ export default function LiveSignals() {
   const posCols: ColumnsType<LivePosition> = [
     { title: '代码', dataIndex: 'code', width: 90 },
     { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
-    { title: '数量', dataIndex: 'volume', width: 100, align: 'right',
-      render: (v) => v.toLocaleString('zh-CN') },
-    { title: '成本价', dataIndex: 'cost_price', width: 90, align: 'right',
-      render: (v) => v?.toFixed(3) },
-    { title: '开仓日', dataIndex: 'open_day', width: 110,
-      render: (v) => v || '-' }
+    {
+      title: '数量', dataIndex: 'volume', width: 100, align: 'right',
+      render: (v) => v.toLocaleString('zh-CN')
+    },
+    {
+      title: '成本价', dataIndex: 'cost_price', width: 90, align: 'right',
+      render: (v) => v?.toFixed(3)
+    },
+    {
+      title: '开仓日', dataIndex: 'open_day', width: 110,
+      render: (v) => v || '-'
+    }
+  ]
+
+  const poolCols: ColumnsType<{ code: string; name?: string }> = [
+    { title: '代码', dataIndex: 'code', width: 100 },
+    { title: '名称', dataIndex: 'name', ellipsis: true }
   ]
 
   const pool = summary?.pool
+  const stale = staleDays(pool?.as_of)
+  const numCell = (v: number | null | undefined, onChange: (v: number | null) => void,
+                   step: number, min: number) => (
+    <InputNumber style={{ width: '100%' }} value={v ?? undefined}
+      step={step} min={min} onChange={(v) => onChange(v)} />
+  )
+
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {stale > 4 && (
+        <Alert
+          type="warning" showIcon
+          message={`行情数据截至 ${pool?.as_of}（滞后 ${stale} 天）`}
+          description="盘前流程只读现有日线库、不自动拉数据。数据不完整会导致选股出现'幸存者偏差'（只有数据完整的票参选）。请先到数据管理页更新日线，再执行盘前流程。"
+        />
+      )}
       <Row gutter={16}>
         <Col span={6}>
           <Card size="small" loading={loading}>
@@ -158,7 +233,7 @@ export default function LiveSignals() {
             <Statistic title="当前池子" value={`${pool?.pool?.length ?? 0} 只`}
               valueStyle={{ fontSize: 20 }} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              基准日 {pool?.as_of ?? '-'}
+              基准日 {pool?.as_of ?? '-'}｜候选域：{cfg?.auto_index?.length ? cfg.auto_index.join('+') : '全市场'}
             </Typography.Text>
           </Card>
         </Col>
@@ -193,7 +268,7 @@ export default function LiveSignals() {
         }>
         <Alert
           type="info" showIcon
-          message="T-1 特征重算 → 池级健康度/gate → 空仓重选判定 → 持仓退出检查 → 飞书推送 + 落库"
+          message="T-1 特征重算 → 池级健康度/gate → 空仓重选判定 → 持仓退出检查 → 飞书推送 + 落库（只读现有数据，不拉数据）"
           style={{ marginBottom: 8 }}
         />
         {summary?.signals?.length ? (
@@ -231,8 +306,101 @@ export default function LiveSignals() {
         />
       </Card>
 
+      <Collapse
+        items={[
+          {
+            key: 'pool', label: `当前池子成员（${pool?.pool?.length ?? 0} 只，基准日 ${pool?.as_of ?? '-'}）`,
+            children: (
+              <Table
+                rowKey="code" size="small"
+                dataSource={pool?.pool ?? []}
+                columns={poolCols}
+                pagination={false}
+                locale={{ emptyText: '暂无池子（执行盘前流程后生成）' }}
+              />
+            )
+          },
+          {
+            key: 'cfg', label: '流程参数配置（保存后下次盘前流程生效）',
+            children: cfg ? (
+              <div>
+                <Row gutter={12}>
+                  <Col span={8}>
+                    <Typography.Text type="secondary">候选域（指数成分并集）</Typography.Text>
+                    <Select mode="multiple" style={{ width: '100%' }} allowClear
+                      value={cfg.auto_index} options={INDEX_OPTS}
+                      onChange={(v) => setCfg({ ...cfg, auto_index: v })} />
+                  </Col>
+                  <Col span={8}>
+                    <Typography.Text type="secondary">板块过滤（空=不限）</Typography.Text>
+                    <Select mode="multiple" style={{ width: '100%' }} allowClear
+                      value={cfg.auto_boards} options={BOARD_OPTS}
+                      onChange={(v) => setCfg({ ...cfg, auto_boards: v })} />
+                  </Col>
+                  <Col span={8}>
+                    <Typography.Text type="secondary">选股排序键（rank_key）</Typography.Text>
+                    <Select style={{ width: '100%' }} value={cfg.rank_key}
+                      options={RANK_KEY_OPTS}
+                      onChange={(v) => setCfg({ ...cfg, rank_key: v })} />
+                  </Col>
+                </Row>
+                <Row gutter={12} style={{ marginTop: 8 }}>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">虚拟资金（initial_capital）</Typography.Text>
+                    {numCell(cfg.initial_capital,
+                      (v) => setCfg({ ...cfg, initial_capital: v ?? 3000000 }),
+                      100000, 10000)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">单票建议比例（suggest_pct）</Typography.Text>
+                    {numCell(cfg.suggest_pct,
+                      (v) => setCfg({ ...cfg, suggest_pct: v ?? 0.15 }),
+                      0.01, 0.01)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">池子大小（top_x）</Typography.Text>
+                    {numCell(cfg.top_x, (v) => setCfg({ ...cfg, top_x: v ?? 30 }),
+                      1, 1)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">空仓重选天数（auto_idle_days）</Typography.Text>
+                    {numCell(cfg.auto_idle_days,
+                      (v) => setCfg({ ...cfg, auto_idle_days: v ?? 5 }), 1, 1)}
+                  </Col>
+                </Row>
+                <Row gutter={12} style={{ marginTop: 8 }}>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">衰退信号阈值（exit_need）</Typography.Text>
+                    {numCell(cfg.exit_need, (v) => setCfg({ ...cfg, exit_need: v ?? 2 }),
+                      1, 1)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">gate 触发阈值（enter_th）</Typography.Text>
+                    {numCell(cfg.enter_th, (v) => setCfg({ ...cfg, enter_th: v ?? 0.15 }),
+                      0.01, 0.01)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">站上均线周期（above_ma）</Typography.Text>
+                    {numCell(cfg.above_ma, (v) => setCfg({ ...cfg, above_ma: v ?? 20 }),
+                      5, 5)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">榜单容量（pool_n）</Typography.Text>
+                    {numCell(cfg.pool_n, (v) => setCfg({ ...cfg, pool_n: v ?? 6 }), 1, 1)}
+                  </Col>
+                </Row>
+                <Button type="primary" icon={<SaveOutlined />} loading={cfgSaving}
+                  onClick={onSaveCfg} style={{ marginTop: 12 }}>
+                  保存配置
+                </Button>
+              </div>
+            ) : null
+          }
+        ]}
+      />
+
       <Modal
-        title={`回填成交：${fillTarget?.code ?? ''} ${fillTarget?.stype ?? ''}`}
+        title={`回填成交：${fillTarget?.code ?? ''} ${fillTarget?.name ?? ''} ${fillTarget?.stype ?? ''}`}
         open={!!fillTarget}
         onOk={onFill}
         onCancel={() => setFillTarget(null)}
@@ -242,6 +410,7 @@ export default function LiveSignals() {
           <Typography.Text type="secondary">
             {fillTarget?.reason}｜建议金额 {fillTarget?.suggest_amount != null
               ? fmtMoney(fillTarget.suggest_amount) : '-'}
+            ｜参考价 {fillTarget?.ref_price != null ? fillTarget.ref_price.toFixed(3) : '-'}
           </Typography.Text>
           <Typography.Text>成交价：</Typography.Text>
           <InputNumber

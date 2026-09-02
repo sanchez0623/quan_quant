@@ -44,7 +44,11 @@ def _cfg() -> dict:
 
 def run_premarket(data_dir: Optional[str] = None,
                   push: bool = True) -> dict:
-    """执行盘前信号流程并推送。返回结果摘要（供 API/前端展示）。"""
+    """执行盘前信号流程并推送。返回结果摘要（供 API/前端展示）。
+
+    注意：本流程只读现有日线库、不拉数据——数据滞后时会在结果中警示
+    （日线增量更新属数据管理链路，见 LIVE_SIGNAL_SYSTEM §5 盘前第 1 条，
+     自动编排留待 M2 任务化）。"""
     cfg = _cfg()
     mf = mc.market_features(
         data_dir=data_dir,
@@ -55,6 +59,32 @@ def run_premarket(data_dir: Optional[str] = None,
     if not mf.calendar:
         raise RuntimeError("无行情数据（请先在数据管理页更新日线）")
     as_of = mf.calendar[-1]          # 数据最新日 = T-1（盘前无今日数据，无后视镜天然满足）
+
+    # 参考价：as_of 日收盘（日线表原始 close）
+    daily_close: dict[str, float] = {}
+    try:
+        dd = store.read_daily(None, data_dir)
+        if dd is not None and dd.height:
+            day_close = dd.filter(pl.col("date") == as_of).select(["code", "close"])
+            daily_close = dict(zip(day_close["code"].to_list(),
+                                   [float(x) for x in day_close["close"].to_list()]))
+    except Exception:
+        pass
+
+    # 名称映射（stock_basic）；信号与池子展示用
+    name_map: dict[str, str] = {}
+    try:
+        basic = store.read_stock_basic(data_dir)
+        if basic is not None and basic.height:
+            name_map = {r["code"]: r["name"]
+                        for r in basic.select(["code", "name"]).to_dicts()
+                        if r.get("name")}
+    except Exception:
+        pass
+
+    # 数据滞后检测：数据截止日距今天 > 4 个自然日（跨长假）→ 警示
+    stale_days = (datetime.now() - datetime.strptime(as_of, "%Y-%m-%d")).days
+    stale = stale_days > 4
 
     pool_state = db.get_live_pool()
     pool = [p for p in (pool_state.get("pool") or [])]
@@ -112,25 +142,28 @@ def run_premarket(data_dir: Optional[str] = None,
                 messages.append(f"候选域内无票过门槛（基准日 {as_of}）——空仓等待")
                 idle_start = idle_start or as_of
             else:
-                new_pool = [{"code": r["code"], "name": r["name"] if "name" in r
-                             else r["code"]} for r in picked.to_dicts()]
+                new_pool = [{"code": r["code"],
+                             "name": name_map.get(r["code"], r["code"])}
+                            for r in picked.to_dicts()]
                 idle_start = None
                 rebalanced = True
                 messages.append(f"动态重选（基准日 {as_of}）：新池 {picked.height} 只")
                 for r in picked.to_dicts():
                     amount = round(float(cfg["initial_capital"])
                                    * float(cfg["suggest_pct"]), 0)
+                    ref = daily_close.get(r["code"])
                     sid = db.add_live_signal(
                         "premarket", "开仓", r["code"],
-                        r.get("name") or r["code"],
+                        name_map.get(r["code"], r["code"]),
                         f"动态重选入池（{cfg['rank_key']}排序）",
-                        amount, r.get("score"),
+                        amount, ref,
                         extra={"as_of": as_of, "rps": r.get("rps"),
                                "pool_size": picked.height})
                     signals.append({"id": sid, "code": r["code"],
-                                    "stype": "开仓", "name": r.get("name") or r["code"],
+                                    "stype": "开仓",
+                                    "name": name_map.get(r["code"], r["code"]),
                                     "reason": f"动态重选入池（{cfg['rank_key']}排序）",
-                                    "suggest_amount": amount, "ref_price": None})
+                                    "suggest_amount": amount, "ref_price": ref})
         else:
             messages.append(f"空仓第 {idle_days} 日（重选阈值 "
                             f"{cfg['auto_idle_days']}）——继续等待")
@@ -159,7 +192,7 @@ def run_premarket(data_dir: Optional[str] = None,
             reason = "衰退预警(" + "+".join(hits) + f"，{len(hits)}/{cfg['exit_need']})"
             sid = db.add_live_signal(
                 "premarket", "清仓", code, p.get("name") or code, reason,
-                None, r.get("close") if "close" in r else None,
+                None, daily_close.get(code),
                 extra={"as_of": as_of, "hits": hits})
             warns.append({"id": sid, "code": code, "stype": "清仓",
                           "name": p.get("name") or code, "reason": reason})
@@ -173,7 +206,9 @@ def run_premarket(data_dir: Optional[str] = None,
         for r in list(by_code.values())[:int(cfg["pool_n"])]:
             pass  # M1：名单在池子消息里展示即可，不逐票产生开仓信号
     header = (f"【盘前信号 {as_of}】\n"
-              f"池级 gate：{'停开仓' if gate_state else '正常'}"
+              + (f"⚠ 数据截至 {as_of}（滞后 {stale_days} 天）——选股基于不完整数据，"
+                 f"请先在数据管理页更新日线\n" if stale else "")
+              + f"池级 gate：{'停开仓' if gate_state else '正常'}"
               f"（健康度 {health}）\n"
               f"虚拟持仓：{len(pos_codes)} 只｜空仓 {idle_days} 日\n"
               + ("\n".join(messages) if messages else "无变化"))
@@ -193,6 +228,7 @@ def run_premarket(data_dir: Optional[str] = None,
             "gate_changed": gate_state != int(pool_state.get("gate_state") or 0),
             "rebalanced": rebalanced, "pool": new_pool,
             "positions": len(pos_codes), "idle_days": idle_days,
+            "stale": stale, "stale_days": stale_days,
             "signals": signals, "warns": warns,
             "message": header, "pushed": pushed}
 
