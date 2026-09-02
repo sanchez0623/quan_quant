@@ -853,6 +853,11 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             budget_pct = order.get("budget_pct")
             if budget_pct:
                 budget = min(budget, equity * float(budget_pct) / 100)
+            # P2 加仓最小有效量：预算（经单票/总仓/现金三重约束后）不足总资产
+            # ADD_MIN_BUDGET_PCT% 时拒绝成交——现金耗尽后缩量到 100 股的垃圾
+            # 加仓单既浪费手续费又污染交易统计（信号层同阈值跳过不发信号）
+            if tag == "加仓" and budget < equity * mc.ADD_MIN_BUDGET_PCT / 100:
+                return
             vol = broker.lots_for_amount(budget, raw_price)
         if vol < 100:
             return

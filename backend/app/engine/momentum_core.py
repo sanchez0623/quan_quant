@@ -57,6 +57,10 @@ RANK_KEYS: dict[str, list[tuple[str, bool]]] = {
     "mom_gap": [("mom_gap", True), ("score", True)],
 }
 
+# 金字塔加仓最小有效预算（占总资产 %）：信号层低于此值跳过且不消耗加仓次数/冷却；
+# 执行层同口径守卫拒绝"现金耗尽后缩量到 100 股"的垃圾加仓单（600339 案例 P2）
+ADD_MIN_BUDGET_PCT = 0.5
+
 
 def pick_params(above_ma: int = 60, with_accel: bool = False) -> dict:
     """构造动量选股参数：above_ma=站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot），

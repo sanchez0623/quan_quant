@@ -292,6 +292,9 @@ class MomentumTStrategy(Strategy):
         adds_done = 0
         last_add_idx = -10**9
         last_reduce_idx = -10**9
+        # P1 防同价：开仓以来最高收盘。加仓要求当前价高于它（新高须发生在
+        # 建仓之后，而非入选时已成立的存量 20 日新高），消灭开仓即加仓
+        high_since_open: float | None = None
         cur_day = None
         ref = None
         t_count = 0
@@ -307,6 +310,12 @@ class MomentumTStrategy(Strategy):
                 ref = None
                 t_count = 0
             trend_ok = (trend_clock != "daily") or is_eod[i]
+
+            # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高
+            # （加仓检查用它——当前 bar 刚创的新高本身不作为自己的加仓依据）
+            prev_high = high_since_open
+            if opened and high_since_open is not None and close > high_since_open:
+                high_since_open = close
 
             macd_ok = dif is not None and dea is not None and dif > dea
             above = ma_slow is not None and close > ma_slow
@@ -335,6 +344,9 @@ class MomentumTStrategy(Strategy):
                     signals[i] = 1
                     tags[i] = "开仓"
                     opened, full = True, confirmed
+                    # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
+                    high_since_open = close
+                    last_add_idx = day_idx
                 continue
 
             # ---- 3) 试仓升级：确认升级后补到满配 ----
@@ -347,11 +359,16 @@ class MomentumTStrategy(Strategy):
                 continue
 
             # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
+            # P1 防同价：冷却期自开仓日起算，且要求当前价高于开仓以来的
+            # 最高收盘（新高须发生在建仓之后，而非入选时已成立的存量新高）；
+            # P2 最小有效量：预算不足总资产 ADD_MIN_BUDGET_PCT% 时跳过，
+            # 不消耗加仓次数与冷却期（防低 base_max 下金字塔衰减为无意义小单）
             if (full and breakout and adds_done < max_adds
                     and (day_idx - last_add_idx) >= add_cd and trend_ok
-                    and not pool_gate):
+                    and not pool_gate
+                    and prev_high is not None and close > prev_high):
                 budget = base_max * (add_scale ** (adds_done + 1))
-                if budget >= 1.0:
+                if budget >= mc.ADD_MIN_BUDGET_PCT:
                     signals[i] = 1
                     tags[i] = "加仓"
                     budgets[i] = budget
