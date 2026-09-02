@@ -135,6 +135,7 @@ class MomentumPick(BaseModel):
     above_ma: int = Field(default=60, ge=5, le=120)   # 站上均线锚周期（60/20 对齐两策略）
     with_accel: bool = False                          # 动量分叠加加速度项（对齐 momentum_slot）
     min_rps: Optional[float] = Field(default=None, ge=0, le=100)  # 全市场分位下限
+    rank_key: str = "score"   # 排序键（RANK_KEYS）：score/accel/fresh/mom_gap
 
 
 class PickFilters(BaseModel):
@@ -275,6 +276,9 @@ def _pick_momentum(req: PickRequest, mo: MomentumPick) -> dict:
     """
     from ..engine import momentum_core as mc
 
+    if mo.rank_key not in mc.RANK_KEYS:
+        raise HTTPException(status_code=400,
+                            detail=f"rank_key（排序键）需为 {sorted(mc.RANK_KEYS)} 之一")
     if not req.as_of:
         raise HTTPException(status_code=400,
                             detail="动量预筛需先确认回测时间范围（as_of=回测开始日）")
@@ -305,7 +309,8 @@ def _pick_momentum(req: PickRequest, mo: MomentumPick) -> dict:
     if as_of is None:
         raise HTTPException(status_code=400,
                             detail=f"基准日缺失：{req.as_of} 之前无行情数据，请先更新日线")
-    picked = mc.select_top(mf, as_of, mo.top_x, mo.min_rps, domain=domain)
+    picked = mc.select_top(mf, as_of, mo.top_x, mo.min_rps, domain=domain,
+                           rank_key=mo.rank_key)
     basic = store.read_stock_basic()
     name_map = ({r["code"]: r["name"] for r in basic.select(["code", "name"]).to_dicts()}
                 if basic is not None and basic.height else {})

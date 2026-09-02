@@ -79,6 +79,7 @@ interface BacktestFormValues {
   auto_min_rps?: number
   auto_index?: string[]
   auto_boards?: string[]
+  auto_rank_key?: string
   // ---- 池级趋势开关（POOL_GATE）----
   pool_gate?: boolean
   pool_gate_enter_th?: number
@@ -235,6 +236,7 @@ export default function BacktestList() {
       auto_min_rps: values.auto_min_rps ?? null,
       auto_index: values.auto_index ?? [],
       auto_boards: values.auto_boards ?? [],
+      auto_rank_key: values.auto_rank_key ?? 'score',
       pool_gate: values.pool_gate ?? false,
       pool_gate_enter_th: values.pool_gate_enter_th ?? 0.15,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
@@ -280,6 +282,7 @@ export default function BacktestList() {
         ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {}),
         auto_index: cfg.auto_index ?? [],
         auto_boards: cfg.auto_boards ?? [],
+        auto_rank_key: cfg.auto_rank_key ?? 'score',
         pool_gate: cfg.pool_gate ?? false,
         ...(cfg.pool_gate_enter_th != null ? { pool_gate_enter_th: cfg.pool_gate_enter_th } : {})
       }
@@ -576,6 +579,7 @@ export default function BacktestList() {
             auto_with_accel: false,
             auto_index: [],
             auto_boards: [],
+            auto_rank_key: 'score',
             pool_gate: false,
             pool_gate_enter_th: 0.15,
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
@@ -676,6 +680,20 @@ export default function BacktestList() {
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>RPS≥：</Typography.Text>
                     <Form.Item name="auto_min_rps" noStyle>
                       <InputNumber size="small" min={0} max={100} placeholder="不限" style={{ width: 70 }} />
+                    </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>排序键：</Typography.Text>
+                    <Form.Item name="auto_rank_key" noStyle>
+                      <Select
+                        size="small" style={{ width: 108 }}
+                        options={[
+                          { value: 'score', label: '累计强度' },
+                          { value: 'accel', label: '加速度' },
+                          { value: 'fresh', label: '金叉新鲜' },
+                          { value: 'mom_gap', label: '短中差值' }
+                        ]}
+                      />
                     </Form.Item>
                   </Space>
                 </Space>

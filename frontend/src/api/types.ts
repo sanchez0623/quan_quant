@@ -117,6 +117,8 @@ export interface MomentumPickInput {
   with_accel: boolean
   /** 全市场 RPS 分位下限（0~100，null=不启用） */
   min_rps?: number | null
+  /** 排序键：score=累计强度 / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值 */
+  rank_key?: string
 }
 
 /** 动量预筛结果明细（带分数，展示"为什么选它"） */
@@ -235,6 +237,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_index?: string[]
   /** 候选域：板块并集（空=不限，与指数域取交集） */
   auto_boards?: string[]
+  /** 重选排序键：score=累计强度 / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值 */
+  auto_rank_key?: string
   /** 池级趋势开关：池内动量健康度过低时抑制开仓/加仓 */
   pool_gate?: boolean
   /** gate 触发阈值（健康度占比），恢复线=×2 内置 */

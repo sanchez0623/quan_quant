@@ -7,6 +7,7 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 ## 1. 认证
 
 ### POST /api/auth/login
+
 请求：`{"username": "admin", "password": "..."}`
 响应：`{"token": "<jwt>", "expires_in": 86400, "username": "admin"}`
 错误：401 `{"detail": "用户名或密码错误"}`
@@ -14,7 +15,9 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 ## 2. 策略
 
 ### GET /api/strategies
+
 响应：
+
 ```json
 [
   {
@@ -30,20 +33,25 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
   }
 ]
 ```
-param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/min/max/step/choices/unit，均可选（除 key/label/type/default）。
+
+param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/min/max/step/choices/unit，均可选（除 key/label/type/default）。
 
 ## 3. 股票查询
 
-### GET /api/stocks?keyword=600&limit=20
+### GET /api/stocks?keyword=600\&limit=20
+
 响应：`[{"code": "600000", "name": "浦发银行", "st": false}]`
-（本地 stock_basic.parquet 模糊匹配 code 或 name）
+（本地 stock\_basic.parquet 模糊匹配 code 或 name）
 
 ### GET /api/stocks/pick-options
+
 条件选股维度选项：`{"indices":[{"key","name","count"}],"industry_tree":[申万L1→L2→L3树(带count)],
 "boards":[{"key":"main|chinext|star|bse","name","count"}],"industry_snapshot","index_snapshot"}`
 
 ### POST /api/stocks/pick
+
 条件选股（即时查询）：静态过滤 + 随机抽样，或动量趋势预筛。
+
 ```json
 {
   "filters": {
@@ -51,21 +59,26 @@ param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/mi
     "industry_l1": [], "industry_l2": [], "industry_l3": [],
     "boards": ["chinext"],
     "exclude_st": true,
-    "momentum": {"top_x": 30, "above_ma": 60, "with_accel": false, "min_rps": null}
+    "momentum": {"top_x": 30, "above_ma": 60, "with_accel": false, "min_rps": null, "rank_key": "score"}
   },
   "random": {"n": 20, "seed": 42},
   "as_of": "2025-01-01"
 }
 ```
+
 - `index`：单字符串（历史兼容）或数组；**数组=并集**（沪深300+中证500 直接多选）。
-- `momentum` 传入即走动量趋势预筛（MOMENTUM_CORE 与策略同口径：门槛[金叉+站上均线+动量为正+崩溃保护内置]→全市场RPS→按分排序→取前x）；此时 `as_of` 必填（传回测开始日，后端取**严格早于它的最近交易日**为基准日，无后视镜），RPS 恒为全市场口径，指数/行业/板块作为候选域叠加。
+
+- `momentum` 传入即走动量趋势预筛（MOMENTUM\_CORE 与策略同口径：门槛\[金叉+站上均线+动量为正+崩溃保护内置]→全市场RPS→按分排序→取前x）；此时 `as_of` 必填（传回测开始日，后端取**严格早于它的最近交易日**为基准日，无后视镜），RPS 恒为全市场口径，指数/行业/板块作为候选域叠加。`rank_key`（排序键）∈ {score=累计强度(默认) / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值}：门槛不变，只改过门槛者的座次，非法值 400。
+
 - 响应：`{"codes","name_map","total_matched","total_picked","seed_used","truncated","meta", "items"?}`；
   动量预筛额外返回 `items:[{rank,code,name,score,rps}]`（按 rank 排序的分数明细），meta 带 `snapshot_date`（实际基准日）与 `momentum` 参数。
 
 ## 4. 回测任务
 
 ### POST /api/backtests
+
 请求：
+
 ```json
 {
   "name": "测试回测",
@@ -93,6 +106,7 @@ param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/mi
   "auto_min_rps": null,
   "auto_index": [],
   "auto_boards": [],
+  "auto_rank_key": "score",
   "start_date": "2023-01-01",
   "end_date": "2024-12-31",
   "period": "daily",
@@ -105,35 +119,48 @@ param_schema 条目字段：key/label/type(int|float|str|bool|select)/default/mi
   "exclude_st": true
 }
 ```
-risk_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null`/缺省时自动对齐策略参数 `max_t_times`（策略无该参数则兜底 4）。响应：`{"task_id": "bt_xxx", "status": "pending"}`
 
-动态选股（DYNAMIC_SELECT，仅 momentum_t/momentum_slot）：
+risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null`/缺省时自动对齐策略参数 `max_t_times`（策略无该参数则兜底 4）。响应：`{"task_id": "bt_xxx", "status": "pending"}`
+
+动态选股（DYNAMIC\_SELECT，仅 momentum\_t/momentum\_slot）：
+
 - `universe_auto=true` 时 `universe` 必须留空（校验 400）：每段池子由动量趋势预筛自动生成——基准日=严格早于段首的最近交易日（无后视镜 T-1）；
+
 - **滚动重选**：全空仓持续 `auto_idle_days` 个交易日 → 以触发日收盘为基准重筛，旧池退役、新池次日接管；全市场（候选域内）无票过门槛 → 空仓现金推进，绝不硬买；
+
 - 候选域：`auto_index`（指数成分**并集**，sz50/hs300/zz500/csi800）∩ `auto_boards`（板块并集 main/chinext/star/bse），均空=全市场剔ST/退市；域内无票则初始池报错、中途无票则空池等待（不回退全市场）；
-- `auto_above_ma`=站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot）；`auto_with_accel`=动量分叠加加速度项（对齐 momentum_slot）；`auto_min_rps`=全市场 RPS 分位下限（0~100，null 不启用）。
+
+- `auto_above_ma`=站上均线锚周期（60 对齐 momentum\_t / 20 对齐 momentum\_slot）；`auto_with_accel`=动量分叠加加速度项（对齐 momentum\_slot）；`auto_min_rps`=全市场 RPS 分位下限（0\~100，null 不启用）；`auto_rank_key`（重选排序键）∈ {score/accel/fresh/mom\_gap}，语义与选股器 `momentum.rank_key` 相同（score=累计强度默认 / accel=加速度 / fresh=金叉新鲜度 / mom\_gap=短中差值），用于让动态重选偏向「刚开始涨」的票（门槛不变，只改座次）。
 
 ### GET /api/backtests
+
 响应：`[{"task_id","name","status(pending|running|success|failed)","created_at","strategy_id","period","config(完整回测配置,供存为模板)","error}]`（倒序）
 
 ### GET /api/backtests/templates
+
 响应：`[{"id","name","config(BacktestRequest 同构)","created_at","updated_at"}]`（当前用户私有，倒序）
 
 ### POST /api/backtests/templates
-请求：`{"name":"我的标准配置","config":{...BacktestRequest 同构...}}`
-响应：`{"id":1,"status":"ok"}`（config 缺 strategy_id 时 400）
 
-### DELETE /api/backtests/templates/{template_id}
+请求：`{"name":"我的标准配置","config":{...BacktestRequest 同构...}}`
+响应：`{"id":1,"status":"ok"}`（config 缺 strategy\_id 时 400）
+
+### DELETE /api/backtests/templates/{template\_id}
+
 响应：`{"status":"ok"}`（非属主 404）
 
-### GET /api/backtests/{task_id}/status
+### GET /api/backtests/{task\_id}/status
+
 响应：`{"task_id","status","progress": 0~100,"message":"回测中: 600000","error": null}`
 
-### WebSocket /ws/tasks/{task_id}
+### WebSocket /ws/tasks/{task\_id}
+
 推送消息（每0.5s有变化才推）：`{"status":"running","progress":45,"message":"..."}`，结束时推 `{"status":"success","progress":100}` 后关闭。
 
-### GET /api/backtests/{task_id}/report
+### GET /api/backtests/{task\_id}/report
+
 响应（success 状态才有完整数据，否则 400/404）：
+
 ```json
 {
   "task_id": "bt_xxx",
@@ -164,15 +191,23 @@ risk_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null`
   "auto_segments": []
 }
 ```
-trade_log 的 type 枚举：`开仓/加仓/减仓/做T/止损/止盈/清仓`；side：`buy/sell`；平仓记录 pnl 有值（该笔平仓对应持仓的实现盈亏），开仓记录 pnl=null。
-- `t_mode`：做T交易携带机制标记（grid/discipline/time/off，T_REFACTOR 配对口径）；
-- `seg`：动态选股段号（universe_auto 分段滚动重选时标记归属段，静态池回测为 null）；
-- `engine_version`：`t_refactor_v1` = t_pnl 配对口径（闭环价差+期末未闭环浮亏计提），与旧版结果不可比；
-- `t_open_debts`：期末未闭环做T债务（mark-to-market 浮亏已计提进 t_pnl）；`t_reject_events`：追回/回补被拒事件（审计可见，不进 trade_log）；
+
+trade\_log 的 type 枚举：`开仓/加仓/减仓/做T/止损/止盈/清仓`；side：`buy/sell`；平仓记录 pnl 有值（该笔平仓对应持仓的实现盈亏），开仓记录 pnl=null。
+
+- `t_mode`：做T交易携带机制标记（grid/discipline/time/off，T\_REFACTOR 配对口径）；
+
+- `seg`：动态选股段号（universe\_auto 分段滚动重选时标记归属段，静态池回测为 null）；
+
+- `engine_version`：`t_refactor_v1` = t\_pnl 配对口径（闭环价差+期末未闭环浮亏计提），与旧版结果不可比；
+
+- `t_open_debts`：期末未闭环做T债务（mark-to-market 浮亏已计提进 t\_pnl）；`t_reject_events`：追回/回补被拒事件（审计可见，不进 trade\_log）；
+
 - `universe_auto=true` 时 `auto_segments` 非空：`[{seg,start,end,as_of,universe,picked:[{rank,code,name,score,rps}],trigger_day?,trigger_reason?,next_picked?}]`（每段池子来历与重选触发点）。
 
-### GET /api/backtests/{task_id}/kline?code=600000
+### GET /api/backtests/{task\_id}/kline?code=600000
+
 响应：
+
 ```json
 {
   "code": "600000", "name": "浦发银行",
@@ -180,12 +215,15 @@ trade_log 的 type 枚举：`开仓/加仓/减仓/做T/止损/止盈/清仓`；s
   "marks": [{"time":"2023-01-05","price":10.5,"side":"buy","type":"开仓","trade_id":1}]
 }
 ```
+
 bars 的 date 格式：daily 为 `YYYY-MM-DD`，minute5 为 `YYYY-MM-DD HH:mm`。
 
 ## 5. 参数寻优（Optuna）
 
 ### POST /api/optimize
+
 请求：
+
 ```json
 {
   "name": "寻优1",
@@ -198,10 +236,12 @@ bars 的 date 格式：daily 为 `YYYY-MM-DD`，minute5 为 `YYYY-MM-DD HH:mm`�
   "metric": "annual_return"
 }
 ```
+
 响应：`{"task_id": "opt_xxx", "status": "pending"}`
-metric 可选：annual_return / sharpe / calmar / total_return（默认 annual_return）。
+metric 可选：annual\_return / sharpe / calmar / total\_return（默认 annual\_return）。
 
 **分组坐标轮换格式（推荐，方案A）**：传 `groups` 时替代 `param_space` 平铺——
+
 ```json
 {
   "name": "分层寻优",
@@ -216,21 +256,30 @@ metric 可选：annual_return / sharpe / calmar / total_return（默认 annual_r
                  "variance_penalty": 0.5, "dd_floor": -0.35}
 }
 ```
+
 - 每轮只搜一组参数（其它组固定当前最优）；`objective.n_windows` 把样本内切窗评估（score = 均值 − λ×跨窗std，任一窗回撤击穿 `dd_floor` 重罚），防单窗口过拟合；
-- 总试验预算 = Σ每组 n_trials × rounds，上限 2000；
+
+- 总试验预算 = Σ每组 n\_trials × rounds，上限 2000；
+
 - **约束**：`backtest_config.universe_auto` 必须为 false（动态选股池由引擎运行时生成，寻优依赖静态池；前端选模板时会自动把动态池固化为原回测各段实际交易股票的并集）；
+
 - 执行模型（P0-3/P1-3）：每批 trial（默认 5 个）在全新子进程中执行，批结束进程退出由 OS 回收内存（防任务内 OOM）；批内被系统杀死自动减半重试；单 trial 回测异常按 FAIL 记账继续，不放大为任务失败；
+
 - **trial 并行度**：env `OPTIMIZE_PARALLEL_TRIALS`（默认 1=串行批处理；设 2/3 时每组 trial 由多个子进程波次并发执行，注意 并行度×单trial内存峰值 需留足物理内存）。
 
-### POST /api/optimize/{task_id}/resume
-断点续传：以同一 task_id 重新提交（Optuna load_if_exists 载入既有 trial，只补跑剩余）。进程中断/死机后任务停在 running/pending/failed 时使用。
+### POST /api/optimize/{task\_id}/resume
+
+断点续传：以同一 task\_id 重新提交（Optuna load\_if\_exists 载入既有 trial，只补跑剩余）。进程中断/死机后任务停在 running/pending/failed 时使用。
 响应：`{"task_id": "opt_xxx", "status": "pending"}`
 
 ### GET /api/optimize
+
 寻优任务列表：`[{"task_id","name","status","created_at","best_value","best_params","n_trials"}]`
 
-### GET /api/optimize/{task_id}
+### GET /api/optimize/{task\_id}
+
 响应：
+
 ```json
 {
   "task_id": "opt_xxx", "status": "success", "progress": 100,
@@ -247,12 +296,15 @@ metric 可选：annual_return / sharpe / calmar / total_return（默认 annual_r
   "error": null
 }
 ```
-（status 为 running 时 trials 为已完成部分；param_importance/oos_validation 完成后才有值）
+
+（status 为 running 时 trials 为已完成部分；param\_importance/oos\_validation 完成后才有值）
 
 ## 6. AI 分析（多 LLM）
 
 ### GET /api/ai/profiles
+
 响应：
+
 ```json
 {
   "profiles": [
@@ -263,31 +315,39 @@ metric 可选：annual_return / sharpe / calmar / total_return（默认 annual_r
   "usage": {"total_tokens": 12345, "total_calls": 10, "by_profile": {"main": {"tokens": 12000, "calls": 9}}}
 }
 ```
+
 available = 对应环境变量已配置。
 
 ### DELETE /api/ai/usage
-响应：`{"status":"ok"}`（清空 llm_usage 用量统计，如清除测试脏数据）
+
+响应：`{"status":"ok"}`（清空 llm\_usage 用量统计，如清除测试脏数据）
 
 ### POST /api/ai/analyze
+
 请求：`{"backtest_id": "bt_xxx", "profile": "main"}`（profile 可选，默认 default）
 响应（异步任务）：`{"task_id": "ai_xxx", "status": "pending"}`
-进度同样走 GET /api/backtests/{task_id}/status 与 WS /ws/tasks/{task_id}（status 枚举一致）。
+进度同样走 GET /api/backtests/{task\_id}/status 与 WS /ws/tasks/{task\_id}（status 枚举一致）。
 
-### GET /api/ai/analyses?backtest_id=bt_xxx
+### GET /api/ai/analyses?backtest\_id=bt\_xxx
+
 响应：
+
 ```json
 [{"task_id":"ai_xxx","backtest_id":"bt_xxx","profile":"main","model":"...",
   "status":"success","created_at":"...",
   "content": "## 策略诊断\n...(markdown)","tokens_used": 3500, "elapsed": 12.3, "error": null,
   "suggestions": {"params": {"fast": 10}, "risk_config": {"stop_loss_pct": 12}}}]
 ```
-suggestions 为 LLM 输出末尾 ```json 块解析出的结构化参数建议（已过滤非法字段；无可调参数时为 null），
+
+suggestions 为 LLM 输出末尾 \`\`\`json 块解析出的结构化参数建议（已过滤非法字段；无可调参数时为 null），
 前端用于「应用建议并创建下一轮回测」：与原回测 config 合并后预填回测表单。
 
 ## 7. 数据管理
 
 ### GET /api/data/status
+
 响应：
+
 ```json
 {
   "daily": {"rows": 6600000, "stocks": 5400, "start": "2021-01-04", "end": "2025-12-30", "updated_at": "..."},
@@ -302,10 +362,12 @@ suggestions 为 LLM 输出末尾 ```json 块解析出的结构化参数建议（
 ```
 
 ### POST /api/data/update
+
 请求：`{"scope": "daily"}`（daily | minute5 | all，默认 daily）
 响应：`{"task_id": "data_xxx", "status": "pending"}`（异步任务，进度走同一 status/WS 通道）
 
 ### POST /api/data/demo
+
 请求：`{"stocks": ["600000","000001"], "days": 500}`（可选，有默认值）
 响应：`{"task_id": "data_xxx", "status": "pending"}`
 生成合成演示数据（随机游走+趋势），用于无真实数据源环境的联调与演示。幂等：重复调用覆盖生成。
@@ -313,10 +375,17 @@ suggestions 为 LLM 输出末尾 ```json 块解析出的结构化参数建议（
 ## 8. 通用约定
 
 - 所有日期字符串 `YYYY-MM-DD`；分钟时间 `YYYY-MM-DD HH:mm`。
-- 百分比字段：risk_config 与 param_schema 中用百分数值（8.0 表示 8%）；metrics 中收益率/回撤用小数（0.234 表示 23.4%）。
+
+- 百分比字段：risk\_config 与 param\_schema 中用百分数值（8.0 表示 8%）；metrics 中收益率/回撤用小数（0.234 表示 23.4%）。
+
 - 任务状态机：pending → running → success | failed | cancelled。
+
 - 响应自 commit b815760 起启用 GZip 压缩（>1KB 的 JSON 自动压缩，浏览器/客户端透明解压）。
+
 - 服务端 env 配置（`.env`）：`ENABLE_SCHEDULER`（每日16:10定时数据更新，默认0）、
-  `OPTIMIZE_PARALLEL_TRIALS`（寻优 trial 并行度，默认1；内存充足可设 2~3，并行度×单trial内存峰值需留足物理内存）。
+  `OPTIMIZE_PARALLEL_TRIALS`（寻优 trial 并行度，默认1；内存充足可设 2\~3，并行度×单trial内存峰值需留足物理内存）。
+
 - 进度接口对不存在任务返回 404。
+
 - WebSocket 连接：`ws://localhost:8000/ws/tasks/{task_id}`，无需 JWT（任务id本身是随机不可猜的）。
+

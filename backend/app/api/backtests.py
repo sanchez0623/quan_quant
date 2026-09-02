@@ -63,6 +63,7 @@ class BacktestRequest(BaseModel):
     auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
     auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
     auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）
+    auto_rank_key: str = "score"  # 重选排序键（RANK_KEYS）：score/accel/fresh/mom_gap
     # ---- 池级趋势开关（POOL_GATE，仅 momentum_t/momentum_slot）----
     pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
     pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
@@ -170,6 +171,11 @@ def validate_backtest_config(cfg: dict) -> dict:
         if min_rps is not None and (not isinstance(min_rps, (int, float))
                                     or not 0 <= float(min_rps) <= 100):
             raise HTTPException(status_code=400, detail="auto_min_rps 需为 0~100 的数值")
+        from ..engine.momentum_core import RANK_KEYS
+        rank_key = cfg.get("auto_rank_key")
+        if rank_key is not None and rank_key not in RANK_KEYS:
+            raise HTTPException(status_code=400,
+                                detail=f"auto_rank_key（排序键）需为 {sorted(RANK_KEYS)} 之一")
         from ..data.sources import INDEX_REGISTRY, INDEX_CSI800, BOARD_LABELS
         bad_idx = [k for k in (cfg.get("auto_index") or [])
                    if k not in {INDEX_CSI800, *INDEX_REGISTRY}]

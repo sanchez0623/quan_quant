@@ -58,6 +58,7 @@ DEFAULTS = {
     "auto_min_rps": None,      # 全市场 RPS 分位下限（0~100，None=不启用）
     "auto_index": [],          # 候选域：指数成分并集（sz50/hs300/zz500/csi800，空=不限）
     "auto_boards": [],         # 候选域：板块（main/chinext/star/bse，空=不限）；与指数域取交集
+    "auto_rank_key": "score",  # 排序键（RANK_KEYS）：score=累计强度/accel=加速度/fresh=金叉新鲜度/mom_gap=短中差值
     # ---- 池级趋势开关（POOL_GATE）：环境不适配时禁止开新仓 ----
     "pool_gate": False,        # 开关：池内动量健康度过低时抑制开仓/加仓（退出与做T照常）
     "pool_gate_enter_th": 0.15,  # 触发阈值：健康度（动量分为正占比）连续2日低于此值 -> 停开仓
@@ -259,7 +260,9 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     as_of = mc.as_of_before(mf, start)
     if as_of is None:
         raise RuntimeError(f"无后视镜基准日缺失：{start} 之前无行情数据")
-    picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
+    rank_key = cfg.get("auto_rank_key") or "score"
+    picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain,
+                           rank_key=rank_key)
     if picked.height == 0:
         raise RuntimeError(f"初始池为空：基准日 {as_of} 候选域内无符合动量趋势条件的股票")
 
@@ -304,7 +307,8 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         info["end"] = trig
         info["trigger_day"] = trig
         info["trigger_reason"] = f"全空仓持续{idle_n}个交易日"
-        picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
+        picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain,
+                               rank_key=rank_key)
         info["next_picked"] = _picked_rows(picked, data_dir)
         seg_infos.append(info)
         nxt = mc.next_after(mf, trig)
@@ -312,7 +316,8 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
             break
         if picked.height == 0:
             # 空池：现金推进到下一个能选出票的交易日（或回测结束）
-            resume = _next_pickable_day(mf, nxt, end, top_x, min_rps, domain)
+            resume = _next_pickable_day(mf, nxt, end, top_x, min_rps, domain,
+                                        rank_key=rank_key)
             _fill_idle(acc, mf, nxt, resume, carry_cash,
                        float(carry_w.get("total") or 0.0))
             if resume is None:
@@ -474,14 +479,16 @@ def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
 
 
 def _next_pickable_day(mf, from_day: str, end: str, top_x: int,
-                       min_rps, domain: Optional[set] = None) -> Optional[str]:
+                       min_rps, domain: Optional[set] = None,
+                       rank_key: str = "score") -> Optional[str]:
     """from_day 起第一个能选出票的交易日（空池段的恢复日）；找不到返回 None"""
     for d in mf.calendar:
         if d < from_day:
             continue
         if d > end:
             return None
-        if mc.select_top(mf, d, top_x, min_rps, domain=domain).height:
+        if mc.select_top(mf, d, top_x, min_rps, domain=domain,
+                         rank_key=rank_key).height:
             return d
     return None
 

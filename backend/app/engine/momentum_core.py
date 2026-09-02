@@ -39,7 +39,23 @@ DEFAULT_PICK_PARAMS = {
 }
 
 _PICK_SCHEMA = {"rank": pl.UInt32, "code": pl.Utf8,
-                "score": pl.Float64, "rps": pl.Float64}
+                "score": pl.Float64, "rps": pl.Float64,
+                "mom_gap": pl.Float64, "accel": pl.Float64,
+                "cross_days": pl.UInt32}
+
+
+# ------------------------------------------------------------------
+# 启动新鲜度排序键（RANK_KEY）：select_top 的座次规则。
+# 现状 score = 累计综合动量分，选「过去最强」；新鲜度键选「刚启动」——
+# 门槛（金叉+站上均线+分数为正）不变，只改过门槛者的排序。
+# 所有键的次级排序均为 score 降序（同新鲜度下选强的）。
+# ------------------------------------------------------------------
+RANK_KEYS: dict[str, list[tuple[str, bool]]] = {
+    "score":   [("score", True)],
+    "accel":   [("accel", True), ("score", True)],
+    "fresh":   [("cross_days", False), ("score", True)],
+    "mom_gap": [("mom_gap", True), ("score", True)],
+}
 
 
 def pick_params(above_ma: int = 60, with_accel: bool = False) -> dict:
@@ -109,11 +125,15 @@ def daily_feature_core(daily: pl.DataFrame, p: dict,
     mom_s_expr = _risk_adj(mom_s)
     mom_m_expr = _risk_adj(mom_m)
     mom_l_expr = _risk_adj(mom_l)
+    # 启动新鲜度度量（RANK_KEYS 排序键用，独立于 with_accel 开关恒定输出）：
+    # mom_gap = 短窗-中窗原始差值；accel = 正向部分。刚启动的票短窗转正而中窗仍低
+    # （gap 大），涨了很久的票短中双高、差值收敛 -> 这两个键天然偏向「加速初期」
+    mom_gap_expr = mom_s_expr - mom_m_expr
+    accel_expr = mom_gap_expr.clip(lower_bound=0.0)
     if with_accel:
         # 加速度项：短周期跑赢中周期 = 处于加速段（启动期），仅取正向
-        accel = (mom_s_expr - mom_m_expr).clip(lower_bound=0.0)
         score_expr = (w_s * mom_s_expr + w_m * mom_m_expr + w_l * mom_l_expr
-                      + float(p.get("w_accel", 0.3)) * accel)
+                      + float(p.get("w_accel", 0.3)) * accel_expr)
     else:
         score_expr = w_s * mom_s_expr + w_m * mom_m_expr + w_l * mom_l_expr
     # σ自适应崩溃保护：近5日涨幅 > crash_sigma × 自身σ√5 -> 动量分作废不入榜
@@ -130,6 +150,8 @@ def daily_feature_core(daily: pl.DataFrame, p: dict,
           .then((pl.col("d_close") - pl.col(anchor_name)) / pl.col("d_atr"))
           .otherwise(None).alias("bias"),
         score_expr.alias("score"),
+        mom_gap_expr.alias("mom_gap"),
+        accel_expr.alias("accel"),
         ret5.alias("ret5"),
         vol5.alias("vol5"),
     ])
@@ -157,11 +179,26 @@ def daily_feature_core(daily: pl.DataFrame, p: dict,
          .rolling_max(brk_n, **_rolling_params(1)).shift(1)).alias("breakout"),
     ])
     # 交易日序号（冷却期计算用）
+    daily = daily.with_row_index("day_idx")
+    # 金叉新鲜度 cross_days：MACD 柱状图(dif-dea)最近一次由负转正以来的交易日数。
+    # 数值小 = 刚金叉 = 启动初期；窗口起点已处于金叉状态（无翻转记录）或尚未金叉 -> None
+    daily = daily.with_columns(
+        (pl.col("dif") - pl.col("dea")).alias("_hist"))
+    daily = daily.with_columns(
+        pl.when((pl.col("_hist") > 0)
+                & (pl.col("_hist").shift(1) <= 0))
+          .then(pl.col("day_idx"))
+          .otherwise(None).forward_fill().alias("_cross_idx"))
+    daily = daily.with_columns(
+        pl.when(pl.col("_cross_idx").is_not_null())
+          .then(pl.col("day_idx") - pl.col("_cross_idx"))
+          .otherwise(None).alias("cross_days"))
+    daily = daily.drop("_hist", "_cross_idx")
     cols = ["day", "day_idx", "dif", "dea", anchor_name, "slope", "atr_pct",
-            "bias", "score", "vol_pos", "breakout"]
+            "bias", "score", "mom_gap", "accel", "cross_days", "vol_pos", "breakout"]
     if keep_close:
         cols.append("d_close")  # 全市场路径：门槛「收盘 > 均线锚」需要后复权收盘价
-    return daily.with_row_index("day_idx").select(cols)
+    return daily.select(cols)
 
 
 def rank_days(feats: dict[str, pl.DataFrame], top_n: int) -> dict[str, set]:
@@ -252,7 +289,8 @@ def market_features(data_dir: Optional[str] = None,
              & (pl.col("d_close") > pl.col("ma_anchor"))).alias("above"),
         ])
         parts.append(f.with_columns(pl.lit(code).alias("code"))
-                     .select(["code", "day", "day_idx", "score", "macd_ok", "above"]))
+                     .select(["code", "day", "day_idx", "score", "mom_gap",
+                              "accel", "cross_days", "macd_ok", "above"]))
     if not parts:
         raise RuntimeError("特征窗口内无可用个股")
     feats = pl.concat(parts).sort(["code", "day"])
@@ -337,7 +375,8 @@ def _empty_pick() -> pl.DataFrame:
 
 def select_top(mf: MarketFeatures, as_of_day: str, top_x: int = 30,
                min_rps: Optional[float] = None,
-               domain: Optional[set] = None) -> pl.DataFrame:
+               domain: Optional[set] = None,
+               rank_key: str = "score") -> pl.DataFrame:
     """基准日「门槛 -> RPS -> 排序 -> 取前 x」选股（选股器与动态重选同一实现）。
 
     门槛（内置不可关）：MACD 金叉 + 收盘站上均线锚 + 动量分为正 + 崩溃保护未触发
@@ -345,7 +384,12 @@ def select_top(mf: MarketFeatures, as_of_day: str, top_x: int = 30,
     RPS：动量分在**当日全市场**非空分数中的分位（1=最强），min_rps ∈ [0,100] 为
     百分位下限（全市场口径，不受 domain 限定影响）。
     domain 提供时在门槛与排序前限定候选域（如指数成分/行业过滤后的命中集）。
-    返回列：rank(1起) / code / score / rps；无符合项返回空表。
+    rank_key：座次规则（RANK_KEYS）。score=累计综合分（默认，旧行为）；
+    accel=加速度优先；fresh=金叉新鲜度（cross_days 升序，越近金叉越靠前，
+    无金叉记录 null 沉底）；mom_gap=短中差值。非法值回退 score。
+    门槛不变，只改过门槛者的座次。
+    返回列：rank(1起) / code / score / rps（+ 本次排序用到的特征键值列）；
+    无符合项返回空表。
 
     无后视镜：as_of_day 的行只含截至当日收盘的信息，调用方须在次日才据此交易。
     """
@@ -363,7 +407,14 @@ def select_top(mf: MarketFeatures, as_of_day: str, top_x: int = 30,
         d = d.filter(pl.col("code").is_in(list(domain)))
     if d.height == 0:
         return _empty_pick()
-    return (d.sort(["score", "code"], descending=[True, False])
+    # 座次规则：RANK_KEYS 参数化（非法 rank_key 回退 score 旧行为）。
+    # 末位固定 code 升序保证并列时输出确定；nulls_last 让 cross_days=null
+    # （无金叉记录）在 fresh 键下沉底而非被 NaN 排序规则误排
+    keys = RANK_KEYS.get(rank_key, RANK_KEYS["score"])
+    by = [k for k, _ in keys] + ["code"]
+    desc = [dd for _, dd in keys] + [False]
+    return (d.sort(by, descending=desc, nulls_last=True)
              .head(max(1, int(top_x)))
              .with_row_index("rank", offset=1)
-             .select(["rank", "code", "score", "rps"]))
+             .select(["rank", "code", "score", "rps"]
+                     + [k for k, _ in keys if k != "score"]))

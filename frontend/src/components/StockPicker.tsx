@@ -99,6 +99,7 @@ export default function StockPicker({
   const [moAboveMa, setMoAboveMa] = useState<number>(60)
   const [moAccel, setMoAccel] = useState(false)
   const [moMinRps, setMoMinRps] = useState<number | undefined>(undefined)
+  const [moRankKey, setMoRankKey] = useState<string>('score')
   // 已应用池子的名称映射（供 Tag 展示；外部载入时按需回填）
   const [nameMap, setNameMap] = useState<Record<string, string>>({})
 
@@ -240,7 +241,7 @@ export default function StockPicker({
             index,
             boards,
             exclude_st: excludeSt,
-            momentum: { top_x: moTopX, above_ma: moAboveMa, with_accel: moAccel, min_rps: moMinRps ?? null }
+            momentum: { top_x: moTopX, above_ma: moAboveMa, with_accel: moAccel, min_rps: moMinRps ?? null, rank_key: moRankKey }
           },
           random: null,
           as_of: startDate ?? null
@@ -424,6 +425,19 @@ export default function StockPicker({
                     size="small" min={0} max={100} value={moMinRps}
                     onChange={(v) => setMoMinRps(v ?? undefined)} placeholder="不限"
                     style={{ width: 70 }} disabled={disabled}
+                  />
+                </Space>
+                <Space size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>排序键：</Typography.Text>
+                  <Select
+                    size="small" value={moRankKey} onChange={setMoRankKey} style={{ width: 108 }}
+                    disabled={disabled}
+                    options={[
+                      { value: 'score', label: '累计强度' },
+                      { value: 'accel', label: '加速度' },
+                      { value: 'fresh', label: '金叉新鲜' },
+                      { value: 'mom_gap', label: '短中差值' }
+                    ]}
                   />
                 </Space>
               </Space>
