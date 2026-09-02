@@ -128,7 +128,13 @@ export default function BacktestResult() {
                 {
                   key: 'equity',
                   label: '资金曲线',
-                  children: <EquityChart data={report.equity_curve} />
+                  children: (
+                    <EquityChart
+                      data={report.equity_curve}
+                      benchmark={report.benchmark?.curve}
+                      benchmarkName={report.benchmark?.name}
+                    />
+                  )
                 },
                 { key: 'metrics', label: '统计报告', children: <MetricsTab report={report} /> },
                 {

@@ -80,6 +80,7 @@ interface BacktestFormValues {
   auto_index?: string[]
   auto_boards?: string[]
   auto_rank_key?: string
+  benchmark?: string
   // ---- 池级趋势开关（POOL_GATE）----
   pool_gate?: boolean
   pool_gate_enter_th?: number
@@ -237,6 +238,7 @@ export default function BacktestList() {
       auto_index: values.auto_index ?? [],
       auto_boards: values.auto_boards ?? [],
       auto_rank_key: values.auto_rank_key ?? 'score',
+      benchmark: values.benchmark ?? '000905',
       pool_gate: values.pool_gate ?? false,
       pool_gate_enter_th: values.pool_gate_enter_th ?? 0.15,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
@@ -283,6 +285,7 @@ export default function BacktestList() {
         auto_index: cfg.auto_index ?? [],
         auto_boards: cfg.auto_boards ?? [],
         auto_rank_key: cfg.auto_rank_key ?? 'score',
+        ...(cfg.benchmark != null ? { benchmark: cfg.benchmark } : {}),
         pool_gate: cfg.pool_gate ?? false,
         ...(cfg.pool_gate_enter_th != null ? { pool_gate_enter_th: cfg.pool_gate_enter_th } : {})
       }
@@ -580,6 +583,7 @@ export default function BacktestList() {
             auto_index: [],
             auto_boards: [],
             auto_rank_key: 'score',
+            benchmark: '000905',
             pool_gate: false,
             pool_gate_enter_th: 0.15,
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
@@ -767,6 +771,20 @@ export default function BacktestList() {
                 rules={[{ required: true, message: '请输入初始资金' }]}
               >
                 <InputNumber min={1000} step={100000} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="benchmark"
+                label="基准指数"
+                extra="报告净值图叠加基准对比 + 超额收益指标"
+              >
+                <Select
+                  allowClear
+                  placeholder="默认中证500"
+                  options={[
+                    { value: '000905', label: '中证500' },
+                    { value: '000300', label: '沪深300' }
+                  ]}
+                />
               </Form.Item>
               <Form.Item
                 name="capital_preset"

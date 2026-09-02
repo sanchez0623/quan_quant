@@ -107,6 +107,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "auto_index": [],
   "auto_boards": [],
   "auto_rank_key": "score",
+  "benchmark": "000905",
   "start_date": "2023-01-01",
   "end_date": "2024-12-31",
   "period": "daily",
@@ -131,6 +132,12 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 - 候选域：`auto_index`（指数成分**并集**，sz50/hs300/zz500/csi800）∩ `auto_boards`（板块并集 main/chinext/star/bse），均空=全市场剔ST/退市；域内无票则初始池报错、中途无票则空池等待（不回退全市场）；
 
 - `auto_above_ma`=站上均线锚周期（60 对齐 momentum\_t / 20 对齐 momentum\_slot）；`auto_with_accel`=动量分叠加加速度项（对齐 momentum\_slot）；`auto_min_rps`=全市场 RPS 分位下限（0\~100，null 不启用）；`auto_rank_key`（重选排序键）∈ {score/accel/fresh/mom\_gap}，语义与选股器 `momentum.rank_key` 相同（score=累计强度默认 / accel=加速度 / fresh=金叉新鲜度 / mom\_gap=短中差值），用于让动态重选偏向「刚开始涨」的票（门槛不变，只改座次）。
+
+### 基准对比（BENCHMARK，全策略通用）
+
+- `benchmark`（基准指数）∈ {000905=中证500(默认) / 000300=沪深300}；需先在数据管理页拉取指数日线（scope=index\_daily，独立 index\_daily.parquet，与个股数据隔离）；
+- 报告生成时按 equity\_curve 日期对齐指数收盘（缺失日前值填充），归一化到初始资金：报告新增 `benchmark={index_key,name,curve:[{date,close,equity}],return}`；metrics 新增 `benchmark_return`（同期基准收益）与 `excess_return`（超额=策略−基准），均小数口径；
+- 指数数据缺失（未拉取/区间不覆盖）时**静默降级**：不写 benchmark、不加指标，回测不受影响。
 
 ### GET /api/backtests
 
@@ -363,7 +370,7 @@ suggestions 为 LLM 输出末尾 \`\`\`json 块解析出的结构化参数建议
 
 ### POST /api/data/update
 
-请求：`{"scope": "daily"}`（daily | minute5 | all，默认 daily）
+请求：`{"scope": "daily"}`（daily | minute5 | all | industry | stock\_basic | calendar | index\_daily，默认 daily；index\_daily=基准指数日线 000905/000300，独立存储）
 响应：`{"task_id": "data_xxx", "status": "pending"}`（异步任务，进度走同一 status/WS 通道）
 
 ### POST /api/data/demo

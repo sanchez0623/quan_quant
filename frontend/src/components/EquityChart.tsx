@@ -5,10 +5,14 @@ import EchartsReact from './EchartsReact'
 
 interface Props {
   data: EquityPoint[]
+  /** 基准指数净值（与 data 同日期轴、归一化到初始资金；缺省不显示） */
+  benchmark?: Array<{ date: string; equity: number }> | null
+  /** 基准名称（图例/悬浮提示） */
+  benchmarkName?: string
 }
 
-/** 资金曲线：上图 净值（面积）+ 仓位比例（右副轴，虚线），下图 回撤%（绿色面积向下），dataZoom 联动缩放 */
-export default function EquityChart({ data }: Props) {
+/** 资金曲线：上图 净值（面积）+ 基准指数（虚线）+ 仓位比例（右副轴，虚线），下图 回撤%（绿色面积向下），dataZoom 联动缩放 */
+export default function EquityChart({ data, benchmark, benchmarkName }: Props) {
   const option = useMemo(() => {
     const dates = data.map((d) => d.date)
     const equities = data.map((d) => d.equity)
@@ -17,10 +21,21 @@ export default function EquityChart({ data }: Props) {
     const posRatios = data.map((d) =>
       d.position_ratio === undefined || d.position_ratio === null ? null : +(d.position_ratio * 100).toFixed(1)
     )
+    const benchName = benchmarkName || '基准指数'
+    const benchData = benchmark && benchmark.length === data.length
+      ? benchmark.map((b) => b.equity)
+      : null
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
       axisPointer: { link: [{ xAxisIndex: 'all' }] },
-      legend: { data: hasPos ? ['账户权益', '仓位比例', '回撤%'] : ['账户权益', '回撤%'] },
+      legend: {
+        data: [
+          '账户权益',
+          ...(benchData ? [benchName] : []),
+          ...(hasPos ? ['仓位比例'] : []),
+          '回撤%'
+        ]
+      },
       grid: [
         { left: 80, right: 70, top: 40, height: '46%' },
         { left: 80, right: 70, top: '66%', height: '20%' }
@@ -68,6 +83,21 @@ export default function EquityChart({ data }: Props) {
           itemStyle: { color: '#1f4e79' },
           areaStyle: { color: 'rgba(31,78,121,0.12)' }
         },
+        ...(benchData
+          ? [
+              {
+                name: benchName,
+                type: 'line' as const,
+                xAxisIndex: 0,
+                yAxisIndex: 0,
+                data: benchData,
+                showSymbol: false,
+                connectNulls: true,
+                lineStyle: { type: 'dashed' as const, width: 1.5, color: '#8c8c8c' },
+                itemStyle: { color: '#8c8c8c' }
+              }
+            ]
+          : []),
         ...(hasPos
           ? [
               {
@@ -96,7 +126,7 @@ export default function EquityChart({ data }: Props) {
         }
       ]
     }
-  }, [data])
+  }, [data, benchmark, benchmarkName])
 
   if (!data || data.length === 0) {
     return <Empty description="暂无资金曲线数据" />

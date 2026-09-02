@@ -69,6 +69,34 @@ def read_daily(codes: Optional[list[str]] = None,
     return df if df.height else (df.clear() if codes else df)
 
 
+# ---------------- index_daily（基准指数日线，BENCHMARK） ----------------
+
+def write_index_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
+    d = data_root(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    _write_parquet_atomic(df, d / "index_daily.parquet")
+
+
+def read_index_daily(index_keys: Optional[list[str]] = None,
+                     data_dir: Optional[str] = None) -> Optional[pl.DataFrame]:
+    p = data_root(data_dir) / "index_daily.parquet"
+    if not p.exists():
+        return None
+    df = pl.read_parquet(p)
+    if index_keys:
+        df = df.filter(pl.col("index_key").is_in(index_keys))
+    return df if df.height else (df.clear() if index_keys else df)
+
+
+def parquet_stats_index_daily(data_dir: Optional[str] = None) -> Optional[dict]:
+    df = read_index_daily(None, data_dir)
+    if df is None or df.height == 0:
+        return None
+    return {"rows": int(df.height), "indexes": int(df["index_key"].n_unique()),
+            "start": str(df["date"].min()), "end": str(df["date"].max()),
+            "updated_at": _mtime(data_root(data_dir) / "index_daily.parquet")}
+
+
 # ---------------- minute5 ----------------
 
 def write_minute5(code: str, df: pl.DataFrame, data_dir: Optional[str] = None) -> None:

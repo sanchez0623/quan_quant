@@ -239,6 +239,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_boards?: string[]
   /** 重选排序键：score=累计强度 / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值 */
   auto_rank_key?: string
+  /** 基准指数：000905=中证500 / 000300=沪深300（报告净值图叠加 + 超额指标） */
+  benchmark?: string
   /** 池级趋势开关：池内动量健康度过低时抑制开仓/加仓 */
   pool_gate?: boolean
   /** gate 触发阈值（健康度占比），恢复线=×2 内置 */
@@ -335,6 +337,11 @@ export interface Metrics {
   shortfall_unrecovered?: number | null
   /** 后续月份追偿的历史缺口金额（发生过追偿时） */
   shortfall_recovered?: number | null
+  // ---- 基准对比（BENCHMARK，指数数据缺失时缺省） ----
+  /** 同期基准指数收益（小数口径） */
+  benchmark_return?: number | null
+  /** 超额收益 = total_return - benchmark_return */
+  excess_return?: number | null
 }
 
 export interface EquityPoint {
@@ -447,6 +454,16 @@ export interface BacktestReport {
   /** 动态选股：分段滚动重选段元信息 */
   universe_auto?: boolean
   auto_segments?: AutoSegmentInfo[]
+  /** 基准对比（BENCHMARK，指数数据缺失时缺省）：归一化到初始资金的指数净值 */
+  benchmark?: BenchmarkInfo
+}
+
+/** 基准指数对比（按 equity_curve 日期对齐，缺失日前值填充） */
+export interface BenchmarkInfo {
+  index_key: string
+  name: string
+  return: number
+  curve: Array<{ date: string; close: number; equity: number }>
 }
 
 // ---- 做T重构（T_REFACTOR） ----

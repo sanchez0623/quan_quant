@@ -3,6 +3,7 @@
 未安装时 available()=False，系统照常运行（可用合成演示数据）。
 注意：所有自建 httpx/requests session 一律 trust_env=False（设计文档 4.6）。
 """
+import json
 import threading
 import time
 from typing import Callable, Optional
@@ -40,6 +41,16 @@ class DataSource:
     def get_adj_factor(self, code: str) -> Optional[pl.DataFrame]:
         """返回列: code,date,adj_factor（后复权累计因子；可为事件级，由 updater 展开到每日）"""
         raise NotImplementedError
+
+    def get_index_daily(self, index_key: str, start: str, end: str) -> Optional[pl.DataFrame]:
+        """基准指数日线。返回列: index_key,date,open,high,low,close,volume,amount"""
+        return None
+
+
+# 基准指数（BENCHMARK）：回测报告对比用。指数代码不走 _bs_code 的个股规则
+# （000905 会被误判为深市），必须显式映射交易所前缀
+INDEX_DAILY_CODES = {"000905": "sh.000905", "000300": "sh.000300"}
+INDEX_DAILY_NAMES = {"000905": "中证500", "000300": "沪深300"}
 
 
 def _no_session_proxies():
@@ -313,6 +324,41 @@ class BaostockSource(DataSource):
             pl.lit(code).alias("code"),
         ]).filter(pl.col("close").is_not_null() & (pl.col("close") > 0))
         return df.select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
+
+    def get_index_daily(self, index_key: str, start: str, end: str):
+        if not self._ok:
+            return None
+        bs_code = INDEX_DAILY_CODES.get(index_key)
+        if bs_code is None:
+            return None
+
+        def _q():
+            rs = self._bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=start, end_date=end, frequency="d", adjustflag="3")
+            rows = []
+            while rs.error_code == "0" and rs.next():
+                rows.append(rs.get_row_data())
+            return rs, rows
+
+        rows = self._run_query(_q)
+        if not rows:
+            return None
+        df = pl.DataFrame(rows, schema={"date": str, "open": str, "high": str,
+                                        "low": str, "close": str, "volume": str,
+                                        "amount": str}, orient="row")
+        df = df.with_columns([
+            pl.col("open").cast(pl.Float64, strict=False),
+            pl.col("high").cast(pl.Float64, strict=False),
+            pl.col("low").cast(pl.Float64, strict=False),
+            pl.col("close").cast(pl.Float64, strict=False),
+            pl.col("volume").cast(pl.Float64, strict=False),
+            pl.col("amount").cast(pl.Float64, strict=False),
+            pl.lit(index_key).alias("index_key"),
+        ]).filter(pl.col("close").is_not_null() & (pl.col("close") > 0))
+        return df.select(["index_key", "date", "open", "high", "low",
+                          "close", "volume", "amount"])
 
     def get_trade_dates(self, start: str = "1990-01-01",
                         end: str = "2099-12-31") -> Optional[pl.DataFrame]:
@@ -743,8 +789,237 @@ class MootdxSource(DataSource):
             return None
 
 
+class LixingerSource(DataSource):
+    """日线末备源（理杏仁开放 API cn/company/candlestick，按次计费）。
+
+    - 仅当 LIXINGER_API_KEY 配置且前三个源（baostock/akshare/mootdx）全部失败时才轮到，
+      放在 SOURCES 最末位以保护按次额度。
+    - 仅支持日K（理杏仁开放 API 无分钟K线）；type=ex_rights 不复权，与全库口径一致。
+    - 按次计费省次数纪律（用户要求）：**单次请求尽量覆盖大时间区间**（接口上限 10 年/次），
+      调用方严禁按天/按月碎拉；调试探针也必须用大区间，一次请求只为一个验证目标。
+    - health_check 只做本地 token 检查，不发真实请求（防止健康检查烧额度）。
+    - volume 单位官方文档未标注：拉取后按 amount/volume/close 比率中位数自适应校准股/手。
+    - get_adj_factor 暂不启用：接口返回的日级 backwardComplexFactor 基准口径未经实测校准，
+      直接并入会污染全库因子表；购买额度后实测校准（同码同日与 baostock backAdjustFactor 对比率）再开。
+    """
+    name = "lixinger"
+    role = "日线末备源(按次计费)"
+    _URL = "https://open.lixinger.com/api/cn/company/candlestick"
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    _last_ts = 0.0
+    _tl = threading.Lock()
+
+    def available(self) -> bool:
+        import os
+        return bool(os.environ.get("LIXINGER_API_KEY", "").strip())
+
+    def health_check(self, timeout: float = 10) -> bool:
+        return self.available()   # 本地检查：不消耗按次额度
+
+    @staticmethod
+    def _lx_code(code: str) -> Optional[str]:
+        """纯 6 位数字代码即理杏仁 stockCode（官方格式为裸数字，实测 2026-09-02 确认；
+        官方示例：样本信息API 返回 "stockCode": "600028"）。"""
+        code = _norm_code(code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+        return code
+
+    def _post(self, stock_code: str, start: str, end: str) -> Optional[list]:
+        import os
+        token = os.environ.get("LIXINGER_API_KEY", "").strip()
+        sess = _no_session_proxies()
+        if not token or sess is None:
+            return None
+        # 官方要求：Content-Type 必须 application/json；accept-encoding 必须含 gzip
+        # （不加 br：未装 brotli 时服务器真返回 br 会解压失败）
+        headers = {"User-Agent": self._UA, "Accept": "application/json",
+                   "Content-Type": "application/json",
+                   "Accept-Encoding": "gzip, deflate"}
+        payload = {"token": token, "stockCode": stock_code, "type": "ex_rights",
+                   "startDate": start, "endDate": end}
+        # 重试机制（官方建议）：429(限频)/5xx/网络异常 退避重试；业务层错误不重试
+        for attempt in range(3):
+            with self._tl:   # 节流：两次请求间隔 >=0.5s（远低于限频 36/s，按次计费再降速）
+                wait = 0.5 - (time.monotonic() - self._last_ts)
+                if wait > 0:
+                    time.sleep(wait)
+                self.__class__._last_ts = time.monotonic()
+            try:
+                r = sess.post(self._URL, json=payload, headers=headers, timeout=30)
+                if r.status_code == 429 or r.status_code >= 500:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                j = r.json()
+            except Exception:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            if not isinstance(j, dict) or j.get("code") != 1:
+                return None   # 理杏仁体系：code=1 成功；code=0 为错误（带 error 对象，不重试）
+            data = j.get("data")
+            return data if isinstance(data, list) and data else None
+        return None
+
+    def get_daily(self, code, start, end):
+        """日线（不复权）。返回列: code,date,open,high,low,close,volume,amount（股口径）"""
+        if not self.available():
+            return None
+        code = _norm_code(code)
+        sc = self._lx_code(code)
+        if sc is None:
+            return None
+        try:
+            rows = self._post(sc, start, end)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        try:
+            df = pl.DataFrame(rows)
+            need = {"date", "open", "high", "low", "close", "volume", "amount"}
+            if not need.issubset(set(df.columns)):
+                return None
+            df = df.with_columns([
+                pl.col("date").cast(pl.Utf8).str.slice(0, 10).alias("date"),
+                pl.col("open").cast(pl.Float64, strict=False),
+                pl.col("high").cast(pl.Float64, strict=False),
+                pl.col("low").cast(pl.Float64, strict=False),
+                pl.col("close").cast(pl.Float64, strict=False),
+                pl.col("volume").cast(pl.Float64, strict=False),
+                pl.col("amount").cast(pl.Float64, strict=False),
+                pl.lit(code).alias("code"),
+            ]).select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
+            df = df.filter(pl.col("close").is_not_null() & (pl.col("close") > 0)
+                           & pl.col("volume").is_not_null() & (pl.col("volume") > 0))
+            if not df.height:
+                return None
+            # volume 单位自适应：amount/volume/close 中位比率 ≈1 为股、≈100 为手（阈 30 分界）
+            ratios = (df.select((pl.col("amount") / pl.col("volume") / pl.col("close")).alias("r"))
+                      ["r"].drop_nulls())
+            med = ratios.median() if ratios.len() else 1.0
+            if med is not None and med > 30:   # 手 -> 股
+                df = df.with_columns((pl.col("volume") * 100).alias("volume"))
+            df = df.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+            return df if df.height else None
+        except Exception:
+            return None
+
+    def get_minute5(self, code, start, end):
+        """理杏仁开放 API 无分钟K线：恒 None。"""
+        return None
+
+    def get_adj_factor(self, code: str) -> Optional[pl.DataFrame]:
+        """暂不启用（见类 docstring）：待额度购买后与 baostock backAdjustFactor 校准再开。"""
+        return None
+
+
+class SinaSource(DataSource):
+    """分钟线末备源（新浪财经免费接口，无需 token）。
+
+    - GET CN_MarketData.getKLineData?symbol=sz000001&scale=5&ma=no&datalen=N；
+      返回 gbk 编码标准 JSON（day/open/high/low/close/volume，**无 amount**）。
+    - 深度上限约 5,049 根 ≈ 5 个月，不支持日期区间参数（只能从最新往回数），
+      因此**只适合补尾/当日数据**（当日 15:00 收盘 bar 即时可得，早于 baostock 晚间 EOD），
+      不做深历史；深历史仍走 baostock/mootdx。
+    - volume 实测=股（与库内日K逐日精确对照 1.0000）；频率宽松（0.2s×10 连发全成功），
+      仍加 0.15s 类级节流做礼貌客户端。
+    - amount 列补 null：回测引擎 BAR_KEEP_COLS 白名单不含 amount（runner.py），
+      缺失对回测零影响；保持 schema 完整以便增量合并。
+    """
+    name = "sina"
+    role = "分钟线末备源(补尾/当日)"
+    _URL = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            "CN_MarketData.getKLineData")
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    _MAX_DALEN = 5049
+    _last_ts = 0.0
+    _tl = threading.Lock()
+
+    def available(self) -> bool:
+        return True   # 公开接口，无 key；requests 为项目既有依赖
+
+    def health_check(self, timeout: float = 10) -> bool:
+        """真实轻量探测（免费接口无额度顾虑）：datalen=1，不走 5049 根的完整拉取。"""
+        try:
+            sess = _no_session_proxies()
+            if sess is None:
+                return False
+            r = sess.get(self._URL,
+                         params={"symbol": "sz000001", "scale": 5, "ma": "no", "datalen": 1},
+                         headers={"User-Agent": self._UA,
+                                  "Referer": "https://finance.sina.com.cn"},
+                         timeout=timeout)
+            if r.status_code != 200:
+                return False
+            rows = json.loads(r.content.decode("gbk", errors="replace"))
+            return isinstance(rows, list) and len(rows) >= 1
+        except Exception:
+            return False
+
+    def get_daily(self, code, start, end):
+        """不支持日线（免费同域日K深度也未验证）：恒 None，避免日线降级链轮到本源时报错。"""
+        return None
+
+    def get_minute5(self, code, start, end):
+        """5分钟K线（不复权，约 5 个月深度）。返回列: code,date,open,high,low,close,volume,amount(null)"""
+        code = _norm_code(code)
+        if not code or not code.isdigit() or len(code) != 6:
+            return None
+        if code.startswith("6"):
+            symbol = f"sh{code}"
+        elif code.startswith(("0", "3")):
+            symbol = f"sz{code}"
+        elif code.startswith(("4", "8", "9")):
+            symbol = f"bj{code}"
+        else:
+            return None
+        try:
+            sess = _no_session_proxies()
+            if sess is None:
+                return None
+            with self._tl:   # 0.15s 节流：礼貌客户端
+                wait = 0.15 - (time.monotonic() - self._last_ts)
+                if wait > 0:
+                    time.sleep(wait)
+                self.__class__._last_ts = time.monotonic()
+            r = sess.get(self._URL,
+                         params={"symbol": symbol, "scale": 5, "ma": "no",
+                                 "datalen": self._MAX_DALEN},
+                         headers={"User-Agent": self._UA,
+                                  "Referer": "https://finance.sina.com.cn"},
+                         timeout=20)
+            if r.status_code != 200:
+                return None
+            rows = json.loads(r.content.decode("gbk", errors="replace"))
+            if not isinstance(rows, list) or not rows:
+                return None
+            df = pl.DataFrame(rows)
+            need = {"day", "open", "high", "low", "close", "volume"}
+            if not need.issubset(set(df.columns)):
+                return None
+            df = df.with_columns([
+                pl.col("day").cast(pl.Utf8).str.slice(0, 16).alias("date"),
+                pl.col("open").cast(pl.Float64, strict=False),
+                pl.col("high").cast(pl.Float64, strict=False),
+                pl.col("low").cast(pl.Float64, strict=False),
+                pl.col("close").cast(pl.Float64, strict=False),
+                pl.col("volume").cast(pl.Float64, strict=False),
+                pl.lit(code).alias("code"),
+                pl.lit(None, dtype=pl.Float64).alias("amount"),
+            ]).select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
+            df = df.filter(pl.col("close").is_not_null() & (pl.col("close") > 0)
+                           & pl.col("volume").is_not_null())
+            df = df.filter((pl.col("date") >= start) & (pl.col("date") <= end + " 23:59"))
+            return df if df.height else None
+        except Exception:
+            return None
+
+
 # 源注册与健康状态缓存（未检查/未安装 → null）
-SOURCES: list[DataSource] = [BaostockSource(), AkshareSource(), MootdxSource()]
+SOURCES: list[DataSource] = [BaostockSource(), AkshareSource(), MootdxSource(),
+                             LixingerSource(), SinaSource()]
 _health_cache: dict[str, dict] = {}
 _health_lock = threading.Lock()
 _health_checking = False

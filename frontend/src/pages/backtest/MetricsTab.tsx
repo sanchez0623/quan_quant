@@ -96,6 +96,22 @@ export default function MetricsTab({ report }: Props) {
 
   const mainCards: Array<{ title: string; value: string; color?: string }> = [
     { title: '总收益率', value: fmtPct(m.total_return), color: pnlColor(m.total_return) },
+    ...(m.benchmark_return != null
+      ? [
+          {
+            title: `同期${report.benchmark?.name || '基准'}`,
+            value: fmtPct(m.benchmark_return),
+            color: pnlColor(m.benchmark_return)
+          },
+          ...(m.excess_return != null
+            ? [{
+                title: '超额收益',
+                value: fmtPct(m.excess_return),
+                color: pnlColor(m.excess_return)
+              }]
+            : [])
+        ]
+      : []),
     { title: '年化收益', value: fmtPct(m.annual_return), color: pnlColor(m.annual_return) },
     { title: '最大回撤', value: fmtPct(m.max_drawdown), color: pnlColor(m.max_drawdown) },
     { title: '夏普比率', value: fmtNum(m.sharpe) },

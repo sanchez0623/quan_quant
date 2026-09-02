@@ -64,6 +64,8 @@ class BacktestRequest(BaseModel):
     auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
     auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）
     auto_rank_key: str = "score"  # 重选排序键（RANK_KEYS）：score/accel/fresh/mom_gap
+    # ---- 基准对比（BENCHMARK）：报告净值图叠加基准指数 + 超额收益指标 ----
+    benchmark: str = "000905"     # 基准指数（000905=中证500 / 000300=沪深300）
     # ---- 池级趋势开关（POOL_GATE，仅 momentum_t/momentum_slot）----
     pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
     pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
@@ -186,6 +188,12 @@ def validate_backtest_config(cfg: dict) -> dict:
         if bad_boards:
             raise HTTPException(status_code=400,
                                 detail=f"auto_boards 含未知板块: {bad_boards}（合法: main/chinext/star/bse）")
+    # ---- 基准对比校验（BENCHMARK，全策略通用）----
+    from ..data.sources import INDEX_DAILY_CODES
+    bench = cfg.get("benchmark")
+    if bench is not None and bench not in INDEX_DAILY_CODES:
+        raise HTTPException(status_code=400,
+                            detail=f"benchmark（基准指数）需为 {sorted(INDEX_DAILY_CODES)} 之一")
     # ---- 池级趋势开关校验（POOL_GATE）----
     if cfg.get("pool_gate"):
         if cfg.get("strategy_id") not in ("momentum_t", "momentum_slot"):

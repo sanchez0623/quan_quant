@@ -369,6 +369,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     }
     if cfg.get("task_id"):
         report["task_id"] = cfg["task_id"]
+    _attach_benchmark(report, data_dir)
     return report
 
 
@@ -1208,7 +1209,53 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     }
     if cfg.get("task_id"):
         report["task_id"] = cfg["task_id"]
+    _attach_benchmark(report, data_dir)
     return report
+
+
+# ---------------- 基准对比（BENCHMARK） ----------------
+
+def _attach_benchmark(report: dict, data_dir: Optional[str]) -> None:
+    """按 equity_curve 日期对齐基准指数收盘，归一化为初始资金口径的净值序列。
+
+    报告新增 benchmark = {index_key, name, curve:[{date,close,equity}], return}；
+    metrics 新增 benchmark_return / excess_return（与 total_return 同为小数口径）。
+    指数数据缺失（未拉取/区间不覆盖）时静默降级：不写 benchmark、不加指标——
+    基准是对比增强，绝不能让回测因它失败。缺失日用前值填充（指数无停牌）。"""
+    cfg = report.get("config") or {}
+    key = cfg.get("benchmark") or "000905"
+    ec = report.get("equity_curve") or []
+    if len(ec) < 2:
+        return
+    idx = store.read_index_daily([key], data_dir)
+    if idx is None or idx.height < 2:
+        return
+    sub = (idx.filter((pl.col("date") >= ec[0]["date"])
+                      & (pl.col("date") <= ec[-1]["date"]))
+              .sort("date"))
+    if sub.height < 2:
+        return
+    base = float(sub["close"][0])
+    if base <= 0:
+        return
+    closes = dict(zip(sub["date"].to_list(), sub["close"].to_list()))
+    initial = float(cfg.get("initial_capital") or 0)
+    curve = []
+    last = base
+    for e in ec:
+        c = closes.get(e["date"])
+        if c is not None and c > 0:
+            last = float(c)
+        curve.append({"date": e["date"], "close": last,
+                      "equity": round(last / base * (initial or 1.0), 2)})
+    bench_ret = last / base - 1
+    report["benchmark"] = {"index_key": key,
+                           "name": sources.INDEX_DAILY_NAMES.get(key, key),
+                           "curve": curve, "return": round(bench_ret, 6)}
+    m = report.get("metrics")
+    if isinstance(m, dict) and isinstance(m.get("total_return"), (int, float)):
+        m["benchmark_return"] = round(bench_ret, 6)
+        m["excess_return"] = round(m["total_return"] - bench_ret, 6)
 
 
 def _code_volumes(portfolio: Portfolio) -> dict[str, int]:

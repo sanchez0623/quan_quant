@@ -280,6 +280,53 @@ def update_calendar(data_dir: Optional[str] = None,
             "first": cal["date"].min(), "last": cal["date"].max()}
 
 
+def update_index_daily(data_dir: Optional[str] = None,
+                       progress_cb: Optional[Callable[[float, str], None]] = None,
+                       start_date: str = "1990-01-01",
+                       end_date: str = "2099-12-31") -> dict:
+    """基准指数日线刷新（scope="index_daily"）：baostock 指数 K 线，
+    与个股 daily.parquet 完全隔离（独立 index_daily.parquet，无并发写冲突）。
+    写回纪律：读旧表 -> concat -> 按 (index_key,date) 去重 -> 原子写。"""
+    def report(p: float, msg: str) -> None:
+        if progress_cb:
+            progress_cb(p, msg)
+
+    report(5, "基准指数日线: 定位 baostock 源...")
+    bs = next((s for s in sources.SOURCES if s.name == "baostock" and s.available()), None)
+    if bs is None:
+        raise UpdateError("baostock 不可用（未安装或无法登录），指数日线仅支持 baostock 源")
+    report(15, "健康检查: baostock...")
+    if not bs.health_check(timeout=10):
+        raise UpdateError("baostock 健康检查失败，无法拉取指数日线")
+
+    frames = []
+    keys = list(sources.INDEX_DAILY_CODES)
+    for i, key in enumerate(keys):
+        report(25 + int(50 * i / len(keys)),
+               f"拉取 {sources.INDEX_DAILY_NAMES.get(key, key)}（{key}）...")
+        df = bs.get_index_daily(key, start=start_date, end=end_date)
+        if df is not None and df.height:
+            frames.append(df)
+    if not frames:
+        raise UpdateError("基准指数日线拉取失败（全部为空），已拒绝写库")
+    merged = pl.concat(frames).sort(["index_key", "date"])
+
+    report(85, "合并写回 index_daily.parquet...")
+    existing = store.read_index_daily(None, data_dir)
+    if existing is not None and existing.height:
+        for col in ("volume", "amount"):
+            if col in merged.columns and col in existing.columns:
+                merged = merged.with_columns(pl.col(col).cast(existing[col].dtype))
+        merged = (pl.concat([existing, merged])
+                  .unique(subset=["index_key", "date"], keep="last")
+                  .sort(["index_key", "date"]))
+    store.write_index_daily(merged, data_dir)
+    report(100, "基准指数日线刷新完成")
+    return {"scope": "index_daily", "index_daily_rows": merged.height,
+            "indexes": int(merged["index_key"].n_unique()),
+            "first": str(merged["date"].min()), "last": str(merged["date"].max())}
+
+
 def update(scope: str = "daily", codes: Optional[list[str]] = None,
            data_dir: Optional[str] = None,
            progress_cb: Optional[Callable[[float, str], None]] = None,
@@ -308,6 +355,11 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
         return update_calendar(data_dir=data_dir, progress_cb=progress_cb,
                                start_date=start_date, end_date=end_date)
 
+    # ---- index_daily scope：基准指数日线（BENCHMARK，baostock，与个股日线完全隔离） ----
+    if scope == "index_daily":
+        return update_index_daily(data_dir=data_dir, progress_cb=progress_cb,
+                                  start_date=start_date, end_date=end_date)
+
     installed_srcs = [s for s in sources.SOURCES if s.available()]
     _hi = {"i": 0}
 
@@ -321,7 +373,7 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
     daily_ok = [s for s in sources.SOURCES if s.available() and health.get(s.name)]
     if not daily_ok:
         raise UpdateError(
-            "无可用数据源（baostock/akshare/mootdx 未安装或健康检查失败）。"
+            "无可用数据源（baostock/akshare/mootdx/lixinger 均未安装或健康检查失败）。"
             "请安装 requirements-sources.txt 中的可选依赖，或调用 POST /api/data/demo 生成演示数据")
 
     basic = store.read_stock_basic(data_dir)
