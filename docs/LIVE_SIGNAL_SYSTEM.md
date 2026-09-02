@@ -106,6 +106,12 @@
 | 盘前流程编排 | 1 天 | 日线更新/重选/gate 判定，复用现有代码 |
 | 前端五页面 | 2-3 天 | §2 |
 
+**待办（M2 复用重构）**：盘前选股目前是 `premarket.py` 的简化实现（指数+板块候选域），
+与选股器 `_pick_momentum`（stocks.py，含申万行业 L1/L2/L3、ST 口径、as_of 语义）存在
+双套实现漂移。M2 将抽公共函数让盘前流程直接复用 `_pick_momentum`（internal 模式返回
+mf 供退出检查复用，特征只算一次），live_config 增加 `industry_l1/l2/l3` 透传。
+短期由「流程参数配置卡」对齐关键参数（rank_key 默认 fresh / above_ma=20 / with_accel）。
+
 ## 4. 行情源（2026-09-02/03 全部实测定稿）
 
 ### 4.1 源清单与角色

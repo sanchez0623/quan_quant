@@ -24,7 +24,8 @@ from . import feishu
 DEFAULT_CFG = {
     "above_ma": 20,          # 站上均线锚周期（20 对齐 momentum_slot）
     "with_accel": True,      # 动量分叠加加速度项
-    "rank_key": "score",     # 选股排序键（score/accel/fresh/mom_gap）
+    "rank_key": "fresh",     # 选股排序键（score/accel/fresh/mom_gap；默认金叉新鲜，
+                             # 与选股器"动量趋势"页的排序键同口径，可在配置卡改）
     "top_x": 30,             # 每次预筛取前 x 只
     "auto_idle_days": 5,     # 全空仓持续 N 个交易日 -> 重选
     "exit_need": 2,          # 衰退信号满足数（预警阈值）
