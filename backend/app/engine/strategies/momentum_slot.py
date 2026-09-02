@@ -278,16 +278,11 @@ class MomentumSlotStrategy(Strategy):
     @staticmethod
     def _walk(df: pl.DataFrame, p: dict, top_days: set,
               start_date: str | None) -> list[pl.Series]:
-        """生成 signal/tag/reason/budget_pct/t_ratio/reduce_pct 列
+        """生成 signal/tag/reason/budget_pct/t_ratio/reduce_pct 列。
 
-        状态机优先级（从高到低）：
-          0) ATR硬止损（盘中实时，最高优先级）
-          1) 衰退初期退出（渐进式：首次减partial_exit_pct->二次清仓）
-          2) 加速启动建仓（金叉+站上快均线+候选池+冷却期）
-          3) 试仓升级（斜率确认->满配）
-          4) 金字塔加仓（突破新高+冷却+递减）
-          5) 做T（正向T逢低买入 / 反向T高抛低吸）
-        """
+        逐bar判定逻辑全部在 SlotStepper（本文件下方）：回测批量走完与
+        实盘盘中"喂一根 bar 走一步"共用同一实现（单一事实来源，见
+        LIVE_SIGNAL_SYSTEM §3 状态机步进化）。"""
         n = df.height
         signals = [0] * n
         tags = [""] * n
@@ -296,244 +291,30 @@ class MomentumSlotStrategy(Strategy):
         t_ratios: list[float | None] = [None] * n
         reduces: list[float | None] = [None] * n
 
-        base_min = float(p["base_pct_min"])
-        base_max = float(p["base_pct_max"])
-        mult = float(p["grid_atr_mult"])
-        floor_g = float(p["grid_floor_pct"]) / 100.0
-        asym = float(p["asym_bias"])
-        t_base = float(p["t_ratio_base"]) / 100.0
-        max_t = int(p["max_t_times"])
-        t_mode = str(p.get("t_mode") or "grid")
-        asym_sell_cap = float(p.get("asym_sell_cap") or 2.0)
-        if t_mode == "off":
-            max_t = 0
-        vol_grid_hi = float(p["vol_grid_hi"])
-        vol_grid_lo = float(p["vol_grid_lo"])
-        t_vol_hi = float(p["t_vol_hi"])
-        t_vol_lo = float(p["t_vol_lo"])
-        t_decay = float(p["t_decay"])
-        max_adds = int(p["max_adds"])
-        add_scale = float(p["add_scale"])
-        add_cd = int(p["add_cooldown"])
-        exit_need = int(p["exit_need"])
-        exit_cd = int(p["exit_cooldown"])
-        # ---- 新增参数 ----
-        atr_stop_k = float(p.get("atr_stop_k") or -3.0)
-        decay_window = int(p.get("decay_window") or 5)
-        decay_pct = float(p.get("decay_pct") or 0.15)
-        partial_exit_pct = float(p.get("partial_exit_pct") or 50)
-        fwd_t = str(p.get("fwd_t") or "off")
-        fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
-
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
                 "dif", "dea", "ma_fast", "slope", "score", "day_idx", "pool_gate"]
         # pool_gate 由 prepare 注入（POOL_GATE）；直调 _walk 的旧路径兜底补列
         if "pool_gate" not in df.columns:
             df = df.with_columns(pl.lit(False).alias("pool_gate"))
-        trend_clock = str(p.get("trend_clock") or "intraday")
         dts = df["date"].to_list()
         is_eod = [i == n - 1 or dts[i][:10] != dts[i + 1][:10] for i in range(n)]
-        opened = False
-        full = False
-        adds_done = 0
-        last_add_idx = -10**9
-        last_exit_idx = -10**9
-        # P1 防同价：开仓以来最高收盘。加仓要求当前价高于它（新高须发生在
-        # 建仓之后，而非入选时已成立的存量 20 日新高），消灭开仓即加仓
-        high_since_open: float | None = None
-        cur_day = None
-        ref = None
-        t_count = 0
-        # 动量衰减跟踪：持仓期间score峰值
-        score_peak: float | None = None
-        # 渐进式退出阶段: 0=无退出, 1=已部分减仓待清仓, 2=已清仓
-        exit_stage = 0
+        st = SlotStepper(p, top_days)
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
              dif, dea, ma_fast, slope, score, day_idx, pool_gate) = row
-            day = date[:10]
-            if start_date and day < start_date:
+            if start_date and date[:10] < start_date:
                 continue
-            if day != cur_day:
-                cur_day = day
-                ref = None
-                t_count = 0
-                score_peak = None
-            trend_ok = (trend_clock != "daily") or is_eod[i]
-
-            # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高
-            # （加仓检查用它——当前 bar 刚创的新高本身不作为自己的加仓依据）
-            prev_high = high_since_open
-            if opened and high_since_open is not None and close > high_since_open:
-                high_since_open = close
-
-            macd_ok = dif is not None and dea is not None and dif > dea
-            above_fast = ma_fast is not None and close > ma_fast
-            slope_up = slope is not None and slope > 0
-            # 衰退初期三信号（个股级，T-1 特征，次日成交）
-            s1 = dif is not None and dea is not None and dif < dea
-            s2 = ma_fast is not None and close < ma_fast
-            # 动量衰减：持仓期间score从峰值回落超过decay_pct
-            if opened and score is not None:
-                if score_peak is None or score > score_peak:
-                    score_peak = score
-                score_decay = (score_peak is not None
-                               and score < score_peak * (1 - decay_pct))
-            else:
-                score_decay = False
-            s3 = ((score is not None and score < 0)
-                  or (day not in top_days)
-                  or score_decay)
-
-            # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
-            if opened and bias is not None and bias < atr_stop_k:
-                signals[i] = -1
-                tags[i] = "止损"
-                reasons[i] = (f"ATR硬止损(bias={bias:.1f}<-{atr_stop_k})"
-                              f" 价格跌破{atr_stop_k}倍ATR")
-                opened, full, adds_done = False, False, 0
-                exit_stage = 0
-                continue
-
-            # ---- 1) 衰退初期退出：渐进式（首次减仓->二次清仓） ----
-            if opened and trend_ok and (int(s1) + int(s2) + int(s3)) >= exit_need:
-                hits = []
-                if s1: hits.append("MACD死叉")
-                if s2: hits.append(f"跌破MA{int(p['ma_fast'])}")
-                if score_decay: hits.append("动量衰减")
-                if score is not None and score < 0: hits.append("动量转负")
-                if day not in top_days: hits.append("跌出榜单")
-                if exit_stage == 0:
-                    signals[i] = -1
-                    tags[i] = "减仓"
-                    reduces[i] = partial_exit_pct
-                    reasons[i] = (f"衰退初期(首次减{partial_exit_pct:.0f}%): "
-                                  f"{'+'.join(hits)}")
-                    exit_stage = 1
-                    continue
-                elif exit_stage == 1:
-                    signals[i] = -1
-                    tags[i] = ""
-                    reasons[i] = f"衰退清仓(二次): {'+'.join(hits)}"
-                    opened, full, adds_done = False, False, 0
-                    exit_stage = 2
-                    last_exit_idx = day_idx
-                    continue
-
-            if not opened:
-                # ---- 2) 加速启动建仓（池级开关 pool_gate 抑制：POOL_GATE）----
-                if (macd_ok and above_fast and day in top_days
-                        and (day_idx - last_exit_idx) >= exit_cd and trend_ok
-                        and not pool_gate):
-                    if slope_up:
-                        budgets[i] = base_max
-                        reasons[i] = ("加速启动(金叉+站上快均线+入榜+斜率向上)，满配建仓")
-                    else:
-                        budgets[i] = base_min
-                        reasons[i] = ("加速启动(金叉+站上快均线+入榜)，试仓建仓")
-                    signals[i] = 1
-                    tags[i] = "开仓"
-                    opened, full = True, slope_up
-                    # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
-                    high_since_open = close
-                    last_add_idx = day_idx
-                continue
-
-            # ---- 3) 试仓升级 ----
-            if not full and slope_up and trend_ok and not pool_gate:
-                signals[i] = 1
-                tags[i] = "加仓"
-                budgets[i] = max(0.0, base_max - base_min)
-                reasons[i] = "斜率确认，试仓升级满配"
-                full = True
-                continue
-
-            # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
-            # P1 防同价：冷却期自开仓日起算，且要求当前价高于开仓以来的
-            # 最高收盘（新高须发生在建仓之后，而非入选时已成立的存量新高）；
-            # P2 最小有效量：预算不足总资产 ADD_MIN_BUDGET_PCT% 时跳过，
-            # 不消耗加仓次数与冷却期（防低 base_max 下金字塔衰减为无意义小单）
-            if (full and breakout and adds_done < max_adds
-                    and (day_idx - last_add_idx) >= add_cd and trend_ok
-                    and not pool_gate
-                    and prev_high is not None and close > prev_high):
-                budget = base_max * (add_scale ** (adds_done + 1))
-                if budget >= mc.ADD_MIN_BUDGET_PCT:
-                    signals[i] = 1
-                    tags[i] = "加仓"
-                    budgets[i] = budget
-                    reasons[i] = (f"突破{int(p['add_breakout_n'])}日新高，"
-                                  f"第{adds_done + 1}次金字塔加仓")
-                    adds_done += 1
-                    last_add_idx = day_idx
-                    ref = close
-                    continue
-
-            # ---- 5) 做T ----
-            if t_mode == "time":
-                if " " not in date or t_count >= max_t:
-                    continue
-                hhmm = date[11:16]
-                if hhmm == "09:35":
-                    signals[i] = -1
-                    tags[i] = "做T"
-                    t_ratios[i] = 25.0
-                    reasons[i] = "时点T：09:35高抛1/4底仓"
-                    t_count += 1
-                elif hhmm == "14:50":
-                    signals[i] = 1
-                    tags[i] = "做T"
-                    budgets[i] = base_min
-                    reasons[i] = "时点T：14:50尾盘买回"
-                    t_count += 1
-                continue
-            if atr_pct is None or t_count >= max_t:
-                continue
-            g = float(atr_pct) * mult
-            if g <= 0:
-                continue
-            vp = vol_pos if vol_pos is not None else 0.5
-            g *= vol_grid_lo + (vol_grid_hi - vol_grid_lo) * vp
-            g = max(g, floor_g)
-            b = bias if bias is not None else 0.0
-            g_sell = g * (1 + asym) if b > 0 else g * (1 - asym)
-            g_buy = g * (1 - asym) if b > 0 else g * (1 + asym)
-            vol_mult = t_vol_lo + (t_vol_hi - t_vol_lo) * vp
-            ratio = min(1.0, t_base * vol_mult * (t_decay ** t_count))
-
-            if ref is None:
-                ref = close
-                continue
-
-            # ---- 正向T：逢低买入（池级开关 pool_gate 抑制：下跌市接飞刀）----
-            if fwd_t == "on" and not pool_gate and close <= ref * (1 - g_buy) and opened:
-                signals[i] = 1
-                tags[i] = "做T"
-                t_ratios[i] = ratio * 100
-                budgets[i] = fwd_t_budget * 100
-                reasons[i] = (f"正向T：跌破下网格线(阈值{g_buy * 100:.2f}%)"
-                              f"逢低买入(预算{fwd_t_budget*100:.0f}%)")
-                ref = close
-                t_count += 1
-                continue
-
-            # ---- 反向T ----
-            if close <= ref * (1 - g_buy):
-                signals[i] = 1
-                tags[i] = "做T"
-                t_ratios[i] = ratio * 100
-                budgets[i] = base_min
-                reasons[i] = f"跌破下网格线(阈值{g_buy * 100:.2f}%)买回"
-                ref = close
-                t_count += 1
-            elif b <= asym_sell_cap and close >= ref * (1 + g_sell):
-                signals[i] = -1
-                tags[i] = "做T"
-                t_ratios[i] = ratio * 100
-                reasons[i] = f"升破上网格线(阈值{g_sell * 100:.2f}%)高抛"
-                ref = close
-                t_count += 1
+            sig = st.step(date, close, atr_pct, bias, vol_pos, breakout,
+                          dif, dea, ma_fast, slope, score, day_idx,
+                          bool(pool_gate), is_eod[i])
+            if sig is not None:
+                signals[i] = sig["signal"]
+                tags[i] = sig["tag"]
+                reasons[i] = sig["reason"]
+                budgets[i] = sig.get("budget_pct")
+                t_ratios[i] = sig.get("t_ratio")
+                reduces[i] = sig.get("reduce_pct")
 
         return [
             pl.Series("signal", signals, dtype=pl.Int32),
@@ -624,3 +405,260 @@ class MomentumSlotStrategy(Strategy):
 
         return data
 
+
+class SlotStepper:
+    """momentum_slot 逐bar状态机步进器（回测 _walk 与实盘盘中信号机共用）。
+
+    step() 喂一根 bar：close 为当前 bar 收盘价，其余为 T-1 对齐的日线特征
+    （atr_pct/bias/vol_pos/breakout/dif/dea/ma_fast/slope/score/day_idx），
+    返回信号 dict（signal/tag/reason/budget_pct/t_ratio/reduce_pct）或 None。
+    状态保留在实例内：回测一次跑完；实盘每日经 state()/restore() 落库恢复。
+    信号优先级（从高到低）：
+      0) ATR硬止损（盘中实时，最高优先级）
+      1) 衰退初期退出（渐进式：首次减partial_exit_pct->二次清仓）
+      2) 加速启动建仓（金叉+站上快均线+候选池+冷却期）
+      3) 试仓升级（斜率确认->满配）
+      4) 金字塔加仓（突破新高+冷却+递减）
+      5) 做T（正向T逢低买入 / 反向T高抛低吸）
+    """
+
+    def __init__(self, p: dict, top_days: set):
+        self.base_min = float(p["base_pct_min"])
+        self.base_max = float(p["base_pct_max"])
+        self._g_mult = float(p["grid_atr_mult"])
+        self._g_floor = float(p["grid_floor_pct"]) / 100.0
+        self._g_asym = float(p["asym_bias"])
+        self.t_base = float(p["t_ratio_base"]) / 100.0
+        self.max_t = int(p["max_t_times"])
+        self.t_mode = str(p.get("t_mode") or "grid")
+        self.asym_sell_cap = float(p.get("asym_sell_cap") or 2.0)
+        if self.t_mode == "off":
+            self.max_t = 0
+        self.vol_grid_hi = float(p["vol_grid_hi"])
+        self.vol_grid_lo = float(p["vol_grid_lo"])
+        self.t_vol_hi = float(p["t_vol_hi"])
+        self.t_vol_lo = float(p["t_vol_lo"])
+        self.t_decay = float(p["t_decay"])
+        self.max_adds = int(p["max_adds"])
+        self.add_scale = float(p["add_scale"])
+        self.add_cd = int(p["add_cooldown"])
+        self.exit_need = int(p["exit_need"])
+        self.exit_cd = int(p["exit_cooldown"])
+        self.atr_stop_k = float(p.get("atr_stop_k") or -3.0)
+        self.decay_pct = float(p.get("decay_pct") or 0.15)
+        self.partial_exit_pct = float(p.get("partial_exit_pct") or 50)
+        self.fwd_t = str(p.get("fwd_t") or "off")
+        self.fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
+        self.trend_clock = str(p.get("trend_clock") or "intraday")
+        self.ma_fast_n = int(p.get("ma_fast") or 20)
+        self.add_breakout_n = int(p.get("add_breakout_n") or 20)
+        self.top_days = top_days
+        # ---- 状态（与旧 _walk 局部变量一一对应） ----
+        self.opened = False
+        self.full = False
+        self.adds_done = 0
+        self.last_add_idx = -10**9
+        self.last_exit_idx = -10**9
+        # P1 防同价：开仓以来最高收盘。加仓要求当前价高于它（新高须发生在
+        # 建仓之后，而非入选时已成立的存量 20 日新高），消灭开仓即加仓
+        self.high_since_open: float | None = None
+        self.cur_day: str | None = None
+        self.ref: float | None = None
+        self.t_count = 0
+        # 动量衰减跟踪：持仓期间score峰值
+        self.score_peak: float | None = None
+        # 渐进式退出阶段: 0=无退出, 1=已部分减仓待清仓, 2=已清仓
+        self.exit_stage = 0
+
+    def state(self) -> dict:
+        """导出状态（实盘 sig_strategy_state 落库 / 跨日恢复）"""
+        return {"opened": int(self.opened), "full": int(self.full),
+                "adds_done": self.adds_done,
+                "last_add_idx": self.last_add_idx,
+                "last_exit_idx": self.last_exit_idx,
+                "exit_stage": self.exit_stage,
+                "high_since_open": self.high_since_open,
+                "ref": self.ref, "t_count": self.t_count,
+                "score_peak": self.score_peak, "cur_day": self.cur_day}
+
+    def restore(self, st: dict) -> None:
+        """从落库快照恢复状态（缺键保持默认）"""
+        if not st:
+            return
+        self.opened = bool(st.get("opened"))
+        self.full = bool(st.get("full"))
+        self.adds_done = int(st.get("adds_done") or 0)
+        self.last_add_idx = int(st.get("last_add_idx") if st.get("last_add_idx") is not None else -10**9)
+        self.last_exit_idx = int(st.get("last_exit_idx") if st.get("last_exit_idx") is not None else -10**9)
+        self.exit_stage = int(st.get("exit_stage") or 0)
+        self.high_since_open = st.get("high_since_open")
+        self.ref = st.get("ref")
+        self.t_count = int(st.get("t_count") or 0)
+        self.score_peak = st.get("score_peak")
+        self.cur_day = st.get("cur_day")
+
+    def step(self, date: str, close: float, atr_pct, bias, vol_pos, breakout,
+             dif, dea, ma_fast, slope, score, day_idx, pool_gate: bool,
+             is_eod: bool) -> dict | None:
+        """喂一根 bar，返回信号 dict 或 None（is_eod：当日末 bar，daily 时钟用）"""
+        day = date[:10]
+        if day != self.cur_day:
+            self.cur_day = day
+            self.ref = None
+            self.t_count = 0
+            self.score_peak = None
+        trend_ok = (self.trend_clock != "daily") or is_eod
+
+        # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高
+        # （加仓检查用它——当前 bar 刚创的新高本身不作为自己的加仓依据）
+        prev_high = self.high_since_open
+        if self.opened and self.high_since_open is not None and close > self.high_since_open:
+            self.high_since_open = close
+
+        macd_ok = dif is not None and dea is not None and dif > dea
+        above_fast = ma_fast is not None and close > ma_fast
+        slope_up = slope is not None and slope > 0
+        # 衰退初期三信号（个股级，T-1 特征，次日成交）
+        s1 = dif is not None and dea is not None and dif < dea
+        s2 = ma_fast is not None and close < ma_fast
+        # 动量衰减：持仓期间score从峰值回落超过decay_pct
+        if self.opened and score is not None:
+            if self.score_peak is None or score > self.score_peak:
+                self.score_peak = score
+            score_decay = (self.score_peak is not None
+                           and score < self.score_peak * (1 - self.decay_pct))
+        else:
+            score_decay = False
+        s3 = ((score is not None and score < 0)
+              or (day not in self.top_days)
+              or score_decay)
+
+        # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
+        if self.opened and bias is not None and bias < self.atr_stop_k:
+            self.opened, self.full, self.adds_done = False, False, 0
+            self.exit_stage = 0
+            return {"signal": -1, "tag": "止损",
+                    "reason": (f"ATR硬止损(bias={bias:.1f}<-{self.atr_stop_k})"
+                               f" 价格跌破{self.atr_stop_k}倍ATR")}
+
+        # ---- 1) 衰退初期退出：渐进式（首次减仓->二次清仓） ----
+        if self.opened and trend_ok and (int(s1) + int(s2) + int(s3)) >= self.exit_need:
+            hits = []
+            if s1: hits.append("MACD死叉")
+            if s2: hits.append(f"跌破MA{self.ma_fast_n}")
+            if score_decay: hits.append("动量衰减")
+            if score is not None and score < 0: hits.append("动量转负")
+            if day not in self.top_days: hits.append("跌出榜单")
+            if self.exit_stage == 0:
+                self.exit_stage = 1
+                return {"signal": -1, "tag": "减仓",
+                        "reduce_pct": self.partial_exit_pct,
+                        "reason": (f"衰退初期(首次减{self.partial_exit_pct:.0f}%): "
+                                   f"{'+'.join(hits)}")}
+            if self.exit_stage == 1:
+                self.opened, self.full, self.adds_done = False, False, 0
+                self.exit_stage = 2
+                self.last_exit_idx = day_idx
+                return {"signal": -1, "tag": "",
+                        "reason": f"衰退清仓(二次): {'+'.join(hits)}"}
+
+        if not self.opened:
+            # ---- 2) 加速启动建仓（池级开关 pool_gate 抑制：POOL_GATE）----
+            if (macd_ok and above_fast and day in self.top_days
+                    and (day_idx - self.last_exit_idx) >= self.exit_cd and trend_ok
+                    and not pool_gate):
+                if slope_up:
+                    self.opened, self.full = True, True
+                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_max,
+                           "reason": "加速启动(金叉+站上快均线+入榜+斜率向上)，满配建仓"}
+                else:
+                    self.opened, self.full = True, False
+                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_min,
+                           "reason": "加速启动(金叉+站上快均线+入榜)，试仓建仓"}
+                # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
+                self.high_since_open = close
+                self.last_add_idx = day_idx
+                return out
+            return None
+
+        # ---- 3) 试仓升级 ----
+        if not self.full and slope_up and trend_ok and not pool_gate:
+            self.full = True
+            return {"signal": 1, "tag": "加仓",
+                    "budget_pct": max(0.0, self.base_max - self.base_min),
+                    "reason": "斜率确认，试仓升级满配"}
+
+        # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
+        # P1 防同价：冷却期自开仓日起算，且要求当前价高于开仓以来的
+        # 最高收盘（新高须发生在建仓之后，而非入选时已成立的存量新高）；
+        # P2 最小有效量：预算不足总资产 ADD_MIN_BUDGET_PCT% 时跳过，
+        # 不消耗加仓次数与冷却期（防低 base_max 下金字塔衰减为无意义小单）
+        if (self.full and breakout and self.adds_done < self.max_adds
+                and (day_idx - self.last_add_idx) >= self.add_cd and trend_ok
+                and not pool_gate
+                and prev_high is not None and close > prev_high):
+            budget = self.base_max * (self.add_scale ** (self.adds_done + 1))
+            if budget >= mc.ADD_MIN_BUDGET_PCT:
+                nth = self.adds_done + 1
+                self.adds_done = nth
+                self.last_add_idx = day_idx
+                self.ref = close
+                return {"signal": 1, "tag": "加仓", "budget_pct": budget,
+                        "reason": (f"突破{self.add_breakout_n}日新高，"
+                                   f"第{nth}次金字塔加仓")}
+
+        # ---- 5) 做T ----
+        if self.t_mode == "time":
+            if " " not in date or self.t_count >= self.max_t:
+                return None
+            hhmm = date[11:16]
+            if hhmm == "09:35":
+                self.t_count += 1
+                return {"signal": -1, "tag": "做T", "t_ratio": 25.0,
+                        "reason": "时点T：09:35高抛1/4底仓"}
+            if hhmm == "14:50":
+                self.t_count += 1
+                return {"signal": 1, "tag": "做T", "budget_pct": self.base_min,
+                        "reason": "时点T：14:50尾盘买回"}
+            return None
+        if atr_pct is None or self.t_count >= self.max_t:
+            return None
+        g = float(atr_pct) * self._g_mult
+        if g <= 0:
+            return None
+        vp = vol_pos if vol_pos is not None else 0.5
+        g *= self.vol_grid_lo + (self.vol_grid_hi - self.vol_grid_lo) * vp
+        g = max(g, self._g_floor)
+        b = bias if bias is not None else 0.0
+        g_sell = g * (1 + self._g_asym) if b > 0 else g * (1 - self._g_asym)
+        g_buy = g * (1 - self._g_asym) if b > 0 else g * (1 + self._g_asym)
+        vol_mult = self.t_vol_lo + (self.t_vol_hi - self.t_vol_lo) * vp
+        ratio = min(1.0, self.t_base * vol_mult * (self.t_decay ** self.t_count))
+
+        if self.ref is None:
+            self.ref = close
+            return None
+
+        # ---- 正向T：逢低买入（池级开关 pool_gate 抑制：下跌市接飞刀）----
+        if (self.fwd_t == "on" and not pool_gate
+                and close <= self.ref * (1 - g_buy) and self.opened):
+            self.ref = close
+            self.t_count += 1
+            return {"signal": 1, "tag": "做T", "t_ratio": ratio * 100,
+                    "budget_pct": self.fwd_t_budget * 100,
+                    "reason": (f"正向T：跌破下网格线(阈值{g_buy * 100:.2f}%)"
+                               f"逢低买入(预算{self.fwd_t_budget*100:.0f}%)")}
+
+        # ---- 反向T ----
+        if close <= self.ref * (1 - g_buy):
+            self.ref = close
+            self.t_count += 1
+            return {"signal": 1, "tag": "做T", "t_ratio": ratio * 100,
+                    "budget_pct": self.base_min,
+                    "reason": f"跌破下网格线(阈值{g_buy * 100:.2f}%)买回"}
+        if b <= self.asym_sell_cap and close >= self.ref * (1 + g_sell):
+            self.ref = close
+            self.t_count += 1
+            return {"signal": -1, "tag": "做T", "t_ratio": ratio * 100,
+                    "reason": f"升破上网格线(阈值{g_sell * 100:.2f}%)高抛"}
+        return None

@@ -17,6 +17,12 @@ import type {
   LivePremarketResult,
   LivePosition,
   LiveSummary,
+  IntradayRunResult,
+  IntradayStatus,
+  PostcloseResult,
+  ReadinessResult,
+  ShadowStats,
+  SlippageResult,
   ExperimentListItem,
   KeyCreateRequest,
   KeyTestResult,
@@ -336,6 +342,43 @@ export async function saveLiveConfig(cfg: LiveConfig): Promise<LiveConfig> {
 
 export async function resetLiveData(keepConfig = true): Promise<void> {
   await api.post('/live/reset', { keep_config: keepConfig })
+}
+
+// ---- 盘中信号机（M2）----
+export async function runMorning(updateData = true): Promise<{ task_id: string }> {
+  const res = await api.post('/live/morning', { update_data: updateData })
+  return res.data
+}
+
+export async function runIntraday(): Promise<IntradayRunResult> {
+  const res = await api.post<IntradayRunResult>('/live/intraday')
+  return res.data
+}
+
+export async function getIntradayStatus(): Promise<IntradayStatus> {
+  const res = await api.get<IntradayStatus>('/live/intraday/status')
+  return res.data
+}
+
+export async function runPostclose(): Promise<PostcloseResult> {
+  const res = await api.post<PostcloseResult>('/live/postclose')
+  return res.data
+}
+
+// ---- 滑点 / 影子（M3）/ 就绪（M4）----
+export async function getSlippage(): Promise<SlippageResult> {
+  const res = await api.get<SlippageResult>('/live/slippage')
+  return res.data
+}
+
+export async function getShadowStats(): Promise<ShadowStats> {
+  const res = await api.get<ShadowStats>('/live/shadow')
+  return res.data
+}
+
+export async function getReadiness(): Promise<ReadinessResult> {
+  const res = await api.get<ReadinessResult>('/live/readiness')
+  return res.data
 }
 
 export async function updateData(

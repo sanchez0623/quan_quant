@@ -93,12 +93,40 @@ def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str,
                 start_date=start_date, end_date=end_date)
 
 
+def live_premarket_task(task_id: str, db_path: str, data_dir: str,
+                        update_data: bool = True, push: bool = True) -> None:
+    """实盘盘前编排（LIVE_SIGNAL_SYSTEM §5 盘前）：日线增量更新（含完整性守卫）
+    → 盘前信号流程（特征重算/重选/gate/退出检查/推送）。"""
+    from .live import premarket
+    if update_data:
+        db.update_task(task_id, db_path=db_path, status="running",
+                       message="日线增量更新...")
+        from .data import updater
+        updater.update(scope="daily", data_dir=data_dir,
+                       progress_cb=lambda p, m: db.update_progress(
+                           task_id, 5 + p * 0.8, m, db_path=db_path))
+        from .engine import datafeed
+        datafeed.clear_cache()
+    db.update_progress(task_id, 88, "盘前信号流程（特征重算/重选/gate/推送）...",
+                       db_path=db_path)
+    result = premarket.run_premarket(push=push)
+    db.finish_task(task_id, "success",
+                   payload={"as_of": result.get("as_of"),
+                            "rebalanced": result.get("rebalanced"),
+                            "pool_size": len(result.get("pool") or []),
+                            "stale": result.get("stale"),
+                            "signals": len(result.get("signals") or []),
+                            "pushed": result.get("pushed")},
+                   db_path=db_path)
+
+
 _TASK_FUNCS = {
     "backtest": backtest_task,
     "optimize": optimize_task,
     "ai": ai_analyze_task,
     "data_demo": data_demo_task,
     "data_update": data_update_task,
+    "live_premarket": live_premarket_task,
 }
 
 

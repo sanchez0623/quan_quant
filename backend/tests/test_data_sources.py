@@ -54,10 +54,13 @@ def test_stock_basic_read_legacy_prefixed_file(tmp_path):
 # ---------------- updater._norm_codes ----------------
 
 def test_bs_code_star_market_excluded():
-    """科创板(688/689) 被 baostock 排除"""
-    assert sources._bs_code("688146") is None
-    assert sources._bs_code("689009") is None
-    assert sources._bs_code("sh.688146") is None
+    """科创板(688/689) 已实测支持（2026-09-02 移除屏蔽）；北交所(4/8/9) 仍排除"""
+    assert sources._bs_code("688146") == "sh.688146"
+    assert sources._bs_code("689009") == "sh.689009"
+    assert sources._bs_code("sh.688146") == "sh.688146"
+    # 北交所 baostock 不支持（实测 error=10004011）
+    assert sources._bs_code("430047") is None
+    assert sources._bs_code("832566") is None
     # 主板 600/601/603/605 仍支持
     assert sources._bs_code("600000") == "sh.600000"
     assert sources._bs_code("601318") == "sh.601318"

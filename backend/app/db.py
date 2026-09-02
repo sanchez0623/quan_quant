@@ -180,6 +180,17 @@ CREATE TABLE IF NOT EXISTS sig_withdraw(
   recover REAL DEFAULT 0,
   log_json TEXT DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS sig_strategy_state(
+  code TEXT PRIMARY KEY,
+  st_json TEXT DEFAULT '{}',    -- SlotStepper 状态快照（opened/full/adds_done/...）
+  last_bar TEXT,                -- 已喂入的最后完成 bar（YYYY-MM-DD HH:MM 游标去重）
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sig_meta(
+  k TEXT PRIMARY KEY,           -- 盘中心跳/断流熔断标记等 KV
+  v TEXT DEFAULT '',
+  updated_at TEXT
+);
 """
 
 
@@ -781,12 +792,46 @@ def remove_live_position(code: str, db_path: Optional[str] = None) -> bool:
     return cur.rowcount > 0
 
 
+def get_strategy_states(db_path: Optional[str] = None) -> dict[str, dict]:
+    """盘中状态机快照：{code: {st: {...}, last_bar: 'YYYY-MM-DD HH:MM'}}"""
+    with conn(db_path) as c:
+        rows = c.execute(
+            "SELECT code, st_json, last_bar FROM sig_strategy_state").fetchall()
+    return {r[0]: {"st": _jload(r[1]) or {}, "last_bar": r[2]} for r in rows}
+
+
+def save_strategy_state(code: str, st: dict, last_bar: Optional[str],
+                        db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO sig_strategy_state(code, st_json, last_bar, updated_at) "
+            "VALUES(?, ?, ?, ?) ON CONFLICT(code) DO UPDATE SET "
+            "st_json=excluded.st_json, last_bar=excluded.last_bar, "
+            "updated_at=excluded.updated_at",
+            (code, json.dumps(st, ensure_ascii=False), last_bar, _now()))
+
+
+def get_meta(key: str, db_path: Optional[str] = None) -> Optional[str]:
+    with conn(db_path) as c:
+        row = c.execute("SELECT v FROM sig_meta WHERE k=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_meta(key: str, value: str, db_path: Optional[str] = None) -> None:
+    with conn(db_path) as c:
+        c.execute(
+            "INSERT INTO sig_meta(k, v, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated_at=excluded.updated_at",
+            (key, value, _now()))
+
+
 def reset_live_data(keep_config: bool = True,
                     db_path: Optional[str] = None) -> None:
-    """清空实盘信号机数据（信号流水/回填/虚拟持仓/池子状态/做T债务/出金）。
-    keep_config=True 保留 sig_config（流程参数配置）。表名来自白名单常量。"""
+    """清空实盘信号机数据（信号流水/回填/虚拟持仓/池子状态/做T债务/出金/
+    盘中状态机快照/KV）。keep_config=True 保留 sig_config（流程参数配置）。
+    表名来自白名单常量。"""
     tables = ["sig_signal_log", "sig_fills", "sig_position", "sig_pool",
-              "sig_t_debt", "sig_withdraw"]
+              "sig_t_debt", "sig_withdraw", "sig_strategy_state", "sig_meta"]
     if not keep_config:
         tables.append("sig_config")
     with conn(db_path) as c:

@@ -36,6 +36,8 @@ DEFAULT_CFG = {
     "suggest_pct": 0.15,     # 单票建议金额占虚拟权益比例
     "auto_index": ["zz500"],  # 候选域：指数成分并集
     "auto_boards": [],       # 候选域：板块并集
+    "t_mode": "off",         # 做T机制（盘中状态机；M2 起步 off——人工执行延迟吃收益）
+    "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
 }
 
 

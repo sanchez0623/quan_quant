@@ -528,6 +528,8 @@ export interface LiveConfig {
   suggest_pct: number
   auto_index: string[]
   auto_boards: string[]
+  t_mode: string
+  max_holdings: number
 }
 
 export interface LivePremarketResult {
@@ -563,6 +565,115 @@ export interface LiveSummary {
   fills: LiveFill[]
   feishu_configured: boolean
   config: LiveConfig
+}
+
+// ---- 盘中信号机（M2）----
+export interface IntradaySignalOut {
+  id: number
+  code: string
+  stype: string
+  name: string
+  reason: string
+  suggest_amount: number | null
+  ref_price: number
+  bar: string
+}
+
+export interface IntradayRunResult {
+  as_of: string
+  signals: IntradaySignalOut[]
+  suspended: Array<{ code: string; reason: string }>
+  no_data: string[]
+  fed_bars: number
+  equity: number
+  cash: number
+  message: string
+  pushed: boolean
+  skipped?: string
+}
+
+export interface IntradayCodeStatus {
+  code: string
+  name: string
+  price: number | null
+  prev_close: number | null
+  held: boolean
+  opened: boolean
+  full: boolean
+  adds_done: number
+  exit_stage: number
+  last_bar: string | null
+  in_pool: boolean
+}
+
+export interface IntradayStatus {
+  session: boolean
+  as_of: string | null
+  gate_state: number
+  codes: IntradayCodeStatus[]
+  heartbeat: { ok_ts?: string; alerted?: boolean }
+  t_mode: string
+}
+
+export interface PostcloseResult {
+  date: string
+  saved: string[]
+  skipped: string[]
+  positions: number
+  equity: number
+  cash: number
+  message: string
+  pushed: boolean
+}
+
+// ---- 滑点统计 / 影子运行（M3）----
+export interface SlippageRow {
+  fill_id: number
+  signal_id: number | null
+  code: string
+  name: string
+  stype: string
+  side: 'buy' | 'sell'
+  ref_price: number
+  fill_price: number
+  fill_volume: number
+  slip_pct: number
+  fill_time: string | null
+}
+
+export interface SlippageResult {
+  rows: SlippageRow[]
+  summary: {
+    n: number
+    avg_slip_pct: number | null
+    buy_avg_slip_pct: number | null
+    sell_avg_slip_pct: number | null
+    worst_slip_pct: number | null
+  }
+}
+
+export interface ShadowStats {
+  n_signals: number
+  n_filled: number
+  n_ignored: number
+  fill_rate: number | null
+  shadow_pnl: number
+  actual_pnl: number
+  gap_pnl: number
+  days: number
+}
+
+// ---- M4 就绪检查 ----
+export interface ReadinessItem {
+  key: string
+  label: string
+  ok: boolean
+  detail: string
+}
+
+export interface ReadinessResult {
+  ready: boolean
+  items: ReadinessItem[]
 }
 
 // ---- 做T重构（T_REFACTOR） ----

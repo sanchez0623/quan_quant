@@ -82,7 +82,9 @@ def _norm_code(code: str) -> str:
 def _bs_code(code: str) -> Optional[str]:
     """转换为 baostock 9位代码格式：sh.600000 / sz.000001
     兼容已带前缀的输入（sh.600000 / sh600000）；
-    科创板(688/689)、北交所(4/8/9开头) baostock 不支持返回 None"""
+    北交所(4/8/9开头) baostock 不支持返回 None。
+    科创板(688/689) **实测支持**（2026-09-02：日K/5分钟K 均正常，2023 年深度也有；
+    仅复权因子无数据）——此前"不支持科创板"的屏蔽是错误假设，已移除。"""
     code = str(code).strip()
     # 先提取纯数字部分进行判断
     pure_code = code
@@ -90,19 +92,17 @@ def _bs_code(code: str) -> Optional[str]:
         pure_code = code.split(".", 1)[1]
     elif code.startswith(("sh", "sz", "bj")):
         pure_code = code[2:]
-    
-    # 科创板(688/689)、北交所(4/8/9开头) baostock 不支持
-    if pure_code.startswith("688") or pure_code.startswith("689"):
-        return None
+
+    # 北交所 baostock 不支持（实测 error=10004011 股票代码未标识sh或sz）
     if pure_code.startswith(("4", "8", "9")):
         return None
-    
+
     # 重新构建带前缀的格式
     if "." in code:            # sh.600000
         return code
     if code.startswith(("sh", "sz", "bj")):  # sh600000 -> sh.600000
         return f"{code[:2]}.{code[2:]}"
-    if pure_code.startswith("6"):   # 沪市主板（排除科创板688/689）
+    if pure_code.startswith("6"):   # 沪市主板 + 科创板688/689
         return f"sh.{pure_code}"
     if pure_code.startswith(("0", "3")):  # 深市主板 + 创业板300/301
         return f"sz.{pure_code}"

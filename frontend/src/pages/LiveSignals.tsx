@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert, Button, Card, Col, Collapse, InputNumber, Modal, Popconfirm, Row,
-  Select, Space, Statistic, Table, Tag, Typography, message
+  Select, Space, Statistic, Switch, Table, Tag, Typography, message
 } from 'antd'
 import {
-  DeleteOutlined, NotificationOutlined, SaveOutlined, SyncOutlined
+  CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, NotificationOutlined,
+  PlayCircleOutlined, SaveOutlined, SyncOutlined, ThunderboltOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import type { LiveConfig, LivePosition, LiveSignalItem } from '../api/types'
+import type {
+  IntradayCodeStatus, IntradayRunResult, IntradayStatus, LiveConfig,
+  LivePosition, LiveSignalItem, ReadinessResult, ShadowStats, SlippageResult
+} from '../api/types'
 import {
-  addLiveFill, getLiveSummary, resetLiveData, runPremarket, saveLiveConfig,
-  setLiveSignalStatus, syncLivePositions
+  addLiveFill, getIntradayStatus, getLiveSummary, getReadiness, getShadowStats,
+  getSlippage, resetLiveData, runIntraday, runMorning, runPostclose,
+  saveLiveConfig, setLiveSignalStatus, syncLivePositions
 } from '../api/client'
 import { fmtMoney } from '../utils/format'
 
@@ -40,6 +45,13 @@ const BOARD_OPTS = [
   { value: 'zxb', label: '中小板/主板' }
 ]
 
+const T_MODE_OPTS = [
+  { value: 'off', label: '关闭做T（off，M2 起步建议）' },
+  { value: 'grid', label: '网格双止损（grid）' },
+  { value: 'discipline', label: '回补纪律（discipline）' },
+  { value: 'time', label: '时点规律T（time）' }
+]
+
 function statusTag(s: string) {
   if (s === '已成交') return <Tag color="success">已成交</Tag>
   if (s === '已忽略') return <Tag>已忽略</Tag>
@@ -62,6 +74,44 @@ export default function LiveSignals() {
   const [fillVolume, setFillVolume] = useState<number | null>(null)
   const [cfg, setCfg] = useState<LiveConfig | null>(null)
   const [cfgSaving, setCfgSaving] = useState(false)
+  const [morningLoading, setMorningLoading] = useState(false)
+  const [intradayStatus, setIntradayStatus] = useState<IntradayStatus | null>(null)
+  const [intradayRun, setIntradayRun] = useState<IntradayRunResult | null>(null)
+  const [intradayLoading, setIntradayLoading] = useState(false)
+  const [autoPoll, setAutoPoll] = useState(false)
+  const [postcloseLoading, setPostcloseLoading] = useState(false)
+  const [slip, setSlip] = useState<SlippageResult | null>(null)
+  const [shadow, setShadow] = useState<ShadowStats | null>(null)
+  const [ready, setReady] = useState<ReadinessResult | null>(null)
+  const loadedReports = useRef<Set<string>>(new Set())
+
+  const loadStatus = useCallback(() => {
+    getIntradayStatus().then(setIntradayStatus).catch(() => {})
+  }, [])
+
+  useEffect(() => { loadStatus() }, [loadStatus])
+
+  useEffect(() => {
+    if (!autoPoll) return
+    const t = setInterval(async () => {
+      try { await runIntraday() } catch { /* 断流由后端熔断推送告警 */ }
+      loadStatus()
+    }, 60_000)
+    return () => clearInterval(t)
+  }, [autoPoll, loadStatus])
+
+  const loadReport = (key: string) => {
+    if (loadedReports.current.has(key)) return
+    loadedReports.current.add(key)
+    if (key === 'slip') getSlippage().then(setSlip).catch(() => {})
+    if (key === 'shadow') getShadowStats().then(setShadow).catch(() => {})
+    if (key === 'ready') getReadiness().then(setReady).catch(() => {})
+  }
+
+  const onCollapseChange = (keys: string | string[]) => {
+    const ks = Array.isArray(keys) ? keys : [keys]
+    ks.forEach(loadReport)
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -75,28 +125,6 @@ export default function LiveSignals() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
-
-  const onPremarket = async () => {
-    setPremarketLoading(true)
-    try {
-      const r = await runPremarket()
-      if (r.stale) {
-        message.warning(
-          `盘前流程完成，但数据截至 ${r.as_of}（滞后 ${r.stale_days} 天）——` +
-          '请先在数据管理页更新日线，池子基于残缺数据')
-      } else {
-        message.success(
-          `盘前流程完成：${r.rebalanced ? `重选新池 ${r.pool.length} 只` : '未触发重选'}；` +
-          `推送${r.pushed ? '成功' : '未配置（仅落库）'}`)
-      }
-      await refresh()
-    } catch (err) {
-      message.error((err as { response?: { data?: { detail?: string } } })
-        ?.response?.data?.detail || '盘前流程失败')
-    } finally {
-      setPremarketLoading(false)
-    }
-  }
 
   const onFill = async () => {
     if (!fillTarget || !fillPrice || !fillVolume) return
@@ -147,6 +175,61 @@ export default function LiveSignals() {
     await resetLiveData()
     message.success('已清空信号数据（流程参数配置保留）')
     await refresh()
+  }
+
+  const onMorning = async (updateData: boolean) => {
+    setMorningLoading(true)
+    try {
+      const r = await runMorning(updateData)
+      message.success(
+        `盘前编排任务已提交（${r.task_id}）${updateData ? '：先做全市场日线增量更新（约数分钟），' : ''}` +
+        '完成后自动执行盘前流程并推送，可在任务中心查看进度')
+    } catch (err) {
+      message.error((err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail || '盘前编排提交失败')
+    } finally {
+      setMorningLoading(false)
+    }
+  }
+
+  const onIntraday = async () => {
+    setIntradayLoading(true)
+    try {
+      const r = await runIntraday()
+      setIntradayRun(r)
+      if (r.skipped) {
+        message.info(r.skipped)
+      } else if (r.signals.length) {
+        message.success(
+          `本轮 ${r.signals.length} 条信号（喂入 ${r.fed_bars} 根完成 bar），` +
+          `推送${r.pushed ? '成功' : '未配置飞书（仅落库）'}`)
+      } else {
+        message.info(`本轮无信号（喂入 ${r.fed_bars} 根完成 bar）`)
+      }
+      loadStatus()
+      await refresh()
+    } catch (err) {
+      message.error((err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail || '盘中轮询失败')
+    } finally {
+      setIntradayLoading(false)
+    }
+  }
+
+  const onPostclose = async () => {
+    setPostcloseLoading(true)
+    try {
+      const r = await runPostclose()
+      message.success(
+        `盘后完成：分钟线落库 ${r.saved.length} 只${r.skipped.length ? `（失败 ${r.skipped.length}）` : ''}，` +
+        `对账卡推送${r.pushed ? '成功' : '未配置飞书'}`)
+      await refresh()
+    } catch (err) {
+      message.error((err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail || '盘后流程失败')
+    } finally {
+      setPostcloseLoading(false)
+    }
   }
 
   const signalCols: ColumnsType<LiveSignalItem> = [
@@ -200,6 +283,38 @@ export default function LiveSignals() {
     {
       title: '开仓日', dataIndex: 'open_day', width: 110,
       render: (v) => v || '-'
+    }
+  ]
+
+  const intradayCols: ColumnsType<IntradayCodeStatus> = [
+    { title: '代码', dataIndex: 'code', width: 90 },
+    { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
+    {
+      title: '现价', dataIndex: 'price', width: 90, align: 'right',
+      render: (v) => (v != null ? v.toFixed(3) : '-')
+    },
+    {
+      title: '来源', dataIndex: 'in_pool', width: 90,
+      render: (v, r) => (
+        <Space size={4}>
+          {r.held && <Tag color="orange">持仓</Tag>}
+          {v && <Tag color="geekblue">池子</Tag>}
+          {!r.held && !v && <Tag>跟踪</Tag>}
+        </Space>
+      )
+    },
+    {
+      title: '状态机', width: 160,
+      render: (_v, r) => (
+        <Typography.Text style={{ fontSize: 12 }}>
+          {r.opened ? (r.full ? `满配·已加${r.adds_done}` : '试仓') : '未持仓'}
+          {r.exit_stage > 0 ? `｜退出中(${r.exit_stage})` : ''}
+        </Typography.Text>
+      )
+    },
+    {
+      title: '喂bar游标', dataIndex: 'last_bar', width: 150,
+      render: (v) => <Typography.Text style={{ fontSize: 12 }}>{v || '-'}</Typography.Text>
     }
   ]
 
@@ -267,16 +382,29 @@ export default function LiveSignals() {
         </Col>
       </Row>
 
-      <Card size="small" title="盘前信号流程"
+      <Card size="small" title="每日信号流程（盘前 → 盘中 → 盘后）"
         extra={
-          <Button type="primary" icon={<SyncOutlined />}
-            loading={premarketLoading} onClick={onPremarket}>
-            立即执行盘前流程
-          </Button>
+          <Space>
+            <Button icon={<PlayCircleOutlined />} loading={morningLoading}
+              onClick={() => onMorning(false)}>
+              仅盘前（不拉数据）
+            </Button>
+            <Button type="primary" icon={<SyncOutlined />} loading={morningLoading}
+              onClick={() => onMorning(true)}>
+              盘前流程（自动拉数据）
+            </Button>
+            <Button icon={<ThunderboltOutlined />} loading={postcloseLoading}
+              onClick={onPostclose}>
+              盘后落库与对账
+            </Button>
+          </Space>
         }>
         <Alert
           type="info" showIcon
-          message="T-1 特征重算 → 池级健康度/gate → 空仓重选判定 → 持仓退出检查 → 飞书推送 + 落库（只读现有数据，不拉数据）"
+          message={
+            '盘前：日线增量更新（含完整性守卫）→ T-1 特征重算 → 池级 gate → 空仓重选 → 退出检查 → 飞书推送；' +
+            '盘中：完成 bar → 状态机步进 → 风控前置 → 推送（下方控制台）；' +
+            '盘后：分钟线落库 + 对账卡推送'}
           style={{ marginBottom: 8 }}
         />
         {summary?.signals?.length ? (
@@ -288,6 +416,54 @@ export default function LiveSignals() {
         ) : (
           <Typography.Text type="secondary">尚未产生交易信号</Typography.Text>
         )}
+      </Card>
+
+      <Card
+        size="small"
+        title={
+          <Space>
+            <span>盘中信号机（M2）</span>
+            <Tag color={intradayStatus?.session ? 'green' : 'default'}>
+              {intradayStatus?.session ? '盘中时段' : '非交易时段'}
+            </Tag>
+            {intradayStatus && (
+              <Tag color={intradayStatus.t_mode === 'off' ? 'default' : 'purple'}>
+                t_mode={intradayStatus.t_mode}
+              </Tag>
+            )}
+            {intradayStatus?.heartbeat?.alerted && (
+              <Tag color="volcano">断流熔断中</Tag>
+            )}
+          </Space>
+        }
+        extra={
+          <Space>
+            <Button size="small" type="primary" icon={<ThunderboltOutlined />}
+              loading={intradayLoading} onClick={onIntraday}>
+              执行盘中轮询
+            </Button>
+            <Space size={4}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                自动(60秒)
+              </Typography.Text>
+              <Switch size="small" checked={autoPoll} onChange={setAutoPoll} />
+            </Space>
+          </Space>
+        }>
+        <Table<IntradayCodeStatus>
+          rowKey="code" size="small"
+          dataSource={intradayStatus?.codes ?? []}
+          columns={intradayCols}
+          pagination={false}
+          locale={{ emptyText: '无跟踪标的（先执行盘前流程生成池子）' }}
+        />
+        {intradayRun?.suspended?.length ? (
+          <Alert type="warning" showIcon style={{ marginTop: 8 }}
+            message="本轮拦截/暂停"
+            description={intradayRun.suspended
+              .map((w) => `${w.code}：${w.reason}`)
+              .join('；')} />
+        ) : null}
       </Card>
 
       <Card size="small" title="信号列表">
@@ -327,7 +503,7 @@ export default function LiveSignals() {
         />
       </Card>
 
-      <Collapse
+      <Collapse onChange={onCollapseChange}
         items={[
           {
             key: 'pool', label: `当前池子成员（${pool?.pool?.length ?? 0} 只，基准日 ${pool?.as_of ?? '-'}）`,
@@ -410,12 +586,117 @@ export default function LiveSignals() {
                     {numCell(cfg.pool_n, (v) => setCfg({ ...cfg, pool_n: v ?? 6 }), 1, 1)}
                   </Col>
                 </Row>
+                <Row gutter={12} style={{ marginTop: 8 }}>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">做T机制（t_mode）</Typography.Text>
+                    <Select style={{ width: '100%' }} value={cfg.t_mode || 'off'}
+                      options={T_MODE_OPTS}
+                      onChange={(v) => setCfg({ ...cfg, t_mode: v })} />
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">最大持仓只数（max_holdings）</Typography.Text>
+                    {numCell(cfg.max_holdings ?? 3,
+                      (v) => setCfg({ ...cfg, max_holdings: v ?? 3 }), 1, 1)}
+                  </Col>
+                </Row>
                 <Button type="primary" icon={<SaveOutlined />} loading={cfgSaving}
                   onClick={onSaveCfg} style={{ marginTop: 12 }}>
                   保存配置
                 </Button>
               </div>
             ) : null
+          },
+          {
+            key: 'slip',
+            label: '滑点统计（M3：实际成交价 vs 信号参考价，正=不利成本）',
+            children: slip ? (
+              <div>
+                <Space size="large" style={{ marginBottom: 8 }}>
+                  <Statistic title="样本数" value={slip.summary.n} />
+                  <Statistic title="平均滑点成本"
+                    value={slip.summary.avg_slip_pct != null
+                      ? `${slip.summary.avg_slip_pct}%` : '-'} />
+                  <Statistic title="买入均值"
+                    value={slip.summary.buy_avg_slip_pct != null
+                      ? `${slip.summary.buy_avg_slip_pct}%` : '-'} />
+                  <Statistic title="卖出均值"
+                    value={slip.summary.sell_avg_slip_pct != null
+                      ? `${slip.summary.sell_avg_slip_pct}%` : '-'} />
+                </Space>
+                <Table
+                  rowKey="fill_id" size="small"
+                  dataSource={slip.rows}
+                  pagination={{ pageSize: 10 }}
+                  columns={[
+                    { title: '代码', dataIndex: 'code', width: 90 },
+                    { title: '类型', dataIndex: 'stype', width: 80 },
+                    { title: '方向', dataIndex: 'side', width: 70 },
+                    { title: '参考价', dataIndex: 'ref_price', width: 90, align: 'right',
+                      render: (v) => v?.toFixed(3) },
+                    { title: '成交价', dataIndex: 'fill_price', width: 90, align: 'right',
+                      render: (v) => v?.toFixed(3) },
+                    { title: '滑点%', dataIndex: 'slip_pct', width: 90, align: 'right',
+                      render: (v) => (
+                        <Typography.Text type={v > 0 ? 'danger' : 'success'}>
+                          {v}%
+                        </Typography.Text>
+                      ) },
+                    { title: '时间', dataIndex: 'fill_time' }
+                  ]}
+                  locale={{ emptyText: '暂无回填成交——回填后自动积累滑点样本' }}
+                />
+              </div>
+            ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+          },
+          {
+            key: 'shadow',
+            label: '影子运行（M3：假设每条信号都按参考价足额执行 vs 实际回填）',
+            children: shadow ? (
+              <Space size="large" wrap>
+                <Statistic title="信号数" value={shadow.n_signals} />
+                <Statistic title="已执行" value={shadow.n_filled}
+                  suffix={`/ ${shadow.n_signals}`} />
+                <Statistic title="执行率"
+                  value={shadow.fill_rate != null
+                    ? `${(shadow.fill_rate * 100).toFixed(1)}%` : '-'} />
+                <Statistic title="影子已实现盈亏（按参考价）"
+                  valueStyle={{ color: shadow.shadow_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+                  value={fmtMoney(shadow.shadow_pnl)} />
+                <Statistic title="实际已实现盈亏（回填口径）"
+                  valueStyle={{ color: shadow.actual_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+                  value={fmtMoney(shadow.actual_pnl)} />
+                <Statistic title="执行差（实际-影子）"
+                  valueStyle={{ color: shadow.gap_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+                  value={fmtMoney(shadow.gap_pnl)} />
+                <Statistic title="影子天数" value={shadow.days} />
+              </Space>
+            ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+          },
+          {
+            key: 'ready',
+            label: 'M4 小资金实盘就绪检查',
+            children: ready ? (
+              <div>
+                <Alert
+                  type={ready.ready ? 'success' : 'warning'} showIcon
+                  style={{ marginBottom: 8 }}
+                  message={ready.ready
+                    ? '全部通过——可按 M4 流程以极小资金（5 万级）开始跟单灰度'
+                    : '存在未通过项——建议先补齐再上小资金'}
+                />
+                {ready.items.map((it) => (
+                  <Space key={it.key} size={8} style={{ display: 'flex', marginBottom: 4 }}>
+                    {it.ok
+                      ? <CheckCircleOutlined style={{ color: '#3f8600' }} />
+                      : <CloseCircleOutlined style={{ color: '#cf1322' }} />}
+                    <Typography.Text strong>{it.label}</Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {it.detail}
+                    </Typography.Text>
+                  </Space>
+                ))}
+              </div>
+            ) : <Typography.Text type="secondary">加载中（含行情源探测，约 1-2 秒）...</Typography.Text>
           }
         ]}
       />

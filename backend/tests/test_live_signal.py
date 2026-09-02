@@ -22,7 +22,8 @@ def _sig_env():
     yield
     with db.conn() as c:
         for t in ("sig_signal_log", "sig_fills", "sig_position",
-                  "sig_pool", "sig_config", "sig_t_debt", "sig_withdraw"):
+                  "sig_pool", "sig_config", "sig_t_debt", "sig_withdraw",
+                  "sig_strategy_state", "sig_meta"):
             c.execute(f"DELETE FROM {t}")
 
 

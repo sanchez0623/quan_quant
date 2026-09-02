@@ -139,6 +139,8 @@ class LiveConfigBody(BaseModel):
     suggest_pct: float = 0.15
     auto_index: list[str] = Field(default_factory=list)
     auto_boards: list[str] = Field(default_factory=list)
+    t_mode: str = "off"
+    max_holdings: int = 3
 
 
 @router.post("/config")
@@ -168,6 +170,65 @@ class ResetBody(BaseModel):
 
 @router.post("/reset")
 def reset_live(body: ResetBody, _user: str = Depends(get_current_user)):
-    """清空实盘信号机数据（信号/回填/虚拟持仓/池子状态），重新开始"""
+    """清空实盘信号机数据（信号/回填/虚拟持仓/池子状态/盘中状态机快照），重新开始"""
     db.reset_live_data(keep_config=body.keep_config)
     return {"reset": True, "keep_config": body.keep_config}
+
+
+# ---------------- M2 盘中信号机 ----------------
+
+class MorningBody(BaseModel):
+    update_data: bool = True   # 先做日线增量更新（含完整性守卫）
+    push: bool = True
+
+
+@router.post("/morning")
+def morning_run(body: MorningBody, _user: str = Depends(get_current_user)):
+    """盘前编排任务（异步）：日线增量更新 → 盘前信号流程。
+    进度在任务中心查看；数据更新全市场约数分钟。"""
+    task_id = "live_" + uuid.uuid4().hex[:12]
+    db.create_task(task_id, "实盘盘前流程" + ("（含拉数据）" if body.update_data else ""),
+                   "live_premarket",
+                   payload={"update_data": body.update_data, "push": body.push})
+    manager.submit("live_premarket", task_id,
+                   update_data=body.update_data, push=body.push)
+    return {"task_id": task_id, "status": "pending"}
+
+
+@router.post("/intraday")
+def intraday_run(_user: str = Depends(get_current_user)):
+    """执行一次盘中轮询：完成 bar → 状态机步进 → 风控前置 → 推送/落库。
+    幂等（bar 游标去重），盘中可反复调用（建议 60 秒一轮）。"""
+    return intraday.run_intraday(push=True)
+
+
+@router.get("/intraday/status")
+def intraday_status(_user: str = Depends(get_current_user)):
+    """盘中控制台快照：各票实时价/状态机状态/喂bar游标/心跳（轻量，不拉K线）"""
+    return intraday.status_snapshot()
+
+
+@router.post("/postclose")
+def postclose_run(_user: str = Depends(get_current_user)):
+    """盘后流程：当日分钟线落库（池子∪持仓）+ 对账卡推送"""
+    return postclose.run_postclose(push=True)
+
+
+# ---------------- M3 影子运行 / M4 就绪 ----------------
+
+@router.get("/slippage")
+def slippage(_user: str = Depends(get_current_user)):
+    """滑点统计：实际成交价 vs 信号参考价（方向折算为滑点成本）"""
+    return reports.slippage_stats()
+
+
+@router.get("/shadow")
+def shadow(_user: str = Depends(get_current_user)):
+    """M3 影子运行统计：信号执行率 + 影子账户（全按参考价足额执行）vs 实际回填"""
+    return reports.shadow_stats()
+
+
+@router.get("/readiness")
+def readiness(_user: str = Depends(get_current_user)):
+    """M4 小资金实盘就绪检查清单（飞书/数据/行情源/影子时长/滑点样本/护栏）"""
+    return reports.readiness()
