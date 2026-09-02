@@ -192,7 +192,7 @@ class BaostockSource(DataSource):
             try:
                 rs = self._bs.login()
                 if rs.error_code == BLACKLIST_CODE:
-                    tracker.record_blacklist(tracker.outbound_ip())
+                    tracker.record_blacklist(tracker.public_ip())
                     self._bs_logged_in = False
                     return False
                 ok = rs.error_code == "0"
@@ -245,7 +245,7 @@ class BaostockSource(DataSource):
                         return rows
                     # 查询级失败：可能是黑名单或会话被服务端断开
                     if rs.error_code == BLACKLIST_CODE:
-                        info = tracker.record_blacklist(tracker.outbound_ip())
+                        info = tracker.record_blacklist(tracker.public_ip())
                         raise BsBlacklisted(
                             f"baostock IP 已被黑名单限制（今年第 {info['freeze_count']} 次），"
                             f"预计 {info['release_at']} 自动解除")

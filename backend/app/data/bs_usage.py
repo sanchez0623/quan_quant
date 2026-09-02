@@ -15,6 +15,7 @@
 - 达上限行为：拒绝并抛出 BsDailyCapExceeded（任务以明确错误失败，不硬撞黑名单）。
 """
 import os
+import re
 import socket
 import sqlite3
 import sys
@@ -35,6 +36,30 @@ BLACKLIST_CODE = "10001011"
 _LOCK_FILE = os.path.join(str(config.DATA_DIR), ".bs.lock")
 # 可选：查询间隔节流（秒），默认 0=不节流
 _MIN_INTERVAL = float(os.environ.get("BS_MIN_INTERVAL", "0"))
+
+# 公网 IP echo 端点（轮询，返回纯 IPv4 或含 IP 文本均可；国内可达优先）
+_IP_ECHO_URLS = [
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+    "https://ip.3322.net",
+    "https://4.ipw.cn",
+    "https://myip.ipip.net",
+]
+_IP_CACHE: dict = {"ip": "", "ts": 0.0}
+_IP_CACHE_TTL = 600  # 公网 IP 很少变，缓存 10 分钟
+
+_IPV4_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
+
+
+def _extract_ipv4(text: str) -> str:
+    """从任意文本中提取合法的 IPv4（兼容纯 IP 与中文包装格式）。"""
+    m = _IPV4_RE.search(text or "")
+    if not m:
+        return ""
+    parts = m.group(1).split(".")
+    if all(0 <= int(p) <= 255 for p in parts):
+        return m.group(1)
+    return ""
 
 
 class BsDailyCapExceeded(RuntimeError):
@@ -198,15 +223,43 @@ class BsUsageTracker:
                 (datetime.now().isoformat(timespec="seconds"),),
             )
 
-    # ---- 出口 IP ----
-    def outbound_ip(self) -> str:
+    # ---- 公网 IP ----
+    def public_ip(self) -> str:
+        """取公网 IP（baostock 服务端视角）：
+        1) BS_MONITOR_IP 环境变量覆盖；2) 公网 IP echo 服务（多端点轮询，短超时）；
+        3) 全部失败回退本机出口接口 IP（NAT 下可能为内网 IP）。结果内存缓存 10 分钟。"""
         override = os.environ.get("BS_MONITOR_IP")
         if override:
             return override
+        now = time.time()
+        if _IP_CACHE["ip"] and now - _IP_CACHE["ts"] < _IP_CACHE_TTL:
+            return _IP_CACHE["ip"]
+        for url in _IP_ECHO_URLS:
+            ip = self._fetch_public_ip(url)
+            if ip:
+                _IP_CACHE["ip"] = ip
+                _IP_CACHE["ts"] = now
+                return ip
+        return self._outbound_interface_ip()
+
+    @staticmethod
+    def _fetch_public_ip(url: str) -> str:
+        try:
+            import httpx
+            with httpx.Client(timeout=3, trust_env=False) as client:
+                r = client.get(url)
+                if r.status_code == 200:
+                    return _extract_ipv4(r.text)
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _outbound_interface_ip() -> str:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                s.connect(("8.8.8.8", 80))  # UDP connect 不发包，仅取本机出口 IP
+                s.connect(("8.8.8.8", 80))  # UDP connect 不发包，仅取本机出口接口 IP
                 return s.getsockname()[0]
             finally:
                 s.close()
@@ -229,7 +282,7 @@ class BsUsageTracker:
             except ValueError:
                 blacklisted = False
         return {
-            "ip": self.outbound_ip(),
+            "ip": self.public_ip(),
             "today_count": self.daily_count(),
             "cap": DAILY_CAP,
             "concurrency": self.in_flight(),
@@ -237,7 +290,7 @@ class BsUsageTracker:
             "freeze_count": freeze_count,
             "release_at": release_at,
             "last_check": row.get("last_check"),
-            "hint": "本机出口 IP（NAT 环境下可能为内网 IP，可用 BS_MONITOR_IP 覆盖）；"
+            "hint": "公网 IP（baostock 服务端视角，经 IP echo 服务探测，可设 BS_MONITOR_IP 覆盖）；"
                     "待释放时间为空时请等待 5 分钟后刷新",
         }
 
