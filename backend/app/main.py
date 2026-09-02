@@ -2,6 +2,7 @@
 """FastAPI 入口：CORS、路由挂载、WebSocket 进度推送、启动初始化、静态托管"""
 import asyncio
 import contextlib
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,6 +26,16 @@ async def lifespan(app: FastAPI):
     db.init_db()
     if db.get_user(config.ADMIN_USERNAME) is None:
         db.create_user(config.ADMIN_USERNAME, auth.hash_password(config.ADMIN_PASSWORD))
+
+    # 启动：后台预热数据源健康检查（不阻塞启动；数据管理页可立即显示源可用性）
+    def _warmup_health():
+        try:
+            from .data import sources
+            sources.check_health(timeout=8)
+        except Exception:
+            pass
+    threading.Thread(target=_warmup_health, daemon=True, name="health-warmup").start()
+
     scheduler = None
     if config.ENABLE_SCHEDULER:
         # 每日 16:10 数据更新（默认 disabled，ENABLE_SCHEDULER=1 启用）

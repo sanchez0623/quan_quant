@@ -198,9 +198,24 @@ class BsUsageTracker:
             return dict(row) if row else None
 
     def record_blacklist(self, ip: str = "") -> dict:
-        """检测到被限制（错误码 10001011）：今年累计次数+1，冻结时长=次数×6h。"""
+        """检测到被限制（错误码 10001011）：今年累计次数+1，冻结时长=次数×6h。
+
+        若当前已处于黑名单限制期内（未到释放时间），视为同一次限制的重复探测，
+        不重复累加次数，仅刷新检查时间——否则黑名单持续期间每次健康检查都会虚增次数。"""
         now = datetime.now()
         row = self._blacklist_row()
+        active = False
+        if row and row.get("release_at"):
+            try:
+                active = now < datetime.fromisoformat(row["release_at"])
+            except ValueError:
+                active = False
+        if active:
+            with db.conn() as c:
+                c.execute("UPDATE bs_blacklist SET last_check=? WHERE id=?",
+                          (now.isoformat(timespec="seconds"), row["id"]))
+            return {"ip": row.get("ip") or ip, "freeze_count": int(row["freeze_count"]),
+                    "detected_at": row["detected_at"], "release_at": row["release_at"]}
         n = (int(row["freeze_count"]) + 1) if row else 1
         release_at = now + timedelta(hours=n * FREEZE_HOURS_PER_HIT)
         with db.conn() as c:
@@ -213,6 +228,16 @@ class BsUsageTracker:
         return {"ip": ip or "", "freeze_count": n,
                 "detected_at": now.isoformat(timespec="seconds"),
                 "release_at": release_at.isoformat(timespec="seconds")}
+
+    def mark_released(self) -> None:
+        """登录成功说明当前未被限制：将最近黑名单记录标记为已解除（保留累计次数历史）。"""
+        now = datetime.now().isoformat(timespec="seconds")
+        with db.conn() as c:
+            c.execute(
+                "UPDATE bs_blacklist SET release_at=?, last_check=? "
+                "WHERE id=(SELECT MAX(id) FROM bs_blacklist)",
+                (now, now),
+            )
 
     def touch_check(self) -> None:
         """更新最近检查时间（health_check 主动探测后调用）。"""

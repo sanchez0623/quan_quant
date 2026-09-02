@@ -196,6 +196,8 @@ class BaostockSource(DataSource):
                     self._bs_logged_in = False
                     return False
                 ok = rs.error_code == "0"
+                if ok:
+                    tracker.mark_released()  # 登录成功 -> 不在黑名单期，解除旧记录
                 self._bs_logged_in = ok
                 if not ok:
                     try:
@@ -744,10 +746,43 @@ class MootdxSource(DataSource):
 # 源注册与健康状态缓存（未检查/未安装 → null）
 SOURCES: list[DataSource] = [BaostockSource(), AkshareSource(), MootdxSource()]
 _health_cache: dict[str, dict] = {}
+_health_lock = threading.Lock()
+_health_checking = False
+_health_checked_at = 0.0
+_HEALTH_TTL = 60  # 健康缓存保鲜时长（秒）
+
+
+def ensure_health_checked(ttl: float = _HEALTH_TTL) -> bool:
+    """确保健康检查已触发（懒刷新）：缓存过期且无进行中检查时，在后台线程重检，
+    不阻塞调用方。返回当前是否有可用缓存（首次可能 False，UI 下次轮询即正常）。
+
+    背景：数据更新任务在独立工作进程里跑 check_health，结果回不到主服务进程；
+    这里改为在主服务进程内做懒刷新 + TTL，健康状态才能真正显示。"""
+    global _health_checking, _health_checked_at
+    now = time.time()
+    with _health_lock:
+        if _health_checking:
+            return bool(_health_cache)
+        if _health_checked_at and (now - _health_checked_at) < ttl:
+            return bool(_health_cache)
+        _health_checking = True
+
+    def _run():
+        global _health_checking, _health_checked_at
+        try:
+            check_health(timeout=8)
+        finally:
+            with _health_lock:
+                _health_checking = False
+                _health_checked_at = time.time()
+
+    threading.Thread(target=_run, daemon=True, name="health-check").start()
+    return bool(_health_cache)
 
 
 def health_snapshot() -> list[dict]:
     """返回 sources 健康快照：healthy=null 表示未安装/未检查"""
+    ensure_health_checked()
     out = []
     for s in SOURCES:
         if not s.available():
