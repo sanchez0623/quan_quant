@@ -446,6 +446,13 @@ def _accumulate_segment(acc: dict, rep: dict, seg_no: int,
     if cutoff:
         rejects = [r for r in rejects if r.get("date", "") <= cutoff]
     acc["rejects"].extend(rejects)
+    # 出金流水（WITHDRAW_FIX）：必须并入 acc["wlog"]，否则 universe_auto 分段
+    # 拼接的最终 withdrawal 汇总恒为 0（bt_42037faf88f2 案例：20 个月 total=0）。
+    # 截断语义与交易一致：触发日之后的流水随旧池退役丢弃
+    wlog = ((rep.get("withdrawal") or {}).get("log")) or []
+    if cutoff:
+        wlog = [e for e in wlog if (e.get("date") or "")[:10] <= cutoff]
+    acc["wlog"].extend(wlog)
 
 
 def _equity_at(rep: dict, day: str) -> float:
