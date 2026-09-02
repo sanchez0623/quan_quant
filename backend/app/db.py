@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS experiments(
   created_at TEXT NOT NULL,
   finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS bs_usage(
+  date TEXT PRIMARY KEY,        -- YYYY-MM-DD
+  count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS bs_blacklist(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip TEXT,
+  freeze_count INTEGER NOT NULL DEFAULT 0,  -- 本年累计被限制次数
+  detected_at TEXT,
+  release_at TEXT,              -- 预计自动解除时间（空=未知，等5分钟刷新）
+  last_check TEXT
+);
 """
 
 

@@ -7,6 +7,8 @@ import type {
   BacktestListItem,
   BacktestReport,
   BacktestTemplateItem,
+  BsCheckResult,
+  BsMonitor,
   DataDemoRequest,
   DataStatus,
   ExperimentCreateRequest,
@@ -270,6 +272,16 @@ export async function deleteUser(username: string): Promise<{ status: string }> 
 // ---- 数据管理 ----
 export async function getDataStatus(): Promise<DataStatus> {
   const res = await api.get<DataStatus>('/data/status')
+  return res.data
+}
+
+export async function getBsMonitor(): Promise<BsMonitor> {
+  const res = await api.get<BsMonitor>('/data/bs_monitor')
+  return res.data
+}
+
+export async function checkBs(): Promise<BsCheckResult> {
+  const res = await api.post<BsCheckResult>('/data/bs_check')
   return res.data
 }
 

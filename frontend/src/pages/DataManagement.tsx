@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -20,8 +21,8 @@ import {
 import type { Dayjs } from 'dayjs'
 import { DatabaseOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { createDemoData, errDetail, getDataStatus, updateData } from '../api/client'
-import type { DataSourceHealth } from '../api/types'
+import { checkBs, createDemoData, errDetail, getBsMonitor, getDataStatus, updateData } from '../api/client'
+import type { BsMonitor, DataSourceHealth } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import { fmtInt } from '../utils/format'
 
@@ -39,6 +40,39 @@ export default function DataManagement() {
   const [demoDays, setDemoDays] = useState<number>(500)
   const [stocksInput, setStocksInput] = useState('')
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  const [bs, setBs] = useState<BsMonitor | null>(null)
+  const [bsLoading, setBsLoading] = useState(false)
+
+  const refreshBs = useCallback(async () => {
+    try {
+      setBs(await getBsMonitor())
+    } catch (err) {
+      message.error(errDetail(err, '加载 baostock 监控失败'))
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshBs()
+  }, [refreshBs])
+
+  const onBsCheck = async () => {
+    setBsLoading(true)
+    try {
+      const res = await checkBs()
+      setBs(res.monitor)
+      if (res.ok) {
+        message.success('baostock 连接正常')
+      } else if (res.monitor.blacklisted) {
+        message.warning(`baostock 已被黑名单限制，预计 ${res.monitor.release_at ?? '未知时间'} 解除`)
+      } else {
+        message.warning('baostock 健康检查异常（可能未安装或网络问题）')
+      }
+    } catch (err) {
+      message.error(errDetail(err, '检查失败'))
+    } finally {
+      setBsLoading(false)
+    }
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -228,6 +262,66 @@ export default function DataManagement() {
           dataSource={status?.sources ?? []}
           columns={sourceColumns}
         />
+      </Card>
+
+      {/* baostock API 调用监控：今日用量 vs 上限 / 并发连接 / 黑名单状态 */}
+      <Card
+        size="small"
+        title="baostock API 调用监控"
+        extra={
+          <Button size="small" icon={<SyncOutlined />} loading={bsLoading} onClick={onBsCheck}>
+            立即检查
+          </Button>
+        }
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Space size="large" wrap>
+            <Statistic
+              title="今日调用 / 上限"
+              value={bs ? `${fmtInt(bs.today_count)} / ${fmtInt(bs.cap)}` : '-'}
+              valueStyle={{
+                fontSize: 18,
+                color: bs && bs.today_count / bs.cap > 0.8 ? '#fa8c16' : undefined
+              }}
+            />
+            <Statistic title="今年被限制次数" value={bs?.freeze_count ?? '-'} valueStyle={{ fontSize: 18 }} />
+            <Statistic title="当前IP" value={bs?.ip || '-'} valueStyle={{ fontSize: 16 }} />
+            <Statistic
+              title="并发连接"
+              value={bs ? (bs.concurrency > 0 ? 1 : 0) : '-'}
+              valueStyle={{ fontSize: 18 }}
+            />
+          </Space>
+          <Progress
+            percent={bs ? Math.min(100, Math.round((bs.today_count / bs.cap) * 100)) : 0}
+            status={bs && bs.today_count / bs.cap > 0.8 ? 'exception' : 'normal'}
+            format={() =>
+              bs ? `${bs.today_count.toLocaleString('zh-CN')} / ${bs.cap.toLocaleString('zh-CN')}` : '-'
+            }
+          />
+          {bs?.blacklisted ? (
+            <Alert
+              type="error"
+              showIcon
+              message={`IP 已被 baostock 黑名单限制（今年第 ${bs.freeze_count} 次）`}
+              description={
+                bs.release_at
+                  ? `预计 ${bs.release_at} 自动解除；限制时长 = 今年累计次数 × 6 小时`
+                  : '待释放时间为空，请等待 5 分钟后刷新页面'
+              }
+            />
+          ) : (
+            <Alert
+              type="success"
+              showIcon
+              message="baostock 访问正常（串行锁生效：同一时刻仅 1 个连接）"
+            />
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            规则：每日请求 ≤ {bs?.cap ?? 50000} 次，超限拒绝新请求；首次被限制冻结 6 小时自动解除，多次限制时长 = 累计次数 × 6 小时。
+            {bs?.hint ? ` ${bs.hint}` : ''}
+          </Typography.Text>
+        </Space>
       </Card>
 
       <Card size="small" title="数据操作">

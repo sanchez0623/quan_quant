@@ -28,6 +28,26 @@ def data_status(_user: str = Depends(get_current_user)):
     }
 
 
+@router.get("/bs_monitor")
+def bs_monitor(_user: str = Depends(get_current_user)):
+    """baostock API 调用监控：今日用量 vs 上限 / 并发连接 / 黑名单状态 / 出口IP"""
+    from ..data.bs_usage import tracker
+    return tracker.get_monitor()
+
+
+@router.post("/bs_check")
+def bs_check(_user: str = Depends(get_current_user)):
+    """立即做一次 baostock 健康检查，主动探测是否被黑名单（登录/查询返回 10001011）"""
+    from ..data.bs_usage import tracker
+    bs_src = next((s for s in sources.SOURCES if s.name == "baostock"), None)
+    try:
+        ok = bool(bs_src and bs_src.health_check(timeout=15))
+    except Exception:
+        ok = False
+    tracker.touch_check()
+    return {"ok": ok, "monitor": tracker.get_monitor()}
+
+
 class UpdateRequest(BaseModel):
     scope: str = "daily"
     stocks: Optional[list[str]] = None  # 指定股票（sh.600021/600021 均可）；空=全量

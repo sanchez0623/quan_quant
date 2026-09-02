@@ -871,6 +871,24 @@ export interface DataStatus {
   sources: DataSourceHealth[]
 }
 
+/** baostock API 调用监控（数据管理） */
+export interface BsMonitor {
+  ip: string
+  today_count: number
+  cap: number
+  concurrency: number
+  blacklisted: boolean
+  freeze_count: number
+  release_at: string | null
+  last_check: string | null
+  hint?: string
+}
+
+export interface BsCheckResult {
+  ok: boolean
+  monitor: BsMonitor
+}
+
 export interface DataDemoRequest {
   stocks?: string[]
   days?: number

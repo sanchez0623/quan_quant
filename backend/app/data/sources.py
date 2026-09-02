@@ -9,6 +9,16 @@ from typing import Callable, Optional
 
 import polars as pl
 
+# baostock 用量监控（跨进程计数/串行锁/黑名单），见 bs_usage.py
+from .bs_usage import (
+    BLACKLIST_CODE,
+    DAILY_CAP,
+    BsBlacklisted,
+    BsDailyCapExceeded,
+    BsLockTimeout,
+    tracker,
+)
+
 
 class DataSource:
     """数据源抽象基类"""
@@ -172,12 +182,19 @@ class BaostockSource(DataSource):
         return self._ok
 
     def _ensure_login(self) -> bool:
-        """确保已登录（登录态跨查询复用，仅首次真正 login）"""
+        """确保已登录（登录态跨查询复用，仅首次真正 login）。
+
+        黑名单检测：baostock 对受限 IP 在 login 返回错误码 10001011，
+        这里记录黑名单（今年累计次数+1、算预计解除时间），由 _run_query 抛明确错误。"""
         with self._bs_lock:
             if self._bs_logged_in:
                 return True
             try:
                 rs = self._bs.login()
+                if rs.error_code == BLACKLIST_CODE:
+                    tracker.record_blacklist(tracker.outbound_ip())
+                    self._bs_logged_in = False
+                    return False
                 ok = rs.error_code == "0"
                 self._bs_logged_in = ok
                 if not ok:
@@ -201,20 +218,44 @@ class BaostockSource(DataSource):
 
     def _run_query(self, qfn) -> Optional[list]:
         """在缓存登录态下执行查询；会话失效（错误码或异常）时登出重登重试一次。
-        qfn: () -> (rs, rows)。成功返回 rows（可能为空列表），失败返回 None。"""
+        qfn: () -> (rs, rows)。成功返回 rows（可能为空列表），失败返回 None。
+
+        全局约束（跨进程，数据管理·API调用监控）：
+        - 串行锁：同一时刻仅 1 个 baostock 连接（禁止并发访问）
+        - 日上限：每日请求 <= 50000，超限抛 BsDailyCapExceeded 拒绝
+        - 黑名单：错误码 10001011 抛 BsBlacklisted（含预计解除时间）
+        """
         with self._bs_lock:
             try:
-                if not self._bs_logged_in and not self._ensure_login():
-                    return None
-                rs, rows = qfn()
-                if rs.error_code == "0":
-                    return rows
-                # 查询级失败：会话可能被服务端断开 -> 登出重登一次
-                self._force_logout()
-                if not self._ensure_login():
-                    return None
-                rs, rows = qfn()
-                return rows if rs.error_code == "0" else None
+                with tracker.serialize():
+                    if tracker.daily_count() >= DAILY_CAP:
+                        raise BsDailyCapExceeded(
+                            f"baostock 今日调用已达上限 {DAILY_CAP} 次，拒绝新请求"
+                            f"（可减少全量更新或次日再试）")
+                    tracker.record_call()
+                    if not self._bs_logged_in and not self._ensure_login():
+                        info = tracker.last_blacklist()
+                        if info:
+                            raise BsBlacklisted(
+                                f"baostock IP 已被黑名单限制（今年第 {info['freeze_count']} 次），"
+                                f"预计 {info['release_at']} 自动解除")
+                        return None
+                    rs, rows = qfn()
+                    if rs.error_code == "0":
+                        return rows
+                    # 查询级失败：可能是黑名单或会话被服务端断开
+                    if rs.error_code == BLACKLIST_CODE:
+                        info = tracker.record_blacklist(tracker.outbound_ip())
+                        raise BsBlacklisted(
+                            f"baostock IP 已被黑名单限制（今年第 {info['freeze_count']} 次），"
+                            f"预计 {info['release_at']} 自动解除")
+                    self._force_logout()
+                    if not self._ensure_login():
+                        return None
+                    rs, rows = qfn()
+                    return rows if rs.error_code == "0" else None
+            except (BsDailyCapExceeded, BsBlacklisted, BsLockTimeout):
+                raise
             except Exception:
                 self._force_logout()
                 return None
