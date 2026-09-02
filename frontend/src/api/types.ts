@@ -851,6 +851,14 @@ export interface DataIndexStatus {
   updated_at?: string | null
 }
 
+export interface DataIndexDailyStatus {
+  rows: number
+  indexes: number
+  start: string | null
+  end: string | null
+  updated_at?: string | null
+}
+
 export interface DataIndustryStatus {
   rows: number
   stocks: number
@@ -881,6 +889,8 @@ export interface DataStatus {
   calendar: DataCalendarStatus
   /** 指数成分快照（未更新时为 null） */
   index: DataIndexStatus | null
+  /** 基准指数日线（000905/000300，未更新时为 null） */
+  index_daily?: DataIndexDailyStatus | null
   /** 申万行业快照（未更新时为 null） */
   industry: DataIndustryStatus | null
   /** 股票列表（ST/退市标记，未更新时为 null） */

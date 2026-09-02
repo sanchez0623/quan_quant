@@ -286,7 +286,7 @@ export async function checkBs(): Promise<BsCheckResult> {
 }
 
 export async function updateData(
-  scope: 'daily' | 'minute5' | 'all' | 'industry' | 'stock_basic',
+  scope: 'daily' | 'minute5' | 'all' | 'industry' | 'stock_basic' | 'calendar' | 'index_daily',
   stocks?: string[],
   dateRange?: { startDate?: string; endDate?: string }
 ): Promise<TaskCreateResponse> {

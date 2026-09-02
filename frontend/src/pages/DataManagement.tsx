@@ -35,7 +35,7 @@ function HealthyTag({ healthy }: { healthy: boolean | null }) {
 export default function DataManagement() {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof getDataStatus>> | null>(null)
   const [loading, setLoading] = useState(false)
-  const [scope, setScope] = useState<'daily' | 'minute5' | 'all'>('daily')
+  const [scope, setScope] = useState<'daily' | 'minute5' | 'index_daily' | 'all'>('daily')
   const [task, setTask] = useState<{ id: string; label: string } | null>(null)
   const [demoDays, setDemoDays] = useState<number>(500)
   const [stocksInput, setStocksInput] = useState('')
@@ -160,6 +160,17 @@ export default function DataManagement() {
     }
   }
 
+  /** 拉取基准指数日线（000905 中证500 / 000300 沪深300，全历史秒级） */
+  const onUpdateIndexDaily = async () => {
+    try {
+      const res = await updateData('index_daily')
+      setTask({ id: res.task_id, label: '基准指数日线更新' })
+      message.info('指数日线更新任务已提交（中证500 + 沪深300，秒级）')
+    } catch (err) {
+      message.error(errDetail(err, '提交更新失败'))
+    }
+  }
+
   const onDemo = () => {
     Modal.confirm({
       title: '确认生成演示数据？',
@@ -253,6 +264,24 @@ export default function DataManagement() {
         </Col>
       </Row>
 
+      <Row gutter={16}>
+        <Col span={6}>
+          <Card size="small" title="基准指数日线（index_daily）" loading={loading}>
+            <Statistic title="指数数" value={fmtInt(status?.index_daily?.indexes)} valueStyle={{ fontSize: 20 }} />
+            <Statistic
+              title="数据行数"
+              value={fmtInt(status?.index_daily?.rows)}
+              valueStyle={{ fontSize: 20 }}
+            />
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12, marginTop: 8 }}>
+              起止：{status?.index_daily?.start ?? '-'} ~ {status?.index_daily?.end ?? '-'}
+              <br />
+              更新：{status?.index_daily?.updated_at ?? '-'}
+            </Typography.Paragraph>
+          </Card>
+        </Col>
+      </Row>
+
       <Card size="small" title="数据源健康状态">
         <Table<DataSourceHealth>
           rowKey="name"
@@ -338,6 +367,7 @@ export default function DataManagement() {
                     options={[
                       { value: 'daily', label: '日线' },
                       { value: 'minute5', label: '5分钟线' },
+                      { value: 'index_daily', label: '指数日线' },
                       { value: 'all', label: '全部' }
                     ]}
                   />
@@ -441,6 +471,26 @@ export default function DataManagement() {
             </Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               拉取 baostock 全市场在市证券（秒级），标记 ST 与退市股。搜索/选股时自动剔除。
+            </Typography.Text>
+          </Space>
+        </Space>
+      </Card>
+
+      <Card size="small" title="基准指数日线（回测对比用）">
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Space>
+            <Button
+              type="primary"
+              icon={<SyncOutlined />}
+              disabled={!!task}
+              loading={!!task}
+              onClick={onUpdateIndexDaily}
+            >
+              拉取指数日线
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              拉取中证500（000905）与沪深300（000300）日线全历史（秒级），供回测报告的
+              基准对比与超额收益指标。与个股日线相互独立存储，随时可拉。
             </Typography.Text>
           </Space>
         </Space>
