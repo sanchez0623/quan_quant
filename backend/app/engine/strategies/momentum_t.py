@@ -83,7 +83,7 @@ class MomentumTStrategy(Strategy):
          "min": 5, "max": 40, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "仅金叉+站上慢线（未确认斜率）时的首仓比例"},
         {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 50,
-         "min": 30, "max": 90, "step": 1, "unit": "%", "group": "建仓与加仓",
+         "min": 5, "max": 90, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "三重确认后的目标仓位；实际仍受风控个股上限约束"},
         {"key": "max_adds", "frozen": True, "label": "最大加仓次数", "type": "int", "default": 2, "min": 0, "max": 4,
          "group": "建仓与加仓"},
