@@ -779,3 +779,16 @@ def remove_live_position(code: str, db_path: Optional[str] = None) -> bool:
     with conn(db_path) as c:
         cur = c.execute("DELETE FROM sig_position WHERE code=?", (code,))
     return cur.rowcount > 0
+
+
+def reset_live_data(keep_config: bool = True,
+                    db_path: Optional[str] = None) -> None:
+    """清空实盘信号机数据（信号流水/回填/虚拟持仓/池子状态/做T债务/出金）。
+    keep_config=True 保留 sig_config（流程参数配置）。表名来自白名单常量。"""
+    tables = ["sig_signal_log", "sig_fills", "sig_position", "sig_pool",
+              "sig_t_debt", "sig_withdraw"]
+    if not keep_config:
+        tables.append("sig_config")
+    with conn(db_path) as c:
+        for t in tables:
+            c.execute(f"DELETE FROM {t}")

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Row, Select, Space,
-  Statistic, Table, Tag, Typography, message
+  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Popconfirm, Row,
+  Select, Space, Statistic, Table, Tag, Typography, message
 } from 'antd'
-import { NotificationOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined, NotificationOutlined, SaveOutlined, SyncOutlined
+} from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type { LiveConfig, LivePosition, LiveSignalItem } from '../api/types'
 import {
-  addLiveFill, getLiveSummary, runPremarket, saveLiveConfig,
+  addLiveFill, getLiveSummary, resetLiveData, runPremarket, saveLiveConfig,
   setLiveSignalStatus, syncLivePositions
 } from '../api/client'
 import { fmtMoney } from '../utils/format'
@@ -139,6 +141,12 @@ export default function LiveSignals() {
     } finally {
       setCfgSaving(false)
     }
+  }
+
+  const onReset = async () => {
+    await resetLiveData()
+    message.success('已清空信号数据（流程参数配置保留）')
+    await refresh()
   }
 
   const signalCols: ColumnsType<LiveSignalItem> = [
@@ -288,6 +296,19 @@ export default function LiveSignals() {
           dataSource={summary?.signals ?? []}
           columns={signalCols}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          title={() => (
+            <Popconfirm
+              title="清空全部信号数据？"
+              description="将删除：信号流水、成交回填、虚拟持仓、池子状态。流程参数配置保留。"
+              okText="清空重来" okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={onReset}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />}>
+                清空重来
+              </Button>
+            </Popconfirm>
+          )}
         />
       </Card>
 

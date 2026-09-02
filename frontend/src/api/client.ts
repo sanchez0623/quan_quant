@@ -334,6 +334,10 @@ export async function saveLiveConfig(cfg: LiveConfig): Promise<LiveConfig> {
   return res.data
 }
 
+export async function resetLiveData(keepConfig = true): Promise<void> {
+  await api.post('/live/reset', { keep_config: keepConfig })
+}
+
 export async function updateData(
   scope: 'daily' | 'minute5' | 'all' | 'industry' | 'stock_basic' | 'calendar' | 'index_daily',
   stocks?: string[],

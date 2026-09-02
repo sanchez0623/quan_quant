@@ -160,3 +160,14 @@ def live_summary(_user: str = Depends(get_current_user)):
         "feishu_configured": feishu.configured(),
         "config": {**premarket.DEFAULT_CFG, **db.get_live_config()},
     }
+
+
+class ResetBody(BaseModel):
+    keep_config: bool = True   # 保留流程参数配置
+
+
+@router.post("/reset")
+def reset_live(body: ResetBody, _user: str = Depends(get_current_user)):
+    """清空实盘信号机数据（信号/回填/虚拟持仓/池子状态），重新开始"""
+    db.reset_live_data(keep_config=body.keep_config)
+    return {"reset": True, "keep_config": body.keep_config}
