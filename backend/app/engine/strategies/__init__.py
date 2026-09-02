@@ -49,7 +49,8 @@ def validate_params(strategy_id: str, params: dict) -> tuple[bool, str]:
                 if ("min" in s and v2 < s["min"]) or ("max" in s and v2 > s["max"]):
                     return False, f"参数 {k}={v} 超出范围 [{s.get('min')}, {s.get('max')}]"
             elif t == "categorical":
-                choices = s.get("choices") or []
+                # choices 元素支持 "value|中文标签" 展示格式，校验只认 | 前的 value
+                choices = [c.split("|")[0] for c in (s.get("choices") or [])]
                 if choices and v not in choices:
                     return False, f"参数 {k}={v} 不在可选值 {choices} 中"
         except (TypeError, ValueError):

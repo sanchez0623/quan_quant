@@ -265,6 +265,9 @@ function buildSpace(rows?: SpaceRow[]): Record<string, ParamSpaceItem> {
         .split(/[,，]/)
         .map((s) => s.trim())
         .filter(Boolean)
+        // choices 元素支持 "value|中文标签" 展示格式，寻优空间只取 | 前的 value
+        .map((s) => s.split('|')[0].trim())
+        .filter(Boolean)
       space[row.key] = { type: 'select', choices }
     } else {
       space[row.key] = { type: row.type, low: row.low, high: row.high, step: row.step }
@@ -393,7 +396,8 @@ function groupsToJson(groups?: Array<{ name?: string; n_trials?: number; params?
           .map((r) => {
             if (r.type === 'select') {
               return [r.key, String(r.choices ?? '')
-                .split(/[,，]/).map((s) => s.trim()).filter(Boolean)]
+                .split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+                .map((s) => s.split('|')[0].trim()).filter(Boolean)]
             }
             return [r.key, r.step != null ? [r.low, r.high, r.step] : [r.low, r.high]]
           })

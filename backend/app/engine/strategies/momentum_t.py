@@ -44,7 +44,8 @@ class MomentumTStrategy(Strategy):
     param_schema = [
         # ---- G1 核心开关：决定跑的是哪一类实验，改动影响最大 ----
         {"key": "t_mode", "label": "做T机制", "type": "categorical", "group": "核心开关",
-         "choices": ["grid", "discipline", "time", "off"], "default": "grid",
+         "choices": ["grid|网格（双止损）", "discipline|回补纪律", "time|时点规律T", "off|关闭做T"],
+         "default": "grid",
          "description": "grid=网格+双止损(L1)；discipline=回补纪律(L2)；time=时点规律T(D)；"
                         "off=关闭做T(C)。选 off/time 时下方网格类参数自动隐藏"},
         {"key": "max_t_times", "label": "日内T次数上限", "type": "int", "default": 4, "min": 0, "max": 10,

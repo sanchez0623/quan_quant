@@ -44,7 +44,17 @@ function ParamField({ p }: { p: ParamSchema }) {
   if (p.type === 'bool') {
     control = <Switch disabled={p.frozen} />
   } else if (p.type === 'select' || p.type === 'categorical') {
-    control = <Select options={(p.choices ?? []).map((c) => ({ value: c, label: c }))} allowClear disabled={p.frozen} />
+    // choices 元素支持 "value|中文标签" 展示格式：value 取 | 前，label 取 | 后（无 | 则 label=value）
+    control = (
+      <Select
+        options={(p.choices ?? []).map((c) => {
+          const i = c.indexOf('|')
+          return i >= 0 ? { value: c.slice(0, i), label: c.slice(i + 1) } : { value: c, label: c }
+        })}
+        allowClear
+        disabled={p.frozen}
+      />
+    )
   } else if (p.type === 'str') {
     control = <Input />
   } else {
