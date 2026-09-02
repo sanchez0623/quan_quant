@@ -97,41 +97,54 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   }
 
   const columns: ColumnsType<TradeLogItem> = [
-    { title: '#', dataIndex: 'trade_id', width: 56 },
-    { title: '时间', dataIndex: 'time', width: 148 },
-    { title: '代码', dataIndex: 'code', width: 84 },
-    { title: '名称', dataIndex: 'name', width: 96, ellipsis: true },
+    { title: '#', dataIndex: 'trade_id', width: 44 },
+    {
+      // 无滚动条总宽预算：时间显示缩短为 YY-MM-DD HH:mm（秒位无意义），悬浮看全
+      title: '时间',
+      dataIndex: 'time',
+      width: 116,
+      render: (v: string) => {
+        const s = v.length > 10 ? dayjs(v).format('YY-MM-DD HH:mm') : v
+        return (
+          <Tooltip title={v} placement="topLeft">
+            <span>{s}</span>
+          </Tooltip>
+        )
+      }
+    },
+    { title: '代码', dataIndex: 'code', width: 66 },
+    { title: '名称', dataIndex: 'name', width: 72, ellipsis: true },
     {
       title: '方向',
       dataIndex: 'side',
-      width: 64,
+      width: 58,
       render: (v: 'buy' | 'sell') =>
         v === 'buy' ? <Tag color="red">买入</Tag> : <Tag color="green">卖出</Tag>
     },
     {
       title: '段',
       dataIndex: 'seg',
-      width: 52,
+      width: 44,
       render: (v: number | undefined) =>
         v != null ? <Tooltip title="动态选股段号（滚动重选）"><Tag color="geekblue">S{v}</Tag></Tooltip> : '-'
     },
     {
       title: '价格',
       dataIndex: 'price',
-      width: 88,
+      width: 78,
       align: 'right',
       render: (v: number) => fmtNum(v, 3)
     },
     {
       title: '数量',
       dataIndex: 'volume',
-      width: 92,
+      width: 76,
       align: 'right',
       render: (v: number) => v.toLocaleString('zh-CN')
     },
     {
       title: '剩余持仓',
-      width: 92,
+      width: 76,
       align: 'right',
       render: (_v, t) => {
         const r = remainByTrade.get(t.trade_id)
@@ -141,21 +154,21 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
     {
       title: '金额',
       dataIndex: 'amount',
-      width: 112,
+      width: 96,
       align: 'right',
       render: (v: number) => fmtMoney(v)
     },
     {
       title: '手续费',
       dataIndex: 'fee',
-      width: 88,
+      width: 74,
       align: 'right',
       render: (v: number) => fmtMoney(v)
     },
     {
       title: '类型',
       dataIndex: 'type',
-      width: 110,
+      width: 92,
       render: (v: string, t) => (
         <Space size={4} wrap>
           <Tag color={TYPE_TAG_COLOR[v] ?? 'default'}>{v}</Tag>
@@ -164,18 +177,18 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       )
     },
     {
-      // 理由固定宽度两行展开：不设 width 的自适应列在窄屏会被固定列挤压成省略号，
-      // 这是「理由老是被缩起来」的根因；2 行 clamp 保底，超长悬浮 Tooltip 看全文
+      // 理由固定宽度多行展开：不设 width 的自适应列会被固定列挤压成省略号；
+      // 3 行 clamp 尽量放下全文，超长悬浮 Tooltip 兜底
       title: '理由',
       dataIndex: 'reason',
-      width: 320,
+      width: 200,
       render: (v: string | null) =>
         v ? (
           <Tooltip title={v} placement="topLeft">
             <span
               style={{
                 display: '-webkit-box',
-                WebkitLineClamp: 2,
+                WebkitLineClamp: 3,
                 WebkitBoxOrient: 'vertical',
                 overflow: 'hidden',
                 wordBreak: 'break-all',
@@ -192,7 +205,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
     {
       title: '平仓盈亏',
       dataIndex: 'pnl',
-      width: 104,
+      width: 88,
       align: 'right',
       render: (v: number | null) =>
         v === null || v === undefined ? '-' : <span style={{ color: pnlColor(v) }}>{fmtMoney(v)}</span>
@@ -242,7 +255,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
         dataSource={filtered}
         columns={columns}
         size="small"
-        scroll={{ x: 1506 }}
+        scroll={{ x: 1180 }}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 笔` }}
       />
     </div>
