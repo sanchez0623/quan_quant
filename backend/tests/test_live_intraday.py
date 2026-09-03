@@ -5,6 +5,7 @@ SlotStepper 状态恢复连续性 / 完成 bar 语义 / 盘中轮询游标幂等
 行情一律 monkeypatch（不触网）；run_* 一律 push=False（.env 有真实 webhook）。
 """
 import datetime as dt
+import json
 
 import numpy as np
 import polars as pl
@@ -139,6 +140,44 @@ def test_completed_bars_drops_forming_bar():
         "进行中 bar（戳>now）不得喂状态机"
     done2 = quotes.completed_bars(bars, dt.datetime(2026, 9, 3, 15, 0))
     assert done2.height == 4
+
+
+# ---------------- 数据校验闸门（§4.3）与断流熔断（§9） ----------------
+
+def test_quote_guards_divergence_and_adj():
+    """决策②③的直接验证：交叉校验 / 除权检测 / 缺数据放行"""
+    qt = {"name": "股X", "price": 10.0, "prev_close": 10.0}
+    assert quotes.check_bar_divergence(10.05, qt) is None, "偏离≤1% 放行"
+    assert quotes.check_bar_divergence(10.2, qt) is not None, "偏离>1% 必须告警"
+    assert quotes.check_adj_mismatch(qt, 10.0) is None, "昨收一致放行"
+    assert quotes.check_adj_mismatch({"price": 9.0, "prev_close": 8.0},
+                                     10.0) is not None, "昨收不一致（疑似除权）必须告警"
+    assert quotes.check_bar_divergence(10.0, {}) is None, "无 qt 时不阻断正常流程"
+    assert quotes.check_adj_mismatch(qt, None) is None, "无参考收盘时不阻断"
+
+
+def test_circuit_breaker_states(tmp_path, monkeypatch):
+    """断流熔断状态机：首次记心跳不告警 -> 超10分钟告警一次 -> 不重复 -> 恢复复位"""
+    pushed: list[str] = []
+    monkeypatch.setattr(intraday.feishu, "send_text",
+                        lambda msg: pushed.append(msg) or True)
+    now = dt.datetime(2026, 9, 3, 10, 30)   # 周三盘中
+    # 首次无心跳：只记心跳，不告警
+    intraday._circuit_check(False, now, push=True)
+    assert not pushed
+    # 心跳停在 11 分钟前：触发熔断告警恰好一次
+    db.set_meta("intraday_hb", json.dumps(
+        {"ok_ts": (now - dt.timedelta(minutes=11)).isoformat(),
+         "alerted": False}))
+    intraday._circuit_check(False, now, push=True)
+    assert len(pushed) == 1 and "断流熔断" in pushed[0]
+    # 已告警状态不重复推送
+    intraday._circuit_check(False, now, push=True)
+    assert len(pushed) == 1
+    # 行情恢复：复位 + 推送恢复消息
+    intraday._circuit_check(True, now, push=True)
+    assert len(pushed) == 2 and "恢复" in pushed[1]
+    assert json.loads(db.get_meta("intraday_hb"))["alerted"] is False
 
 
 # ---------------- 盘中轮询：游标幂等 + 状态落库 ----------------
