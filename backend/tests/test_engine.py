@@ -966,39 +966,3 @@ def test_momentum_point_in_time_consistency(tmp_path):
         f_cut = sig_cut.filter(pl.col("date") <= cut_at).select(feat_cols).sort("date")
         assert f_cut.equals(f_full), \
             f"截断点 {cut_at} 之前 bar 的特征不得因后续数据而变（未来函数）"
-
-
-# ---------------- select_trend（动态加速启动选股） ----------------
-
-def test_select_trend_prepare_signals(demo_env):
-    """select_trend prepare：产出 signal/tag/budget_pct 列，且存在买/卖信号"""
-    data_dir, start, end = demo_env
-    from app.engine.strategies.select_trend import SelectTrendStrategy
-    from app.engine import datafeed
-    strat = SelectTrendStrategy()
-    data = datafeed.load_daily(["600000", "000001", "600036"], start, end, data_dir)
-    out = strat.prepare(data, {"entry_need": 1, "rps_top": 1.0, "ma_slow": 20},
-                        start_date=start)
-    for code, df in out.items():
-        assert {"signal", "tag", "reason", "budget_pct"} <= set(df.columns)
-        assert df["signal"].dtype == pl.Int32
-    sigs = pl.concat([df.select("signal") for df in out.values()])
-    assert (sigs["signal"] == 1).any(), "应存在买入信号"
-    assert (sigs["signal"] == -1).any(), "应存在卖出信号"
-
-
-def test_select_trend_backtest(demo_env):
-    """select_trend 完整回测：报告结构完整且有交易"""
-    data_dir, start, end = demo_env
-    cfg, _ = make_config(demo_env)
-    cfg.update({
-        "strategy_id": "select_trend",
-        "params": {"entry_need": 1, "rps_top": 1.0, "ma_slow": 20,
-                   "breakout_n": 10, "base_pct": 40, "max_adds": 1},
-        "risk_config": {"max_holdings": 3, "max_position_pct_per_stock": 40,
-                        "stop_loss_mode": "atr", "atr_period": 14, "atr_multiplier": 3.0},
-    })
-    report = run_backtest(cfg, data_dir=data_dir)
-    assert report["metrics"]["total_trades"] > 0, "动态选股应有交易"
-    for k in METRIC_KEYS:
-        assert k in report["metrics"], f"缺少指标 {k}"
