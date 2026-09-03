@@ -97,6 +97,7 @@ export default function LiveSignals() {
   const [fillTarget, setFillTarget] = useState<LiveSignalItem | null>(null)
   const [fillPrice, setFillPrice] = useState<number | null>(null)
   const [fillVolume, setFillVolume] = useState<number | null>(null)
+  const [fillFee, setFillFee] = useState<number | null>(null)
   const [cfg, setCfg] = useState<LiveConfig | null>(null)
   const [cfgSaving, setCfgSaving] = useState(false)
   const [morningLoading, setMorningLoading] = useState(false)
@@ -188,9 +189,12 @@ export default function LiveSignals() {
         signal_id: fillTarget.id,
         code: fillTarget.code || '',
         side: ['开仓', '加仓'].includes(fillTarget.stype) ? 'buy' : 'sell',
-        fill_price: fillPrice, fill_volume: fillVolume
+        fill_price: fillPrice, fill_volume: fillVolume,
+        fee: fillFee ?? undefined
       })
-      message.success('成交已回填，虚拟持仓已更新')
+      message.success(fillFee != null
+        ? '成交已回填，虚拟持仓已更新（手续费按手填值）'
+        : '成交已回填，手续费已按费率自动计算并摊入成本')
       setFillTarget(null)
       await refresh()
     } catch (err) {
@@ -347,6 +351,7 @@ export default function LiveSignals() {
               setFillTarget(s)
               setFillPrice(s.ref_price)
               setFillVolume(refFillVolume(s, summary?.positions ?? []))
+              setFillFee(null)
             }}>回填</Button>
             <Button size="small" onClick={() => onIgnore(s)}>忽略</Button>
           </Space>
@@ -826,6 +831,48 @@ export default function LiveSignals() {
                       (v) => setCfg({ ...cfg, max_holdings: v ?? 3 }), 1, 1)}
                   </Col>
                 </Row>
+                <Typography.Text type="secondary" style={{
+                  display: 'block', marginTop: 12, fontSize: 12
+                }}>
+                  交易成本（回填手续费自动计算用，与回测 Broker 同口径）
+                </Typography.Text>
+                <Row gutter={12} style={{ marginTop: 4 }}>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">佣金率</Typography.Text>
+                    {numCell(cfg.fee_commission_rate ?? 0.00005,
+                      (v) => setCfg({ ...cfg, fee_commission_rate: v ?? 0.00005 }),
+                      0.00001, 0)}
+                  </Col>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">最低佣金（元）</Typography.Text>
+                    {numCell(cfg.fee_commission_min ?? 5,
+                      (v) => setCfg({ ...cfg, fee_commission_min: v ?? 5 }), 1, 0)}
+                  </Col>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">印花税（仅卖出）</Typography.Text>
+                    {numCell(cfg.fee_stamp_tax ?? 0.0005,
+                      (v) => setCfg({ ...cfg, fee_stamp_tax: v ?? 0.0005 }),
+                      0.0001, 0)}
+                  </Col>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">经手费（双边）</Typography.Text>
+                    {numCell(cfg.fee_handling_fee ?? 0.0000341,
+                      (v) => setCfg({ ...cfg, fee_handling_fee: v ?? 0.0000341 }),
+                      0.000001, 0)}
+                  </Col>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">证管费（双边）</Typography.Text>
+                    {numCell(cfg.fee_regulatory_fee ?? 0.00002,
+                      (v) => setCfg({ ...cfg, fee_regulatory_fee: v ?? 0.00002 }),
+                      0.000001, 0)}
+                  </Col>
+                  <Col span={4}>
+                    <Typography.Text type="secondary">过户费（双边）</Typography.Text>
+                    {numCell(cfg.fee_transfer_fee ?? 0.00001,
+                      (v) => setCfg({ ...cfg, fee_transfer_fee: v ?? 0.00001 }),
+                      0.000001, 0)}
+                  </Col>
+                </Row>
                 <Button type="primary" icon={<SaveOutlined />} loading={cfgSaving}
                   onClick={onSaveCfg} style={{ marginTop: 12 }}>
                   保存配置
@@ -951,9 +998,16 @@ export default function LiveSignals() {
             min={100} step={100} style={{ width: '100%' }}
             value={fillVolume} onChange={(v) => setFillVolume(v)}
             placeholder="实际成交数量" />
+          <Typography.Text>手续费（元）：</Typography.Text>
+          <InputNumber
+            min={0} step={1} style={{ width: '100%' }}
+            value={fillFee ?? undefined} onChange={(v) => setFillFee(v)}
+            placeholder="留空 = 按交易成本费率自动计算" />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             参考股数已预填：买入=建议金额÷参考价（100股取整）；卖出=按当前虚拟持仓
             （清仓/止损=全部，减仓/做T=按比例）。请以实际成交为准修改。
+            手续费留空时按配置费率自动计算（佣金+印花税+经手/证管/过户），
+            买入费用摊入持仓成本价（与券商摊薄成本同口径）。
           </Typography.Text>
         </Space>
       </Modal>

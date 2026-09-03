@@ -39,6 +39,13 @@ DEFAULT_CFG = {
     "auto_boards": [],       # 候选域：板块并集
     "t_mode": "off",         # 做T机制（盘中状态机；M2 起步 off——人工执行延迟吃收益）
     "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
+    # 交易成本（回填费用自动计算用，与回测 Broker 同一套费率口径）
+    "fee_commission_rate": 0.00005,   # 佣金率 万0.5（双边）
+    "fee_commission_min": 5.0,        # 最低佣金（元）
+    "fee_stamp_tax": 0.0005,          # 印花税 万5（仅卖出）
+    "fee_handling_fee": 0.0000341,    # 经手费 万0.341（双边）
+    "fee_regulatory_fee": 0.00002,    # 证管费 万0.2（双边）
+    "fee_transfer_fee": 0.00001,      # 过户费 万0.1（双边）
 }
 
 

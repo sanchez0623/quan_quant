@@ -154,7 +154,8 @@ def test_fill_updates_position_and_signal(tmp_path):
     add_fill(body)
     pos = {p["code"]: p for p in db.list_live_positions()}
     assert pos["600000"]["volume"] == 10000
-    assert pos["600000"]["cost_price"] == 10.5
+    assert pos["600000"]["cost_price"] == pytest.approx(10.5005, abs=0.001), \
+        "手填 fee 5 元也应摊入成本"
     # 回填联动状态机：买入建仓 -> opened/full 置位（策略大脑知道真实持仓）
     st = db.get_strategy_states()["600000"]["st"]
     assert st["opened"] == 1 and st["full"] == 1
@@ -166,6 +167,33 @@ def test_fill_updates_position_and_signal(tmp_path):
     assert not any(p["code"] == "600000" for p in db.list_live_positions())
     st = db.get_strategy_states()["600000"]["st"]
     assert st["opened"] == 0 and st["exit_stage"] == 0
+
+
+def test_fill_fee_auto_and_cost_dilution(tmp_path):
+    """手续费：缺省按交易成本费率自动计算（Broker 同口径）；买入费用摊入
+    持仓成本价（对齐券商摊薄口径）；手填 fee 覆盖自动值"""
+    _write_market(tmp_path)
+    sid = db.add_live_signal("premarket", "开仓", "600000", "股600000",
+                             "动态重选入池", 150000.0, None)
+    from app.api.live import add_fill, FillBody
+    add_fill(FillBody(signal_id=sid, code="600000", side="buy",
+                      fill_price=10.5, fill_volume=10000))
+    # 自动计费：105000 元 -> 佣金 max(万0.5,5)=5.25 + 双边杂费 6.7305 = 11.98
+    f_buy = [f for f in db.list_live_fills(limit=10) if f["side"] == "buy"][0]
+    assert f_buy["fee"] == pytest.approx(11.98, abs=0.02)
+    # 费用摊入成本：(105000 + 11.98) / 10000 = 10.5012
+    pos = db.list_live_positions()[0]
+    assert pos["cost_price"] == pytest.approx(10.5012, abs=0.0005)
+    # 手填 fee 覆盖自动值
+    add_fill(FillBody(signal_id=None, code="600000", side="buy",
+                      fill_price=10.5, fill_volume=100, fee=3.0))
+    f_manual = [f for f in db.list_live_fills(limit=10) if f["fee"] == 3.0]
+    assert len(f_manual) == 1, "手填 fee 应原样入账"
+    # 卖出自动计费含印花税：11.0×10100=111,100 -> 5.555+55.55+7.1215=68.23
+    add_fill(FillBody(signal_id=None, code="600000", side="sell",
+                      fill_price=11.0, fill_volume=10100))
+    f_sell = [f for f in db.list_live_fills(limit=10) if f["side"] == "sell"][0]
+    assert f_sell["fee"] == pytest.approx(68.23, abs=0.02)
 
 
 def test_signal_status_validation():

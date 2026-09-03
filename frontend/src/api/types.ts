@@ -532,6 +532,12 @@ export interface LiveConfig {
   auto_boards: string[]
   t_mode: string
   max_holdings: number
+  fee_commission_rate: number
+  fee_commission_min: number
+  fee_stamp_tax: number
+  fee_handling_fee: number
+  fee_regulatory_fee: number
+  fee_transfer_fee: number
 }
 
 export interface LivePremarketResult {

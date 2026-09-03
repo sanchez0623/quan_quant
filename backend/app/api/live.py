@@ -54,7 +54,7 @@ class FillBody(BaseModel):
     side: str = Field(pattern="^(buy|sell)$")
     fill_price: float = Field(gt=0)
     fill_volume: int = Field(gt=0)
-    fee: float = 0.0
+    fee: Optional[float] = None    # None=按流程参数费率自动计算（Broker 同口径）
     fill_time: Optional[str] = None
     note: str = ""
 
@@ -77,12 +77,26 @@ def _sync_state_on_fill(code: str, opened: bool) -> None:
     db.save_strategy_state(code, st, saved.get("last_bar"))
 
 
+def _fill_fee(cfg: dict, side: str, amount: float) -> float:
+    """回填手续费：复用回测 Broker 费用口径（流程参数里的交易成本费率）"""
+    from ..engine.broker import Broker
+    b = Broker(0.0, float(cfg["fee_commission_rate"]),
+               float(cfg["fee_commission_min"]), float(cfg["fee_stamp_tax"]),
+               float(cfg["fee_transfer_fee"]), float(cfg["fee_handling_fee"]),
+               float(cfg["fee_regulatory_fee"]))
+    return b.buy_fee(amount) if side == "buy" else b.sell_fee(amount)
+
+
 @router.post("/fills")
 def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
     """回填实际成交：记流水 + 联动虚拟持仓（buy 建仓/加仓，sell 减仓/清仓）+
-    联动状态机（建仓置位/清仓复位）+ 关联信号置为已成交"""
+    联动状态机（建仓置位/清仓复位）+ 关联信号置为已成交。
+    fee 缺省时按交易成本费率自动计算；买入费用摊入持仓成本价（对齐券商摊薄口径）"""
+    cfg = {**premarket.DEFAULT_CFG, **db.get_live_config()}
+    amount = body.fill_price * body.fill_volume
+    fee = body.fee if body.fee is not None else _fill_fee(cfg, body.side, amount)
     fid = db.add_live_fill(body.signal_id, body.code, body.side,
-                           body.fill_price, body.fill_volume, body.fee,
+                           body.fill_price, body.fill_volume, fee,
                            body.fill_time, body.note)
     pos = {p["code"]: p for p in db.list_live_positions()}
     if body.side == "buy":
@@ -90,7 +104,7 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
         if old and old["volume"] > 0:
             new_vol = old["volume"] + body.fill_volume
             cost = (old["cost_price"] * old["volume"]
-                    + body.fill_price * body.fill_volume) / new_vol
+                    + body.fill_price * body.fill_volume + fee) / new_vol
             db.upsert_live_position(body.code, old["name"], new_vol,
                                     round(cost, 4), old.get("open_day"),
                                     old.get("group_id"))
@@ -99,7 +113,8 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
                     next((s["name"] for s in db.list_live_signals(limit=500)
                           if s["code"] == body.code and s["name"]), body.code))
             db.upsert_live_position(body.code, name, body.fill_volume,
-                                    body.fill_price,
+                                    round((body.fill_price * body.fill_volume
+                                           + fee) / body.fill_volume, 4),
                                     (body.fill_time or "")[:10] or None)
     else:
         old = pos.get(body.code)
@@ -165,6 +180,12 @@ class LiveConfigBody(BaseModel):
     auto_boards: list[str] = Field(default_factory=list)
     t_mode: str = "off"
     max_holdings: int = 3
+    fee_commission_rate: float = 0.00005
+    fee_commission_min: float = 5.0
+    fee_stamp_tax: float = 0.0005
+    fee_handling_fee: float = 0.0000341
+    fee_regulatory_fee: float = 0.00002
+    fee_transfer_fee: float = 0.00001
 
 
 @router.post("/config")
