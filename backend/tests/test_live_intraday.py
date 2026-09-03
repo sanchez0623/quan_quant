@@ -226,8 +226,13 @@ def test_intraday_flow_and_cursor(tmp_path, monkeypatch):
         assert states[c]["last_bar"] == f"{TODAY} 09:45", "游标应推进到最后完成 bar"
     intraday_sigs = [s for s in db.list_live_signals(limit=100)
                      if s["kind"] == "intraday"]
-    assert any(s["stype"] == "开仓" for s in intraday_sigs), \
-        f"上升趋势票应盘中触发开仓信号: {out}"
+    # 盘前已对池内票发待执行开仓信号 -> 盘中同票开仓应被去重拦截（不重复推送）
+    pool_set = set(pool_codes)
+    assert not any(s["stype"] == "开仓" and s["code"] in pool_set
+                   for s in intraday_sigs), \
+        f"池内票盘中开仓应被去重拦截: {intraday_sigs}"
+    assert any("已有待执行开仓信号" in w["reason"] for w in out["suspended"]), \
+        f"去重拦截应出现在 suspended: {out['suspended']}"
 
     # 第二轮：同数据重复轮询 -> 游标去重零喂入、无重复信号
     n_before = len(db.list_live_signals(limit=100))

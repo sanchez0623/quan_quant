@@ -8,7 +8,7 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 
 | 端点                                   | 说明                                                                                                                                           |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}`                       |
+| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}`；开仓信号仅发「池内 ∩ as_of 动量分前 pool_n」，按动量分占 `max_holdings` 槽位、金额对齐 momentum_slot（试仓/满配，单票≤40% 权益、逐笔扣现金），其余候选池内候补 |
 | `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`）                                                                                                                       |
 | `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息                                                                                                         |
 | `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                          |

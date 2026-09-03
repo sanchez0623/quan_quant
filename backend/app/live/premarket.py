@@ -19,7 +19,8 @@ from .. import db
 from ..data import store
 from ..engine import momentum_core as mc
 from ..engine.runner import _auto_domain, _shift_back
-from . import feishu
+from ..engine.strategies.momentum_slot import MomentumSlotStrategy
+from . import feishu, intraday
 
 DEFAULT_CFG = {
     "above_ma": 20,          # 站上均线锚周期（20 对齐 momentum_slot）
@@ -151,22 +152,69 @@ def run_premarket(data_dir: Optional[str] = None,
                 idle_start = None
                 rebalanced = True
                 messages.append(f"动态重选（基准日 {as_of}）：新池 {picked.height} 只")
+                # 开仓信号只发「今日可建仓名单」（as_of 动量分前 pool_n，与盘中
+                # entry_allowed 同口径），按动量分优先占用槽位（max_holdings）；
+                # 金额对齐 momentum_slot 真实口径（试仓 base_pct_min / 满配
+                # base_pct_max，受单票 40% 上限与现金缓冲约束、逐笔扣减）。
+                # 其余候选仅在池子中候补——盘中退出后由盘中信号补位。
+                _sp = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
+                base_max = float(_sp["base_pct_max"])
+                base_min = float(_sp["base_pct_min"])
+                entry = (mf.feats.filter((pl.col("day") == as_of)
+                          & pl.col("score").is_not_null())
+                         .sort("score", descending=True)
+                         .head(max(1, int(cfg["pool_n"]))))
+                entry_allowed = set(entry["code"].to_list())
+                equity, cash_all = intraday._virtual_equity(
+                    cfg, positions, daily_close)
+                slots = int(cfg.get("max_holdings") or 3)
+                cash = cash_all * (1 - intraday.CASH_RESERVE_PCT / 100)
+                used = 0
+                p_feats = mc.pick_params(above_ma=int(cfg["above_ma"]),
+                                         with_accel=bool(cfg["with_accel"]))
                 for r in picked.to_dicts():
-                    amount = round(float(cfg["initial_capital"])
-                                   * float(cfg["suggest_pct"]), 0)
-                    ref = daily_close.get(r["code"])
+                    if used >= slots:
+                        break
+                    code = r["code"]
+                    if code not in entry_allowed:
+                        continue   # 池内候补：非今日可建仓名单，不发开仓信号
+                    ref = daily_close.get(code)
+                    cf, _fac, _raw = intraday._code_features(
+                        code, p_feats, data_dir)
+                    if cf is None or ref is None:
+                        continue
+                    frow = cf.filter(pl.col("day") == as_of)
+                    if not frow.height:
+                        continue
+                    slope_up = (frow.to_dicts()[0].get("slope") or 0) > 0
+                    budget_pct = base_max if slope_up else base_min
+                    amount = min(equity * budget_pct / 100,
+                                 equity * intraday.MAX_POS_PCT / 100, cash)
+                    amount = round(amount, 0)
+                    if amount < ref * 100:
+                        continue   # 不足一手：跳过且不占槽位
+                    tag = "满配" if slope_up else "试仓"
+                    reason = (f"动态重选入池（{cfg['rank_key']}排序，{tag}"
+                              f"第{used + 1}/{slots}槽）")
                     sid = db.add_live_signal(
-                        "premarket", "开仓", r["code"],
-                        name_map.get(r["code"], r["code"]),
-                        f"动态重选入池（{cfg['rank_key']}排序）",
+                        "premarket", "开仓", code,
+                        name_map.get(code, code), reason,
                         amount, ref,
-                        extra={"as_of": as_of, "rps": r.get("rps"),
+                        extra={"as_of": as_of, "score": r.get("score"),
+                               "budget_pct": budget_pct, "slot": used + 1,
                                "pool_size": picked.height})
-                    signals.append({"id": sid, "code": r["code"],
+                    signals.append({"id": sid, "code": code,
                                     "stype": "开仓",
-                                    "name": name_map.get(r["code"], r["code"]),
-                                    "reason": f"动态重选入池（{cfg['rank_key']}排序）",
+                                    "name": name_map.get(code, code),
+                                    "reason": reason,
                                     "suggest_amount": amount, "ref_price": ref})
+                    cash -= amount
+                    used += 1
+                messages.append(
+                    f"开仓名单 {used} 只（槽位 {slots}，单票≤"
+                    f"{intraday.MAX_POS_PCT:.0f}%权益；试仓 {base_min:.0f}%/"
+                    f"满配 {base_max:.0f}%，受单票上限收敛）——其余候选候补，"
+                    f"盘中退出后补位")
         else:
             messages.append(f"空仓第 {idle_days} 日（重选阈值 "
                             f"{cfg['auto_idle_days']}）——继续等待")

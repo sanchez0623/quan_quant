@@ -324,6 +324,12 @@ def _make_signal(sig: dict, code: str, name: str, bar_ts: str, close: float,
             elif len(positions) >= int(cfg.get("max_holdings") or 3):
                 blocked = (f"槽位已满（max_holdings={cfg.get('max_holdings')}），"
                            f"{code} 开仓信号拦截")
+            elif any(s["code"] == code and s["stype"] == "开仓"
+                     and s["status"] == "待执行"
+                     and (s.get("ts") or "")[:10] == today
+                     for s in db.list_live_signals(limit=200)):
+                blocked = (f"{code} 今日已有待执行开仓信号（盘前名单），"
+                           f"盘中开仓去重拦截")
         if not blocked:
             budget_pct = float(sig.get("budget_pct") or 0)
             amount = equity * budget_pct / 100
