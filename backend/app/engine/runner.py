@@ -53,7 +53,7 @@ DEFAULTS = {
     "universe_auto": False,    # 开启后 universe 留空，池子由动量预筛自动生成并按需重选
     "auto_idle_days": 5,       # 全空仓持续 N 个交易日 -> 触发重选
     "auto_top_x": 30,          # 每次预筛取前 x 只
-    "auto_above_ma": 60,       # 站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot）
+    "auto_above_ma": 20,       # 站上均线锚周期（默认20 对齐 momentum_slot / 60=momentum_t）
     "auto_with_accel": False,  # 动量分叠加加速度项（对齐 momentum_slot）
     "auto_min_rps": None,      # 全市场 RPS 分位下限（0~100，None=不启用）
     "auto_index": [],          # 候选域：指数成分并集（sz50/hs300/zz500/csi800，空=不限）
@@ -248,7 +248,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     top_x = max(1, int(cfg.get("auto_top_x") or 30))
     min_rps = cfg.get("auto_min_rps")
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
-    pick_p = mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 60),
+    pick_p = mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 20),
                             with_accel=bool(cfg.get("auto_with_accel")))
 
     # ---- 1) 全市场日线特征：一次构建，全部段共用（窗口含特征最长回看）----

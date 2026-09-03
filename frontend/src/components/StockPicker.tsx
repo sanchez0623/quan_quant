@@ -155,6 +155,26 @@ export default function StockPicker({
     }
   }, [meta])
 
+  // 模板载入带 meta -> 恢复选股模式（手动模式不产生 meta，回退 manual）
+  // source：industry_pick=条件选股｜momentum_pick=动量趋势（见 backend stocks.py）
+  useEffect(() => {
+    if (meta?.source === 'momentum_pick') {
+      setMode('momentum')
+      const mo = meta.momentum
+      if (mo) {
+        if (mo.top_x != null) setMoTopX(mo.top_x)
+        if (mo.above_ma != null) setMoAboveMa(mo.above_ma)
+        setMoAccel(Boolean(mo.with_accel))
+        setMoMinRps(mo.min_rps ?? undefined)
+        if (mo.rank_key) setMoRankKey(mo.rank_key)
+      }
+    } else if (meta?.source === 'industry_pick') {
+      setMode('condition')
+    } else {
+      setMode('manual')
+    }
+  }, [meta])
+
   // 外部设置 universe（模板载入/手动添加）时按需回填名称
   useEffect(() => {
     if (!codes.length) return

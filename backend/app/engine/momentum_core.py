@@ -62,8 +62,8 @@ RANK_KEYS: dict[str, list[tuple[str, bool]]] = {
 ADD_MIN_BUDGET_PCT = 0.5
 
 
-def pick_params(above_ma: int = 60, with_accel: bool = False) -> dict:
-    """构造动量选股参数：above_ma=站上均线锚周期（60 对齐 momentum_t / 20 对齐 momentum_slot），
+def pick_params(above_ma: int = 20, with_accel: bool = False) -> dict:
+    """构造动量选股参数：above_ma=站上均线锚周期（默认20 对齐 momentum_slot / 60=momentum_t），
     with_accel=True 时叠加 momentum_slot 的加速度项"""
     p = dict(DEFAULT_PICK_PARAMS)
     p["anchor_n"] = int(above_ma)

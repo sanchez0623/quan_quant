@@ -20,7 +20,7 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 | `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                      |
 | `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}` |
 | `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                         |
-| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                  |
+| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                       |
 | `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                              |
 | `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`          |
 | `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`           |
@@ -126,7 +126,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "universe_auto": false,
   "auto_idle_days": 5,
   "auto_top_x": 30,
-  "auto_above_ma": 60,
+  "auto_above_ma": 20,
   "auto_with_accel": false,
   "auto_min_rps": null,
   "auto_index": [],
