@@ -25,14 +25,18 @@ import {
   errDetail,
   getAiAnalyses,
   getAiProfiles,
+  getAiSuggestionStats,
   getBacktestReport,
   getBacktests,
   startAiAnalyze
 } from '../api/client'
 import type {
   AiAnalysisItem,
+  AiFinding,
   AiProfilesResponse,
   AiSuggestions,
+  AiSuggestionStats,
+  AiValidation,
   BacktestCreateRequest,
   BacktestListItem
 } from '../api/types'
@@ -66,6 +70,36 @@ const RISK_LABELS: Record<string, string> = {
   cash_reserve_pct: '现金缓冲(%)'
 }
 
+/** 验证 A/B 对比指标中文标签 */
+const METRIC_LABELS: Record<string, string> = {
+  total_return: '总收益',
+  sharpe: '夏普比率',
+  calmar: '卡玛比率',
+  win_rate: '胜率',
+  profit_loss_ratio: '盈亏比',
+  max_drawdown: '最大回撤'
+}
+
+/** 百分比口径指标（展示为 %） */
+const PCT_METRICS = new Set(['total_return', 'max_drawdown', 'win_rate'])
+
+function fmtMetric(key: string, v: number): string {
+  if (PCT_METRICS.has(key)) return `${(v * 100).toFixed(1)}%`
+  return v.toFixed(2)
+}
+
+const SEVERITY_COLORS: Record<AiFinding['severity'], string> = {
+  high: 'red',
+  medium: 'orange',
+  low: 'blue'
+}
+
+const VERDICT_COLORS: Record<string, string> = {
+  改善: 'green',
+  持平: 'default',
+  恶化: 'red'
+}
+
 export default function AiAnalysis() {
   const navigate = useNavigate()
   const [backtests, setBacktests] = useState<BacktestListItem[]>([])
@@ -79,6 +113,15 @@ export default function AiAnalysis() {
   const [loadingAnalyses, setLoadingAnalyses] = useState(false)
   const [runningDirect, setRunningDirect] = useState(false)
   const [baseConfig, setBaseConfig] = useState<BacktestCreateRequest | null>(null)
+  const [stats, setStats] = useState<AiSuggestionStats | null>(null)
+
+  const loadStats = useCallback(async () => {
+    try {
+      setStats(await getAiSuggestionStats())
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const loadBacktests = useCallback(async () => {
     try {
@@ -161,6 +204,7 @@ export default function AiAnalysis() {
     setCurrentTaskId(null)
     if (backtestId) loadAnalyses(backtestId)
     loadProfiles()
+    loadStats()
   })
 
   const startAnalyze = async () => {
@@ -189,6 +233,8 @@ export default function AiAnalysis() {
 
   const selected = analyses.find((a) => a.task_id === selectedAnalysisId) ?? null
   const usage = profilesResp?.usage
+  const findings: AiFinding[] = selected?.diagnostics ?? []
+  const validation: AiValidation | null = selected?.validation ?? null
 
   const suggestions = useMemo<AiSuggestions | null>(() => {
     const s = selected?.suggestions
@@ -390,6 +436,24 @@ export default function AiAnalysis() {
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无用量数据" />
             )}
+            {stats && stats.total + stats.error > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  建议验证胜率（自动回测实测）：
+                </Typography.Text>
+                <div style={{ marginTop: 6 }}>
+                  <Tag color="green">改善 {stats.改善}</Tag>
+                  <Tag>持平 {stats.持平}</Tag>
+                  <Tag color="red">恶化 {stats.恶化}</Tag>
+                  {stats.error > 0 && <Tag>失败 {stats.error}</Tag>}
+                  {stats.improved_rate != null && (
+                    <Typography.Text style={{ fontSize: 12 }}>
+                      改善率 {(stats.improved_rate * 100).toFixed(0)}%
+                    </Typography.Text>
+                  )}
+                </div>
+              </div>
+            )}
           </Card>
         </Space>
       </Col>
@@ -423,6 +487,34 @@ export default function AiAnalysis() {
                     模型：{selected.model} · tokens: {selected.tokens_used ?? '-'} · 耗时：
                     {selected.elapsed ?? '-'}s
                   </Typography.Text>
+                  {findings.length > 0 && (
+                    <Card
+                      size="small"
+                      title={`系统诊断（规则引擎 · ${findings.length} 条，AI 仅负责解读）`}
+                      style={{ marginTop: 16 }}
+                    >
+                      {findings.map((f) => (
+                        <div
+                          key={f.code}
+                          style={{ padding: '6px 0', borderBottom: '1px dashed #f0f0f0' }}
+                        >
+                          <Space wrap size={6}>
+                            <Tag color={SEVERITY_COLORS[f.severity]}>
+                              {f.severity === 'high' ? '高' : f.severity === 'medium' ? '中' : '低'}
+                            </Tag>
+                            <Typography.Text strong>{f.title}</Typography.Text>
+                            <Tag>{f.code}</Tag>
+                          </Space>
+                          <div style={{ fontSize: 12, marginTop: 2 }}>
+                            <Typography.Text type="secondary">证据：{f.evidence}</Typography.Text>
+                          </div>
+                          <div style={{ fontSize: 12 }}>
+                            <Typography.Text type="secondary">建议方向：{f.hint}</Typography.Text>
+                          </div>
+                        </div>
+                      ))}
+                    </Card>
+                  )}
                   {suggestionRows.length > 0 && (
                     <Card
                       size="small"
@@ -486,6 +578,94 @@ export default function AiAnalysis() {
                           </Typography.Text>
                         </div>
                       ))}
+                    </Card>
+                  )}
+                  {validation && (
+                    <Card
+                      size="small"
+                      title="建议实测验证（同区间自动回测 A/B）"
+                      style={{ marginTop: 16 }}
+                    >
+                      {validation.error ? (
+                        <Alert
+                          type="warning"
+                          showIcon
+                          message="验证回测未完成（不影响分析结论）"
+                          description={validation.error}
+                        />
+                      ) : (
+                        <>
+                          <Space wrap align="center" style={{ marginBottom: 8 }}>
+                            <Typography.Text type="secondary">实测结论：</Typography.Text>
+                            <Tag
+                              color={VERDICT_COLORS[validation.comparison?.verdict ?? ''] ?? 'default'}
+                              style={{ fontSize: 14, padding: '2px 10px' }}
+                            >
+                              {validation.comparison?.verdict ?? '无结论'}
+                            </Tag>
+                            {(validation.comparison?.better?.length ?? 0) > 0 && (
+                              <Typography.Text type="success" style={{ fontSize: 12 }}>
+                                变好：
+                                {validation.comparison?.better
+                                  ?.map((k) => METRIC_LABELS[k] ?? k)
+                                  .join('、')}
+                              </Typography.Text>
+                            )}
+                            {(validation.comparison?.worse?.length ?? 0) > 0 && (
+                              <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                                变差：
+                                {validation.comparison?.worse
+                                  ?.map((k) => METRIC_LABELS[k] ?? k)
+                                  .join('、')}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                          {(validation.comparison?.rows ?? []).map((r) => (
+                            <div
+                              key={r.key}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                padding: '4px 0',
+                                borderBottom: '1px dashed #f0f0f0'
+                              }}
+                            >
+                              <Tag color="geekblue">{METRIC_LABELS[r.key] ?? r.key}</Tag>
+                              <Typography.Text type="secondary">
+                                {fmtMetric(r.key, r.orig)}
+                              </Typography.Text>
+                              <span>→</span>
+                              <Typography.Text strong>{fmtMetric(r.key, r.new)}</Typography.Text>
+                              <Typography.Text
+                                type={
+                                  r.better === true ? 'success' : r.better === false ? 'danger' : 'secondary'
+                                }
+                                style={{ fontSize: 12 }}
+                              >
+                                Δ {fmtMetric(r.key, r.delta)}
+                              </Typography.Text>
+                            </div>
+                          ))}
+                          {validation.commentary && (
+                            <div
+                              style={{
+                                marginTop: 12,
+                                padding: '8px 12px',
+                                background: '#fafafa',
+                                borderRadius: 6
+                              }}
+                            >
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                AI 复核点评（基于实测数字）：
+                              </Typography.Text>
+                              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>
+                                {validation.commentary}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </Card>
                   )}
                 </div>

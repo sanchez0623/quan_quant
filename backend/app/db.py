@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS ai_analyses(
   error TEXT,
   created_at TEXT
 );
+-- 诊断/验证列（轻量迁移补齐，见 _migrate）：diagnostics=规则引擎findings JSON，
+-- validation=建议验证回测 A/B 对比 JSON
 CREATE TABLE IF NOT EXISTS llm_usage(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile TEXT, model TEXT,
@@ -231,6 +233,10 @@ def _migrate(c: sqlite3.Connection) -> None:
     cols = {r[1] for r in c.execute("PRAGMA table_info(ai_analyses)")}
     if "suggestions" not in cols:
         c.execute("ALTER TABLE ai_analyses ADD COLUMN suggestions TEXT")  # AI结构化建议 JSON
+    if "diagnostics" not in cols:
+        c.execute("ALTER TABLE ai_analyses ADD COLUMN diagnostics TEXT")  # 规则引擎findings JSON
+    if "validation" not in cols:
+        c.execute("ALTER TABLE ai_analyses ADD COLUMN validation TEXT")   # 建议验证A/B对比 JSON
     ecols = {r[1] for r in c.execute("PRAGMA table_info(experiments)")}
     if "matrix" not in ecols:
         c.execute("ALTER TABLE experiments ADD COLUMN matrix TEXT DEFAULT 'clock'")
@@ -478,13 +484,18 @@ def delete_task(task_id: str, db_path: Optional[str] = None) -> bool:
 def save_analysis(task_id: str, backtest_id: str, profile: str, model: str, status: str,
                   content: Optional[str], tokens_used: Optional[int], elapsed: Optional[float],
                   error: Optional[str], suggestions: Optional[dict] = None,
+                  diagnostics: Optional[list] = None,
+                  validation: Optional[dict] = None,
                   db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
             "INSERT INTO ai_analyses(task_id,backtest_id,profile,model,status,content,"
-            "tokens_used,elapsed,error,suggestions,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "tokens_used,elapsed,error,suggestions,diagnostics,validation,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, backtest_id, profile, model, status, content, tokens_used, elapsed,
              error, json.dumps(suggestions, ensure_ascii=False) if suggestions else None,
+             json.dumps(diagnostics, ensure_ascii=False) if diagnostics else None,
+             json.dumps(validation, ensure_ascii=False) if validation else None,
              _now()))
 
 
@@ -493,22 +504,51 @@ def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = No
         if backtest_id:
             rows = c.execute(
                 "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,suggestions,created_at FROM ai_analyses WHERE backtest_id=? ORDER BY id DESC",
-                (backtest_id,)).fetchall()
+                "error,suggestions,diagnostics,validation,created_at FROM ai_analyses "
+                "WHERE backtest_id=? ORDER BY id DESC", (backtest_id,)).fetchall()
         else:
             rows = c.execute(
                 "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,suggestions,created_at FROM ai_analyses ORDER BY id DESC").fetchall()
+                "error,suggestions,diagnostics,validation,created_at FROM ai_analyses "
+                "ORDER BY id DESC").fetchall()
     out = []
     for r in rows:
         try:
             suggestions = json.loads(r[9]) if r[9] else None
         except json.JSONDecodeError:
             suggestions = None
+        try:
+            diag = json.loads(r[10]) if r[10] else None
+        except json.JSONDecodeError:
+            diag = None
+        try:
+            validation = json.loads(r[11]) if r[11] else None
+        except json.JSONDecodeError:
+            validation = None
         out.append({"task_id": r[0], "backtest_id": r[1], "profile": r[2], "model": r[3],
                     "status": r[4], "content": r[5], "tokens_used": r[6], "elapsed": r[7],
-                    "error": r[8], "suggestions": suggestions, "created_at": r[10]})
+                    "error": r[8], "suggestions": suggestions, "diagnostics": diag,
+                    "validation": validation, "created_at": r[12]})
     return out
+
+
+def ai_verdict_stats(db_path: Optional[str] = None) -> dict:
+    """AI 建议验证胜率统计：全部 analyses 的 validation.verdict 计数。"""
+    with conn(db_path) as c:
+        rows = c.execute("SELECT validation FROM ai_analyses WHERE validation IS NOT NULL"
+                         ).fetchall()
+    counts = {"改善": 0, "持平": 0, "恶化": 0}
+    errors = 0
+    for (raw,) in rows:
+        v = _jload(raw) or {}
+        verdict = v.get("verdict")
+        if verdict in counts:
+            counts[verdict] += 1
+        else:
+            errors += 1  # 验证回测失败（error）等无结论记录
+    total = sum(counts.values())
+    return {"total": total, **counts, "error": errors,
+            "improved_rate": round(counts["改善"] / total, 4) if total else None}
 
 
 # ---------------- llm_usage ----------------

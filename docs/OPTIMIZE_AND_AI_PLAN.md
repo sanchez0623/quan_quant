@@ -231,8 +231,8 @@ ai_analyze_task:
 
 | 期 | 内容 | 价值 |
 |---|---|---|
-| Phase 1 | 诊断引擎 + LLM 解读角色 + 进程内验证回测 + 前端 A/B 展示 | 建议可证伪、幻觉清零 |
-| Phase 2 | 二轮修正：验证结果喂回 LLM 出修正建议（`POST /ai/analyses/{id}/refine`） | 单步 agentic loop |
+| Phase 1 ✅（2026-09-04） | 诊断引擎 diagnostics.py + LLM 解读角色重构 + 建议 clamp + 进程内验证回测 + A/B verdict + 二轮点评 + 前端诊断/验证卡片 + 胜率统计（/api/ai/suggestion-stats）+ 数据加厚（市场环境/交易统计深化/参数表） | 建议可证伪、幻觉清零 |
+| Phase 2 | 二轮修正：验证结果喂回 LLM 出修正建议（`POST /ai/analyses/{id}/refine`）——目前只做了一轮点评（validation.commentary），修正建议待实现 | 单步 agentic loop |
 | Phase 3 | 敏感度扫描（±20% 网格实测表喂 prompt）+ embedding 实验记忆库 | 中期 |
 
 ---

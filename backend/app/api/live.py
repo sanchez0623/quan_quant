@@ -183,6 +183,8 @@ class LiveConfigBody(BaseModel):
     max_holdings: int = 3
     auto_schedule: bool = True
     dd_breaker_pct: float = 30.0
+    ai_briefing: bool = True     # 盘前流程后 AI 生成盘前简报（无可用 LLM Key 自动跳过）
+    ai_commentary: bool = True   # 盘后对账后 AI 生成信号质量点评
     fee_commission_rate: float = 0.00005
     fee_commission_min: float = 5.0
     fee_stamp_tax: float = 0.0005

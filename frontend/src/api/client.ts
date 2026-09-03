@@ -3,6 +3,7 @@ import type {
   AiAnalysisItem,
   AiAnalyzeRequest,
   AiProfilesResponse,
+  AiSuggestionStats,
   BacktestCreateRequest,
   BacktestListItem,
   BacktestReport,
@@ -230,6 +231,11 @@ export async function startAiAnalyze(data: AiAnalyzeRequest): Promise<TaskCreate
 
 export async function getAiAnalyses(backtestId: string): Promise<AiAnalysisItem[]> {
   const res = await api.get<AiAnalysisItem[]>('/ai/analyses', { params: { backtest_id: backtestId } })
+  return res.data
+}
+
+export async function getAiSuggestionStats(): Promise<AiSuggestionStats> {
+  const res = await api.get<AiSuggestionStats>('/ai/suggestion-stats')
   return res.data
 }
 

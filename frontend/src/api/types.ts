@@ -1037,10 +1037,33 @@ export interface AiAnalyzeRequest {
   profile?: string
 }
 
-/** AI 结构化参数建议（LLM 输出末尾 json 块解析而来） */
+/** AI 结构化参数建议（LLM 输出末尾 json 块解析而来，已经后端 param_schema 净化） */
 export interface AiSuggestions {
   params?: Record<string, ParamValue>
   risk_config?: RiskConfig
+}
+
+/** 规则引擎诊断 finding（diagnostics.py 输出） */
+export interface AiFinding {
+  code: string
+  severity: 'high' | 'medium' | 'low'
+  title: string
+  evidence: string
+  hint: string
+}
+
+/** 建议验证回测 A/B 对比（validation.py 输出） */
+export interface AiValidation {
+  config_diff?: Record<string, { old?: ParamValue; new?: ParamValue }>
+  metrics?: { orig?: Record<string, number> | null; new?: Record<string, number> | null }
+  comparison?: {
+    verdict?: '改善' | '持平' | '恶化' | null
+    rows?: Array<{ key: string; orig: number; new: number; delta: number; better: boolean | null }>
+    better?: string[]
+    worse?: string[]
+  }
+  commentary?: string | null
+  error?: string
 }
 
 export interface AiAnalysisItem {
@@ -1055,6 +1078,18 @@ export interface AiAnalysisItem {
   elapsed: number | null
   error: string | null
   suggestions?: AiSuggestions | null
+  diagnostics?: AiFinding[] | null
+  validation?: AiValidation | null
+}
+
+/** AI 建议验证胜率统计 */
+export interface AiSuggestionStats {
+  total: number
+  改善: number
+  持平: number
+  恶化: number
+  error: number
+  improved_rate: number | null
 }
 
 // ---- 数据管理 ----

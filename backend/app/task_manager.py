@@ -56,7 +56,7 @@ def optimize_task(task_id: str, backtest_config: dict, groups: list, objective: 
 
 def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
                     reports_dir: str, param_importance: Optional[dict] = None,
-                    username: Optional[str] = None) -> None:
+                    username: Optional[str] = None, data_dir: Optional[str] = None) -> None:
     from .llm.analyzer import analyze_backtest
     db.update_progress(task_id, 5, "读取回测报告...", db_path)
     report_path = Path(reports_dir) / f"{backtest_id}.json"
@@ -67,11 +67,28 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
     result = analyze_backtest(report, profile, db_path=db_path,
                                param_importance=param_importance, username=username)
     db.update_progress(task_id, 90, "解析结构化建议...", db_path)
+    # ---- 建议自动验证闭环（方案 B4）：同区间重跑建议配置并 A/B 对比 ----
+    validation: Optional[dict] = None
+    if result.get("suggestions"):
+        db.update_progress(task_id, 93, "运行建议验证回测（同区间，可能需数分钟）...", db_path)
+        try:
+            from .llm import validation as vs
+            validation = vs.run_validation_backtest(
+                report.get("config") or {}, result["suggestions"],
+                report.get("metrics") or {}, data_dir=data_dir)
+            db.update_progress(task_id, 97, "AI 复核验证结果...", db_path)
+            validation["commentary"] = vs.review_commentary(
+                report, validation, profile, db_path=db_path, username=username)
+        except Exception as e:  # noqa: BLE001  验证失败不影响分析结论（AI 不为回测失败背锅）
+            validation = {"error": f"{e}", "verdict": None}
     db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
                      result["content"], result["tokens"], result["elapsed"], None,
-                     suggestions=result.get("suggestions"), db_path=db_path)
+                     suggestions=result.get("suggestions"),
+                     diagnostics=result.get("diagnostics"), validation=validation,
+                     db_path=db_path)
     db.finish_task(task_id, "success",
-                   payload={"backtest_id": backtest_id, "profile": result["profile"]},
+                   payload={"backtest_id": backtest_id, "profile": result["profile"],
+                            "verdict": (validation or {}).get("verdict")},
                    db_path=db_path)
 
 
@@ -97,7 +114,7 @@ def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str,
 def live_premarket_task(task_id: str, db_path: str, data_dir: str,
                         update_data: bool = True, push: bool = True) -> None:
     """实盘盘前编排（LIVE_SIGNAL_SYSTEM §5 盘前）：日线增量更新（含完整性守卫）
-    → 盘前信号流程（特征重算/重选/gate/退出检查/推送）。"""
+    → 盘前信号流程（特征重算/重选/gate/退出检查/推送）→ AI 盘前简报（可选）。"""
     from .live import premarket
     if update_data:
         db.update_task(task_id, db_path=db_path, status="running",
@@ -111,30 +128,70 @@ def live_premarket_task(task_id: str, db_path: str, data_dir: str,
     db.update_progress(task_id, 88, "盘前信号流程（特征重算/重选/gate/推送）...",
                        db_path=db_path)
     result = premarket.run_premarket(push=push)
+    ai_briefing = None
+    cfg = _live_cfg()
+    if push and cfg.get("ai_briefing", True):
+        db.update_progress(task_id, 95, "AI 生成盘前简报...", db_path)
+        from .llm import commentary
+        from .live import feishu
+        ai_briefing = commentary.premarket_briefing(result, db_path=db_path)
+        if ai_briefing:
+            feishu.send_text(f"【AI盘前点评 {result.get('as_of') or ''}】\n{ai_briefing}")
     db.finish_task(task_id, "success",
                    payload={"as_of": result.get("as_of"),
                             "rebalanced": result.get("rebalanced"),
                             "pool_size": len(result.get("pool") or []),
                             "stale": result.get("stale"),
                             "signals": len(result.get("signals") or []),
-                            "pushed": result.get("pushed")},
+                            "pushed": result.get("pushed"),
+                            "ai_briefing": ai_briefing},
                    db_path=db_path)
 
 
 def live_postclose_task(task_id: str, db_path: str, data_dir: str,
                         push: bool = True) -> None:
-    """实盘盘后编排（LIVE_SIGNAL_SYSTEM §5 盘后）：当日分钟线合并落库 + 对账卡推送。"""
+    """实盘盘后编排（LIVE_SIGNAL_SYSTEM §5 盘后）：当日分钟线合并落库 + 对账卡推送
+    → AI 信号质量点评（可选）。"""
     from .live import postclose
     db.update_progress(task_id, 10, "盘后流程（分钟线落库/对账卡）...",
                        db_path=db_path)
     result = postclose.run_postclose(push=push)
+    ai_commentary = None
+    cfg = _live_cfg()
+    if push and cfg.get("ai_commentary", True):
+        db.update_progress(task_id, 90, "AI 生成盘后点评...", db_path)
+        from .llm import commentary
+        from .live import feishu, reports
+        today = (result.get("date") or "")
+        signals_today = [s for s in db.list_live_signals(limit=300)
+                         if (s.get("ts") or "")[:10] == today
+                         and s.get("kind") in ("premarket", "intraday")]
+        try:
+            shadow = reports.shadow_stats()
+        except Exception:  # noqa: BLE001
+            shadow = None
+        try:
+            slippage = reports.slippage_stats().get("summary")
+        except Exception:  # noqa: BLE001
+            slippage = None
+        ai_commentary = commentary.postclose_commentary(
+            result, signals_today, shadow=shadow, slippage=slippage, db_path=db_path)
+        if ai_commentary:
+            feishu.send_text(f"【AI盘后点评 {today}】\n{ai_commentary}")
     db.finish_task(task_id, "success",
                    payload={"saved": len(result.get("saved") or []),
                             "skipped": len(result.get("skipped") or []),
                             "positions": result.get("positions"),
                             "equity": result.get("equity"),
-                            "pushed": result.get("pushed")},
+                            "pushed": result.get("pushed"),
+                            "ai_commentary": ai_commentary},
                    db_path=db_path)
+
+
+def _live_cfg() -> dict:
+    """实盘流程配置（盘前默认 + sig_config 覆盖），供 AI 简报开关读取。"""
+    from .live.intraday import _live_cfg
+    return _live_cfg()
 
 
 _TASK_FUNCS = {

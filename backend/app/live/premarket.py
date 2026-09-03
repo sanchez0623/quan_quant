@@ -41,6 +41,8 @@ DEFAULT_CFG = {
     "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
     "auto_schedule": True,   # 每日自动调度（盘前 08:25 / 盘后 15:25 交易日自动提交）
     "dd_breaker_pct": 30.0,  # 回撤熔断阈值（%）：虚拟权益较峰值回撤达阈值强制停开仓
+    "ai_briefing": True,     # 盘前流程后 AI 生成盘前简报（推飞书；无可用 LLM Key 自动跳过）
+    "ai_commentary": True,   # 盘后对账后 AI 生成信号质量点评（推飞书）
     # 交易成本（回填费用自动计算用，与回测 Broker 同一套费率口径）
     "fee_commission_rate": 0.00005,   # 佣金率 万0.5（双边）
     "fee_commission_min": 5.0,        # 最低佣金（元）
@@ -300,7 +302,10 @@ def run_premarket(data_dir: Optional[str] = None,
 
 
 def _domain(cfg: dict, data_dir) -> Optional[set]:
-    """候选域（复用回测 _auto_domain：指数并集 ∩ 板块并集，均空=全市场）"""
+    """候选域（复用回测 _auto_domain：指数并集 ∩ 板块并集，均空=全市场）。
+    as_of=今天：历史成分快照已回填时按当期快照取域（与回测无后视镜同尺），
+    未回填自动降级当前快照。"""
     if not cfg.get("auto_index") and not cfg.get("auto_boards"):
         return None
-    return _auto_domain(cfg, data_dir)
+    as_of = datetime.now().strftime("%Y-%m-%d")
+    return _auto_domain(cfg, data_dir, as_of=as_of)

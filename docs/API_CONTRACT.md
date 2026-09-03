@@ -14,13 +14,13 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 | `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                                                                                                                 |
 | `GET /api/live/positions`            | 虚拟持仓                                                                                                                                                                                                                                |
 | `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                                                                                                         |
-| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...）                                                                                                                  |
+| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                                                                                                  |
 | `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                                                                                                                      |
 | `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                                                                                                                     |
 | `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                                                                                                             |
 | `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}`                                                                                        |
 | `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                                                                                                                |
-| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                                                                                                              |
+| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送 → AI 信号质量点评（`ai_commentary` 开启且 LLM 可用时推飞书，task payload 附 `ai_commentary` 文本）；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                                              |
 | `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                                                                                                                     |
 | `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`                                                                                                 |
 | `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`                                                                                                  |
@@ -305,7 +305,7 @@ metric 可选：annual\_return / sharpe / calmar / total\_return（默认 annual
 
 - 每轮只搜一组参数（其它组固定当前最优）；`objective.n_windows` 把样本内切窗评估（score = 均值 − λ×跨窗std，任一窗回撤击穿 `dd_floor` 重罚），防单窗口过拟合；
 
-- **Walk-Forward**（`objective.walk_forward_folds`，默认 3，0/1=关闭）：把样本内区间切为 n 个连续测试段，每折回测到该折测试段末、只取测试段权益曲线评分，trial 目标 = 跨折聚合（mean − λ×std）——对时序过拟合的打击强于单次 70/30 切分。寻优完成后对 best_params 逐参数 ±1 步邻域在样本外（split 后）回测，输出参数敏感度曲面（`sensitivity`：平台=稳健 / 尖峰=取值敏感）；
+- **Walk-Forward**（`objective.walk_forward_folds`，默认 3，0/1=关闭）：把样本内区间切为 n 个连续测试段，每折回测到该折测试段末、只取测试段权益曲线评分，trial 目标 = 跨折聚合（mean − λ×std）——对时序过拟合的打击强于单次 70/30 切分。寻优完成后对 best\_params 逐参数 ±1 步邻域在样本外（split 后）回测，输出参数敏感度曲面（`sensitivity`：平台=稳健 / 尖峰=取值敏感）；
 
 - 总试验预算 = Σ每组 n\_trials × rounds，上限 2000；
 
@@ -383,12 +383,35 @@ available = 对应环境变量已配置。
 ```json
 [{"task_id":"ai_xxx","backtest_id":"bt_xxx","profile":"main","model":"...",
   "status":"success","created_at":"...",
-  "content": "## 策略诊断\n...(markdown)","tokens_used": 3500, "elapsed": 12.3, "error": null,
-  "suggestions": {"params": {"fast": 10}, "risk_config": {"stop_loss_pct": 12}}}]
+  "content": "## 诊断解读\n...(markdown)","tokens_used": 3500, "elapsed": 12.3, "error": null,
+  "suggestions": {"params": {"fast": 10}, "risk_config": {"stop_loss_pct": 12}},
+  "diagnostics": [{"code":"T_NEG_PNL","severity":"high","title":"做T总贡献为负",
+                   "evidence":"做T 40 笔，合计盈亏 -5,000元","hint":"放宽 grid_atr_mult..."}],
+  "validation": {"config_diff": {"params.fast": {"old": 8, "new": 10}},
+                 "metrics": {"orig": {...}, "new": {...}},
+                 "comparison": {"verdict": "改善", "rows": [{"key":"total_return","orig":0.1,"new":0.15,"delta":0.05,"better":true}],
+                                "better":["total_return"],"worse":[]},
+                 "commentary": "采纳。收益+5pct，回撤收窄。..."}}]
 ```
 
-suggestions 为 LLM 输出末尾 \`\`\`json 块解析出的结构化参数建议（已过滤非法字段；无可调参数时为 null），
-前端用于「应用建议并创建下一轮回测」：与原回测 config 合并后预填回测表单。
+字段说明（AI 分析 v2，方案 B）：
+
+- `diagnostics`：规则引擎（backend/app/llm/diagnostics.py）的纯规则诊断 findings，
+  LLM 只解读 findings 开方（禁止发明 findings 之外的问题）。
+- `suggestions`：已通过 param_schema 净化——越界值 clamp 到 min/max、未知键/非法枚举丢弃、
+  与原值相同剔除（幻觉护栏在代码层）。
+- `validation`：建议自动验证回测（同区间同 universe 重跑，不建独立任务）的 A/B 对比。
+  `comparison.verdict ∈ 改善/持平/恶化`；`commentary` 为验证结果回喂 LLM 的二轮点评
+  （best-effort，可为 null）；验证回测失败时 `validation = {"error": "...", "verdict": null}`
+  且 analysis 仍为 success。
+
+### GET /api/ai/suggestion-stats
+
+AI 建议验证胜率统计（全部分析的 validation.verdict 计数）：
+
+```json
+{"total": 12, "改善": 5, "持平": 4, "恶化": 2, "error": 1, "improved_rate": 0.4167}
+```
 
 ## 7. 数据管理
 
@@ -402,12 +425,15 @@ suggestions 为 LLM 输出末尾 \`\`\`json 块解析出的结构化参数建议
   "minute5": {"stocks": 5400, "updated_at": "..."},
   "adj_factor": {"rows": 6600000, "updated_at": "..."},
   "calendar": {"start": "2021-01-04", "end": "2025-12-30"},
+  "index_history": {"rows": 193048, "stocks": 1515, "months": 117, "earliest_snap": "2016-01-25", "latest_snap": "2026-08-31", "updated_at": "..."},
   "sources": [
     {"name": "baostock", "role": "daily主源", "healthy": true, "last_check": "...", "note": ""},
     {"name": "mootdx", "role": "minute5主源", "healthy": null, "last_check": null, "note": "未安装，可选依赖"}
   ]
 }
 ```
+
+`index_history`（指数成分月度历史快照，`index_constituents_history.parquet`）：universe_auto 候选域按段首基准日（T-1）取 ≤基准日 的最近一期快照（无后视镜，消除静态成分名单的前视/幸存者偏差）；未回填时自动降级当前快照。`index_daily` 同上独立存储。
 
 ### POST /api/data/update
 

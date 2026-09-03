@@ -82,3 +82,9 @@ def _latest_param_importance(strategy_id: Optional[str]) -> Optional[dict]:
 def list_analyses(backtest_id: Optional[str] = Query(default=None),
                   _user: str = Depends(get_current_user)):
     return db.list_analyses(backtest_id)
+
+
+@router.get("/suggestion-stats")
+def suggestion_stats(_user: str = Depends(get_current_user)):
+    """AI 建议验证胜率统计：全部分析的建议验证结论（改善/持平/恶化）计数。"""
+    return db.ai_verdict_stats()
