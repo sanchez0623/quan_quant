@@ -6,24 +6,24 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 
 ## 0. 实盘信号机（LIVE\_SIGNAL\_SYSTEM，详见 docs/LIVE\_SIGNAL\_SYSTEM.md）
 
-| 端点                                   | 说明                                                                                                                     |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}` |
-| `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`）                                                                                                 |
-| `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息                                                                                   |
-| `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                    |
-| `GET /api/live/positions`            | 虚拟持仓                                                                                                                   |
-| `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                            |
-| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...） |
-| `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                         |
-| `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                              |
-| `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）      |
+| 端点                                   | 说明                                                                                                                                           |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}`                       |
+| `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`）                                                                                                                       |
+| `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息                                                                                                         |
+| `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                          |
+| `GET /api/live/positions`            | 虚拟持仓                                                                                                                                         |
+| `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                  |
+| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...）                           |
+| `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                               |
+| `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                              |
+| `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                      |
 | `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}` |
-| `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                            |
-| `POST /api/live/postclose`           | **M2 盘后流程**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{saved, skipped, equity, cash, message, pushed}`                    |
-| `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                |
-| `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}` |
-| `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}` |
+| `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                         |
+| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                  |
+| `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                              |
+| `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`          |
+| `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`           |
 
 M2 新增持久化：`sig_strategy_state`（SlotStepper 状态快照 + 喂 bar 游标）、`sig_meta`（盘中断流熔断心跳/盘后最后执行时间 KV），均纳入 `POST /reset` 清空范围。
 
