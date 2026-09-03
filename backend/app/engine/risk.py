@@ -8,12 +8,12 @@ class RiskConfig:
         self.max_position_pct_per_stock = float(cfg.get("max_position_pct_per_stock", 40))
         self.max_total_position_pct = float(cfg.get("max_total_position_pct", 100))
         # fixed | atr | trailing | atr_trailing
-        self.stop_loss_mode = cfg.get("stop_loss_mode", "fixed")
+        self.stop_loss_mode = cfg.get("stop_loss_mode", "atr_trailing")
         self.stop_loss_pct = float(cfg.get("stop_loss_pct", 12.0))
         self.atr_period = int(cfg.get("atr_period", 14))
         # 默认组面向"做T+动量"风格：ATR 2.0 在高波动票上反复扫损，放宽至 2.5（建议 2.5~3）
         self.atr_multiplier = float(cfg.get("atr_multiplier", 2.5))
-        self.take_profit_pct = float(cfg.get("take_profit_pct", 0) or 0)
+        self.take_profit_pct = float(cfg.get("take_profit_pct", 40) or 0)
         self.trailing_stop_pct = float(cfg.get("trailing_stop_pct", 5.0) or 0)
         self.max_drawdown_breaker = float(cfg.get("max_drawdown_breaker", 30))
         # max_intraday_trades 语义：单只股票每日最大交易次数（None/缺失 -> 默认 4）
@@ -25,15 +25,14 @@ class RiskConfig:
         # k2 < k1 时，价格上涨后移动项会超过成本项并接管，实现「随最高价上移锁盈」。
         # 时序样本外验证（2024选参/2025测试）表明：k2 的「最优值」不可预测
         # （训练集排名与测试集排名不相关），但 5~12 区间整体稳健，<=3 明显偏紧。
-        # 故取区间中部 8.0，且不建议继续微调该参数（会陷入噪声）。
-        self.atr_trail_mult = float(cfg.get("atr_trail_mult", 8.0) or 0)
+        self.atr_trail_mult = float(cfg.get("atr_trail_mult", 6.0) or 0)
         # 成本基准：first=首笔开仓价（不受加仓抬高，推荐）｜wavg=加权平均成本（同旧 ATR 口径）
         self.atr_cost_base = str(cfg.get("atr_cost_base", "first") or "first").lower()
         # 止损线棘轮：True=只上不下（推荐）；False=允许随最高价回落而下移
         self.atr_trail_floor = bool(cfg.get("atr_trail_floor", True))
         # ---- 自适应止损：按市场状态缩放 k1/k2 ----
         # off=关闭｜trend=个股趋势状态（收盘价 vs 均线 + 均线斜率）｜vol=波动率分位
-        self.adaptive = str(cfg.get("adaptive", "off") or "off").lower()
+        self.adaptive = str(cfg.get("adaptive", "trend") or "trend").lower()
         self.adaptive_trend_ma = int(cfg.get("adaptive_trend_ma", 60) or 60)
         self.adaptive_slope_n = int(cfg.get("adaptive_slope_n", 5) or 5)
         # 趋势确立（价在均线上且均线走平/向上）-> 放宽止损，让利润奔跑

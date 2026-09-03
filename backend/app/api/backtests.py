@@ -20,22 +20,22 @@ router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 class RiskConfigModel(BaseModel):
     max_position_pct_per_stock: float = 40
     max_total_position_pct: float = 100
-    stop_loss_mode: str = "fixed"
+    stop_loss_mode: str = "atr_trailing"
     stop_loss_pct: float = 12.0
     atr_period: int = 14
     atr_multiplier: float = 2.5
-    take_profit_pct: float = 0
+    take_profit_pct: float = 40
     trailing_stop_pct: float = 5.0
     max_drawdown_breaker: float = 30
     max_intraday_trades: int | None = None  # 未传时自动对齐策略 max_t_times
     max_holdings: int = 0              # 最大持仓只数，0=不限
     cash_reserve_pct: float = 1.5      # 现金缓冲比例（永不进场的资金）
     # ---- atr_trailing：止损线 = max(成本项−k1×ATR, 最高价−k2×ATR)，只上不下 ----
-    atr_trail_mult: float = 8.0        # k2：移动锁盈倍数（5~12 稳健区间，<=3 偏紧；勿再微调）
+    atr_trail_mult: float = 6.0        # k2：移动锁盈倍数（5~12 稳健区间，<=3 偏紧）
     atr_cost_base: str = "first"       # 成本基准：first=首笔开仓价｜wavg=加权平均成本
     atr_trail_floor: bool = True       # 棘轮：止损线只上不下
     # ---- 自适应止损：按市场状态缩放 k1/k2 ----
-    adaptive: str = "off"              # off｜trend=个股趋势｜vol=波动率分位
+    adaptive: str = "trend"            # off｜trend=个股趋势｜vol=波动率分位
     adaptive_trend_ma: int = 60
     adaptive_slope_n: int = 5
     adaptive_k_loose: float = 1.5      # 趋势确立 -> 放宽，让利润奔跑

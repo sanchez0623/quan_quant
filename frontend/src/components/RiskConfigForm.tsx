@@ -220,16 +220,16 @@ export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
   max_total_position_pct: 100,
   max_holdings: 3,
   cash_reserve_pct: 1.5,
-  stop_loss_mode: 'atr',
+  stop_loss_mode: 'atr_trailing',
   stop_loss_pct: 12,
   atr_period: 14,
   atr_multiplier: 2.5,
-  take_profit_pct: 0,
+  take_profit_pct: 40,
   trailing_stop_pct: 5,
-  atr_trail_mult: 8,
+  atr_trail_mult: 6,
   atr_cost_base: 'first',
   atr_trail_floor: 1,
-  adaptive: 'off',
+  adaptive: 'trend',
   adaptive_k_loose: 1.5,
   adaptive_k_tight: 0.7,
   adaptive_trend_ma: 60,
@@ -255,14 +255,14 @@ function matchesShowIf(f: RiskField, values: Record<string, unknown> | undefined
 
 /** 按当前止损模式生成一行人话规则说明 */
 function describeStopRule(v: Record<string, unknown> | undefined): string {
-  const mode = String(v?.stop_loss_mode ?? 'atr')
+  const mode = String(v?.stop_loss_mode ?? 'atr_trailing')
   const pct = v?.stop_loss_pct
   const n = v?.atr_period
   const k1 = v?.atr_multiplier
   const k2 = v?.atr_trail_mult
   const base = v?.atr_cost_base
   const floor = v?.atr_trail_floor
-  const adaptive = String(v?.adaptive ?? 'off')
+  const adaptive = String(v?.adaptive ?? 'trend')
   const suffix =
     adaptive === 'off'
       ? ''
