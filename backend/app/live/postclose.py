@@ -60,6 +60,10 @@ def run_postclose(data_dir=None, push: bool = True,
 
     qt_map = quotes.realtime_quotes(codes)
     prices = {c: q["price"] for c, q in qt_map.items() if q.get("price")}
+    for p in positions:
+        if p["code"] in prices:
+            db.update_live_position_price(p["code"], prices[p["code"]],
+                                          now.isoformat(timespec="seconds"))
     equity, cash = intraday._virtual_equity(cfg, positions, prices)
 
     lines = [f"【盘后对账 {today}】",

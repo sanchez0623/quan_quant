@@ -333,6 +333,32 @@ export default function LiveSignals() {
       render: (v) => v?.toFixed(3)
     },
     {
+      title: '现价', dataIndex: 'last_price', width: 90, align: 'right',
+      render: (v) => (v != null ? v.toFixed(3) : '-'),
+      onCell: (r) => ({ title: r.last_ts ? `价格时点 ${r.last_ts}` : '尚未轮询到现价（执行盘中轮询/盘后流程后更新）' })
+    },
+    {
+      title: '市值', width: 110, align: 'right',
+      render: (_, r) => (r.last_price != null
+        ? (r.last_price * r.volume).toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+        : '-')
+    },
+    {
+      title: '浮盈', width: 120, align: 'right',
+      render: (_, r) => {
+        if (r.last_price == null) return <span style={{ color: '#999' }}>-</span>
+        const pnl = (r.last_price - r.cost_price) * r.volume
+        const pct = r.cost_price > 0 ? (r.last_price / r.cost_price - 1) * 100 : 0
+        const color = pnl > 0 ? '#cf1322' : pnl < 0 ? '#3f8600' : '#666'
+        return <span style={{ color, fontWeight: 500 }}>
+          {pnl >= 0 ? '+' : ''}{pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+          <span style={{ fontSize: 12, marginLeft: 4 }}>
+            ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)
+          </span>
+        </span>
+      }
+    },
+    {
       title: '开仓日', dataIndex: 'open_day', width: 110,
       render: (v) => v || '-'
     }

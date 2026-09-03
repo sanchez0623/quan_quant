@@ -489,6 +489,8 @@ export interface LivePosition {
   cost_price: number
   open_day: string | null
   group_id: number | null
+  last_price: number | null
+  last_ts: string | null
   updated_at: string
 }
 

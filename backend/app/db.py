@@ -160,6 +160,8 @@ CREATE TABLE IF NOT EXISTS sig_position(
   cost_price REAL NOT NULL,
   open_day TEXT,
   group_id INTEGER,
+  last_price REAL,
+  last_ts TEXT,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sig_t_debt(
@@ -237,6 +239,11 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE llm_keys ADD COLUMN timeout REAL")
     if "max_tokens" not in kcols:
         c.execute("ALTER TABLE llm_keys ADD COLUMN max_tokens INTEGER")
+    pcols = {r[1] for r in c.execute("PRAGMA table_info(sig_position)")}
+    if "last_price" not in pcols:
+        c.execute("ALTER TABLE sig_position ADD COLUMN last_price REAL")
+    if "last_ts" not in pcols:
+        c.execute("ALTER TABLE sig_position ADD COLUMN last_ts TEXT")
 
 
 # ---------------- users ----------------
@@ -780,10 +787,20 @@ def upsert_live_position(code: str, name: str, volume: int, cost_price: float,
 def list_live_positions(db_path: Optional[str] = None) -> list[dict]:
     with conn(db_path) as c:
         rows = c.execute(
-            "SELECT code, name, volume, cost_price, open_day, group_id, updated_at "
+            "SELECT code, name, volume, cost_price, open_day, group_id, "
+            "last_price, last_ts, updated_at "
             "FROM sig_position ORDER BY code").fetchall()
     return [dict(zip(["code", "name", "volume", "cost_price", "open_day",
-                      "group_id", "updated_at"], r)) for r in rows]
+                      "group_id", "last_price", "last_ts", "updated_at"], r))
+            for r in rows]
+
+
+def update_live_position_price(code: str, price: float, ts: str,
+                               db_path: Optional[str] = None) -> None:
+    """更新持仓现价快照（盘中轮询/盘前昨收/盘后收盘，供前端浮盈展示）"""
+    with conn(db_path) as c:
+        c.execute("UPDATE sig_position SET last_price=?, last_ts=?, "
+                  "updated_at=? WHERE code=?", (float(price), ts, _now(), code))
 
 
 def remove_live_position(code: str, db_path: Optional[str] = None) -> bool:

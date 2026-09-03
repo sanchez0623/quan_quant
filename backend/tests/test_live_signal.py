@@ -168,3 +168,31 @@ def test_signal_status_validation():
     assert "已成交" in ALLOWED_SIGNAL_STATUS
     body = SignalStatusBody(status="已成交")
     assert body.status == "已成交"
+
+
+# ---------------- 持仓现价快照（浮盈展示） ----------------
+
+def test_position_price_snapshot(tmp_path, monkeypatch):
+    """盘中轮询/盘后流程落库持仓现价；list_live_positions 带浮盈展示字段"""
+    from app.live import intraday, postclose
+    db.upsert_live_position("600000", "股600000", 10000, 10.0,
+                            open_day="2026-09-01")
+    # 盘中轮询：qt 报价 mock，分钟线空数据（只走落库路径，不进状态机）
+    monkeypatch.setattr(intraday.quotes, "realtime_quotes",
+                        lambda codes: {c: {"price": 10.5, "prev_close": 10.0,
+                                           "name": "股600000"} for c in codes})
+    monkeypatch.setattr(intraday.quotes, "fetch_minute5",
+                        lambda code, day: None)
+    intraday.run_intraday(data_dir=str(tmp_path), push=False)
+    pos = {p["code"]: p for p in db.list_live_positions()}["600000"]
+    assert pos["last_price"] == 10.5
+    assert pos["last_ts"]
+    # 盘后流程更新为收盘快照 10.8
+    monkeypatch.setattr(postclose.quotes, "fetch_minute5",
+                        lambda code, day: None)
+    monkeypatch.setattr(postclose.quotes, "realtime_quotes",
+                        lambda codes: {c: {"price": 10.8, "prev_close": 10.0}
+                                       for c in codes})
+    postclose.run_postclose(data_dir=str(tmp_path), push=False)
+    pos = db.list_live_positions()[0]
+    assert pos["last_price"] == 10.8

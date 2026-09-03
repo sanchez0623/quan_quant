@@ -127,6 +127,23 @@ def _virtual_equity(cfg: dict, positions: list[dict],
     return cash + mv, cash
 
 
+def _persist_prices(positions: dict, qt_map: dict, now: datetime,
+                    force: bool = False) -> None:
+    """持仓现价快照落库（供前端持仓卡浮盈展示）。
+    同一分钟内不重复写（控制台快照高频调用节流）；force=True 用于主动轮询。"""
+    minute = now.strftime("%Y-%m-%d %H:%M")
+    if not force and db.get_meta("pos_px_ts") == minute:
+        return
+    hit = False
+    for c, q in qt_map.items():
+        if c in positions and q.get("price"):
+            db.update_live_position_price(c, float(q["price"]),
+                                          now.isoformat(timespec="seconds"))
+            hit = True
+    if hit:
+        db.set_meta("pos_px_ts", minute)
+
+
 def _in_session(now: datetime) -> bool:
     """A股盘中时段（含集合竞价缓冲）：工作日 09:15~15:05"""
     if now.weekday() >= 5:
@@ -181,6 +198,7 @@ def run_intraday(data_dir=None, push: bool = True,
         pass
 
     qt_map = quotes.realtime_quotes(active)
+    _persist_prices(positions, qt_map, now, force=True)
     equity, cash = _virtual_equity(
         cfg, list(positions.values()),
         {c: q["price"] for c, q in qt_map.items()})
@@ -401,6 +419,7 @@ def status_snapshot(data_dir=None) -> dict:
     pool_codes = [x["code"] for x in (pool_state.get("pool") or [])]
     active = sorted(set(pool_codes) | set(positions) | set(states))
     qt_map = quotes.realtime_quotes(active)
+    _persist_prices(positions, qt_map, datetime.now())
     try:
         hb = json.loads(db.get_meta("intraday_hb") or "{}")
     except Exception:

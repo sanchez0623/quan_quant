@@ -251,6 +251,12 @@ def run_premarket(data_dir: Optional[str] = None,
         else:
             messages.append(f"✓ {code}：持仓正常（{'/'.join(hits) if hits else '无衰退信号'}）")
 
+    # ---- 4.5) 持仓现价快照（盘前口径 = T-1 收盘，供前端浮盈展示） ----
+    for p in positions:
+        px = daily_close.get(p["code"])
+        if px:
+            db.update_live_position_price(p["code"], px, f"{as_of} 15:00")
+
     # ---- 5) 组装推送 + 落库 ----
     if not pos_codes and not signals and gate_state == 0:
         # 无持仓且当日无重选：把建仓名单也推出去（用户可提前挂单）
