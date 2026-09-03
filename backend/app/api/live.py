@@ -218,8 +218,14 @@ class ResetBody(BaseModel):
 
 @router.post("/reset")
 def reset_live(body: ResetBody, _user: str = Depends(get_current_user)):
-    """清空实盘信号机数据（信号/回填/虚拟持仓/池子状态/盘中状态机快照），重新开始"""
+    """清空实盘信号机数据（信号/回填/虚拟持仓/池子状态/盘中状态机快照），重新开始。
+    同时把当日调度标记写回 -> 清空后自动调度当天不再补跑
+    （清空会连带清掉 sig_meta 里的标记，否则调度器会把"重新开始"误判为
+    "今天还没跑"而立刻补一次空流程推送；手动按钮不受影响）"""
     db.reset_live_data(keep_config=body.keep_config)
+    today = datetime.now().strftime("%Y-%m-%d")
+    db.set_meta("auto_morning_date", today)
+    db.set_meta("auto_postclose_date", today)
     return {"reset": True, "keep_config": body.keep_config}
 
 

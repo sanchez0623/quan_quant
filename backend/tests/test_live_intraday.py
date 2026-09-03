@@ -439,12 +439,24 @@ def test_scheduler_manual_auto_mutex(monkeypatch):
     from app.api.live import morning_run, MorningBody
     from app.live import scheduler
     submitted: list[tuple] = []
-    # task_manager.manager 是单例：scheduler 与 live.py 共用，mock 一次即可
+    # 手动跑盘前（task_manager.manager 是单例，scheduler 与 live.py 共用）
     monkeypatch.setattr(scheduler.manager, "submit",
                         lambda kind, tid, **kw: submitted.append((kind, tid)))
     morning_run(MorningBody(update_data=False, push=False))
     r = scheduler.tick(dt.datetime(2026, 9, 3, 8, 30))
     assert r["submitted"] == [], "手动跑过当天，自动不应重复"
+
+
+def test_reset_marks_schedule_done(monkeypatch):
+    """清空重来 -> 当日调度标记写回：调度器当天不再自动补跑空流程"""
+    from app.api.live import reset_live, ResetBody
+    from app.live import scheduler
+    submitted: list[tuple] = []
+    monkeypatch.setattr(scheduler.manager, "submit",
+                        lambda kind, tid, **kw: submitted.append((kind, tid)))
+    reset_live(ResetBody(keep_config=True))
+    r = scheduler.tick(dt.datetime(2026, 9, 3, 20, 18))   # 盘后窗口内
+    assert r["submitted"] == [], "清空重来当天，自动调度不应补跑空流程"
 
 
 def test_drawdown_breaker_triggers_gate(monkeypatch):
