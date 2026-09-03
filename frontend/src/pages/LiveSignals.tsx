@@ -219,10 +219,24 @@ export default function LiveSignals() {
   const onSync = async () => {
     try {
       const { positions } = await syncForm.validateFields()
-      await syncLivePositions(positions ?? [])
-      message.success(`已按提交列表重建虚拟持仓（${(positions ?? []).length} 只）`)
-      setSyncOpen(false)
-      await refresh()
+      const rows = (positions ?? []).filter(
+        (p: { code?: string }) => p.code && String(p.code).trim())
+      const commit = async () => {
+        await syncLivePositions(rows)
+        message.success(`已按提交列表重建虚拟持仓（${rows.length} 只）`)
+        setSyncOpen(false)
+        await refresh()
+      }
+      if (rows.length === 0) {
+        Modal.confirm({
+          title: '提交空列表 = 按空仓校准（清空全部虚拟持仓）',
+          content: '如果只是想核对持仓，请点取消后在表格中填写券商实际持仓。',
+          okText: '确认清空', okButtonProps: { danger: true }, cancelText: '取消',
+          onOk: commit
+        })
+        return
+      }
+      await commit()
     } catch (err) {
       if (err && typeof err === 'object' && 'errorFields' in err) return
       message.error((err as { response?: { data?: { detail?: string } } })
@@ -625,7 +639,7 @@ export default function LiveSignals() {
         />
       </Card>
 
-      <Modal open={syncOpen}
+      <Modal open={syncOpen} forceRender
         title="对账校准：以券商实际持仓为准重建虚拟持仓"
         okText="按以上持仓重建" cancelText="取消"
         onCancel={() => setSyncOpen(false)} onOk={onSync} width={760}>
