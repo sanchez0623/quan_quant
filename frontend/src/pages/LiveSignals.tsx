@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Popconfirm, Row,
-  Select, Space, Statistic, Switch, Table, Tag, Typography, message
+  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Popconfirm, Progress,
+  Row, Select, Space, Statistic, Switch, Table, Tag, Typography, message
 } from 'antd'
 import {
   CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, NotificationOutlined,
@@ -10,13 +10,15 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type {
   IntradayCodeStatus, IntradayRunResult, IntradayStatus, LiveConfig,
-  LivePosition, LiveSignalItem, ReadinessResult, ShadowStats, SlippageResult
+  LivePosition, LiveSignalItem, ReadinessResult, ShadowStats, SlippageResult,
+  TaskStatus
 } from '../api/types'
 import {
   addLiveFill, getIntradayStatus, getLiveSummary, getReadiness, getShadowStats,
   getSlippage, resetLiveData, runIntraday, runMorning, runPostclose,
   saveLiveConfig, setLiveSignalStatus, syncLivePositions
 } from '../api/client'
+import { useTaskProgress } from '../hooks/useTaskProgress'
 import { fmtMoney } from '../utils/format'
 
 const STYPE_TAG: Record<string, string> = {
@@ -126,6 +128,21 @@ export default function LiveSignals() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // 盘前编排任务进度（提交后在本页直接跟踪，无需跳转）
+  const [morningTaskId, setMorningTaskId] = useState<string | null>(null)
+  const onMorningDone = useCallback((status: TaskStatus,
+                                     full: { message: string } | null) => {
+    if (status === 'success') {
+      message.success('盘前流程已完成并推送，信号/池子已落库')
+      refresh()
+      loadStatus()
+    } else if (status === 'failed') {
+      message.error(`盘前流程失败：${full?.message || '未知错误'}`)
+    }
+    setMorningTaskId(null)
+  }, [refresh, loadStatus])
+  const morningTask = useTaskProgress(morningTaskId, onMorningDone)
+
   const onFill = async () => {
     if (!fillTarget || !fillPrice || !fillVolume) return
     try {
@@ -181,9 +198,10 @@ export default function LiveSignals() {
     setMorningLoading(true)
     try {
       const r = await runMorning(updateData)
+      setMorningTaskId(r.task_id)
       message.success(
         `盘前编排任务已提交（${r.task_id}）${updateData ? '：先做全市场日线增量更新（约数分钟），' : ''}` +
-        '完成后自动执行盘前流程并推送，可在任务中心查看进度')
+        '完成后自动执行盘前流程并推送，进度见下方')
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail || '盘前编排提交失败')
@@ -415,6 +433,17 @@ export default function LiveSignals() {
           />
         ) : (
           <Typography.Text type="secondary">尚未产生交易信号</Typography.Text>
+        )}
+        {morningTaskId && (
+          <div style={{ marginTop: 8 }}>
+            <Progress
+              percent={Math.round(morningTask.progress)}
+              size="small" status="active"
+              strokeColor={{ from: '#1677ff', to: '#36cfc9' }} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              任务 {morningTaskId}｜{morningTask.message || '排队中...'}
+            </Typography.Text>
+          </div>
         )}
       </Card>
 
