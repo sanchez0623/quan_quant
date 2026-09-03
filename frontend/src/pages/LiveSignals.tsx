@@ -429,11 +429,6 @@ export default function LiveSignals() {
     }
   ]
 
-  const poolCols: ColumnsType<{ code: string; name?: string }> = [
-    { title: '代码', dataIndex: 'code', width: 100 },
-    { title: '名称', dataIndex: 'name', ellipsis: true }
-  ]
-
   const pool = summary?.pool
   const stale = staleDays(pool?.as_of)
   const numCell = (v: number | null | undefined, onChange: (v: number | null) => void,
@@ -717,14 +712,36 @@ export default function LiveSignals() {
         items={[
           {
             key: 'pool', label: `当前池子成员（${pool?.pool?.length ?? 0} 只，基准日 ${pool?.as_of ?? '-'}）`,
-            children: (
-              <Table
-                rowKey="code" size="small"
-                dataSource={pool?.pool ?? []}
-                columns={poolCols}
-                pagination={false}
-                locale={{ emptyText: '暂无池子（执行盘前流程后生成）' }}
-              />
+            children: (pool?.pool?.length) ? (() => {
+              const heldSet = new Set(
+                (summary?.positions ?? []).map((p) => p.code))
+              return (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {pool.pool.map((m: { code: string; name?: string }) => {
+                    const held = heldSet.has(m.code)
+                    return (
+                      <span key={m.code} style={{
+                        display: 'inline-flex', gap: 6,
+                        alignItems: 'baseline', padding: '2px 10px',
+                        fontSize: 13, borderRadius: 6,
+                        background: held ? '#fff7e6' : '#fafafa',
+                        border: held ? '1px solid #ffd591' : '1px solid #d9d9d9'
+                      }}>
+                        <span style={{ fontWeight: 600 }}>{m.code}</span>
+                        <span style={{ color: '#555' }}>{m.name || ''}</span>
+                        {held && <Tag color="orange" style={{
+                          fontSize: 11, lineHeight: '16px',
+                          marginInlineEnd: 0, paddingInline: 4
+                        }}>仓</Tag>}
+                      </span>
+                    )
+                  })}
+                </div>
+              )
+            })() : (
+              <Typography.Text type="secondary">
+                暂无池子（执行盘前流程后生成）
+              </Typography.Text>
             )
           },
           {
