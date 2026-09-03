@@ -104,6 +104,7 @@ export default function LiveSignals() {
   const [intradayRun, setIntradayRun] = useState<IntradayRunResult | null>(null)
   const [intradayLoading, setIntradayLoading] = useState(false)
   const [autoPoll, setAutoPoll] = useState(false)
+  const [showAllCodes, setShowAllCodes] = useState(false)
   const [postcloseLoading, setPostcloseLoading] = useState(false)
   const [slip, setSlip] = useState<SlippageResult | null>(null)
   const [shadow, setShadow] = useState<ShadowStats | null>(null)
@@ -586,13 +587,37 @@ export default function LiveSignals() {
             </Space>
           </Space>
         }>
-        <Table<IntradayCodeStatus>
-          rowKey="code" size="small"
-          dataSource={intradayStatus?.codes ?? []}
-          columns={intradayCols}
-          pagination={false}
-          locale={{ emptyText: '无跟踪标的（先执行盘前流程生成池子）' }}
-        />
+        {(() => {
+          const allCodes = intradayStatus?.codes ?? []
+          const focusCodes = allCodes.filter(
+            (c) => c.held || c.opened || c.exit_stage > 0)
+          const reserve = allCodes.length - focusCodes.length
+          if (!allCodes.length) {
+            return <Table<IntradayCodeStatus>
+              rowKey="code" size="small" dataSource={[]}
+              columns={intradayCols} pagination={false}
+              locale={{ emptyText: '无跟踪标的（先执行盘前流程生成池子）' }} />
+          }
+          return <>
+            <Space size={8} style={{ marginBottom: 8 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                重点跟踪 {focusCodes.length} 只（持仓 / 状态机已开仓 / 衰退中）
+                ｜池内候补 {reserve} 只（状态机持续监控，补位候选）
+              </Typography.Text>
+              {reserve > 0 && (
+                <Button type="link" size="small" style={{ padding: 0 }}
+                  onClick={() => setShowAllCodes(!showAllCodes)}>
+                  {showAllCodes ? '收起候补' : '展开候补'}
+                </Button>
+              )}
+            </Space>
+            <Table<IntradayCodeStatus>
+              rowKey="code" size="small"
+              dataSource={showAllCodes ? allCodes : focusCodes}
+              columns={intradayCols} pagination={false}
+              locale={{ emptyText: '无重点跟踪标的' }} />
+          </>
+        })()}
         {intradayRun?.suspended?.length ? (
           <Alert type="warning" showIcon style={{ marginTop: 8 }}
             message="本轮拦截/暂停"
