@@ -59,7 +59,7 @@ class BacktestRequest(BaseModel):
     auto_idle_days: int = 5        # 全空仓持续 N 个交易日 -> 重选
     auto_top_x: int = 30           # 每次预筛取前 x 只
     auto_above_ma: int = 20        # 站上均线锚周期（默认20 对齐 momentum_slot / 60=momentum_t）
-    auto_with_accel: bool = False  # 动量分叠加加速度项（对齐 momentum_slot）
+    auto_with_accel: bool | None = None  # None=跟随策略默认（momentum_slot 开 / momentum_t 关）
     auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
     auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
     auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）

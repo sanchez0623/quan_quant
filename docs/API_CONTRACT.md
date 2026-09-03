@@ -127,7 +127,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "auto_idle_days": 5,
   "auto_top_x": 30,
   "auto_above_ma": 20,
-  "auto_with_accel": false,
+  "auto_with_accel": null,
   "auto_min_rps": null,
   "auto_index": [],
   "auto_boards": [],

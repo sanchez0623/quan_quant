@@ -233,7 +233,7 @@ export default function BacktestList() {
       auto_idle_days: values.auto_idle_days ?? 5,
       auto_top_x: values.auto_top_x ?? 30,
       auto_above_ma: values.auto_above_ma ?? 20,
-      auto_with_accel: values.auto_with_accel ?? false,
+      auto_with_accel: values.auto_with_accel ?? (values.strategy_id === 'momentum_slot'),
       auto_min_rps: values.auto_min_rps ?? null,
       auto_index: values.auto_index ?? [],
       auto_boards: values.auto_boards ?? [],
@@ -280,7 +280,7 @@ export default function BacktestList() {
         auto_idle_days: cfg.auto_idle_days ?? 5,
         auto_top_x: cfg.auto_top_x ?? 30,
         auto_above_ma: cfg.auto_above_ma ?? 20,
-        auto_with_accel: cfg.auto_with_accel ?? false,
+        auto_with_accel: cfg.auto_with_accel ?? (cfg.strategy_id === 'momentum_slot'),
         ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {}),
         auto_index: cfg.auto_index ?? [],
         auto_boards: cfg.auto_boards ?? [],
@@ -344,7 +344,9 @@ export default function BacktestList() {
     // 否则下一次保存模板/提交回测时会把上一段策略的参数一起带进去
     form.setFields([
       { name: 'params', value: pickSchemaParams(s?.param_schema ?? [], {}) },
-      { name: 'period', value: s?.periods?.[0] }
+      { name: 'period', value: s?.periods?.[0] },
+      // 加速项默认跟随策略：momentum_slot 开（预筛口径同其建仓）、momentum_t 关
+      { name: 'auto_with_accel', value: id === 'momentum_slot' }
     ])
   }
 

@@ -248,8 +248,12 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     top_x = max(1, int(cfg.get("auto_top_x") or 30))
     min_rps = cfg.get("auto_min_rps")
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
+    # 加速项默认跟随策略（None 未显式给时）：momentum_slot 开（预筛口径同其建仓）、momentum_t 关
+    auto_accel = cfg.get("auto_with_accel")
+    if auto_accel is None:
+        auto_accel = cfg["strategy_id"] == "momentum_slot"
     pick_p = mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 20),
-                            with_accel=bool(cfg.get("auto_with_accel")))
+                            with_accel=bool(auto_accel))
 
     # ---- 1) 全市场日线特征：一次构建，全部段共用（窗口含特征最长回看）----
     if progress_cb:
