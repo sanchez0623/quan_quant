@@ -67,6 +67,18 @@ DEFAULTS = {
 # universe_auto 仅对动量系策略开放（其建仓门槛与预筛口径同源）
 AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
 
+# 档1参数对齐：这些动量特征键由任务 params 同步覆盖预筛默认值——
+# 调整 mom 参数时预筛（选池）与策略排名用同一把尺，消除两套口径漂移；
+# auto_above_ma / auto_with_accel / auto_rank_key 为预筛专用显式参数，不被覆盖
+_PICK_SYNC_KEYS = (
+    "macd_fast", "macd_slow", "macd_signal",
+    "mom_short", "mom_mid", "mom_long",
+    "w_short", "w_mid", "w_accel",
+    "crash_sigma", "crash_vol_n", "crash_abs_cap",
+    "vol_window", "vol_q_hi", "vol_q_lo",
+    "add_breakout_n",
+)
+
 # ---- 引擎层 bar dict 物化白名单（P0-1/P0-1b）----
 # _simulate 物化 bars 时只保留这些列 + 动态规则列；dif/dea/ma/slope/bias/score
 # 等策略特征列在信号层已消费完，不进 dict（大池分钟线下内存/时间近似减半）。
@@ -230,6 +242,15 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
 # 动态选股（universe_auto）：分段滚动重选
 # ------------------------------------------------------------------
 
+def _sync_pick_params(pick_p: dict, params: dict | None) -> dict:
+    """档1参数对齐：mom 特征参数与策略排名同尺（params 非 None 时覆盖预筛默认）"""
+    for k in _PICK_SYNC_KEYS:
+        v = (params or {}).get(k)
+        if v is not None:
+            pick_p[k] = v
+    return pick_p
+
+
 def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     """动态股票池分段滚动重选。
 
@@ -252,8 +273,10 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     auto_accel = cfg.get("auto_with_accel")
     if auto_accel is None:
         auto_accel = cfg["strategy_id"] == "momentum_slot"
-    pick_p = mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 20),
-                            with_accel=bool(auto_accel))
+    pick_p = _sync_pick_params(
+        mc.pick_params(above_ma=int(cfg.get("auto_above_ma") or 20),
+                       with_accel=bool(auto_accel)),
+        cfg.get("params"))
 
     # ---- 1) 全市场日线特征：一次构建，全部段共用（窗口含特征最长回看）----
     if progress_cb:

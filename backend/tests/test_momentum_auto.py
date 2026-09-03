@@ -265,3 +265,26 @@ def test_validate_auto_ok_and_reject():
         validate_backtest_config(_base_cfg(auto_top_x=9999))
     with pytest.raises(HTTPException):
         validate_backtest_config(_base_cfg(auto_idle_days=0))
+
+
+def test_pick_param_sync_with_strategy_params():
+    """档1参数对齐：params 中的 mom 特征键同步覆盖预筛默认——
+    调整 mom 参数时预筛（选池）与策略排名同尺；行为键与预筛专用键不覆盖"""
+    from app.engine import runner as rd
+    pick_p = mc.pick_params(above_ma=20, with_accel=False)
+    out = rd._sync_pick_params(pick_p, {
+        "mom_short": 15, "mom_mid": 90, "w_mid": 0.2,
+        "exit_need": 3, "pool_n": 8,   # 策略行为键不进预筛参数
+    })
+    assert out["mom_short"] == 15
+    assert out["mom_mid"] == 90
+    assert out["w_mid"] == 0.2
+    assert "exit_need" not in out and "pool_n" not in out
+    assert out["mom_long"] == 120   # params 未给的键保持预筛默认
+    # 预筛专用显式参数不在同步白名单（auto_above_ma/auto_with_accel/auto_rank_key 独立控制）
+    assert "auto_above_ma" not in rd._PICK_SYNC_KEYS
+    assert "auto_with_accel" not in rd._PICK_SYNC_KEYS
+    assert "auto_rank_key" not in rd._PICK_SYNC_KEYS
+    # params 缺省 / None 安全
+    assert rd._sync_pick_params({"mom_short": 20}, None) == {"mom_short": 20}
+    assert rd._sync_pick_params({"mom_short": 20}, {}) == {"mom_short": 20}
