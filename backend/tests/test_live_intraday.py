@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 
 from app import db
-from app.data import store, synthetic
+from app.data import sources, store, synthetic
 from app.engine.strategies.momentum_slot import MomentumSlotStrategy, SlotStepper
 from app.live import intraday, postclose, premarket, quotes, reports
 from test_live_signal import _write_market
@@ -154,6 +154,76 @@ def test_quote_guards_divergence_and_adj():
                                      10.0) is not None, "昨收不一致（疑似除权）必须告警"
     assert quotes.check_bar_divergence(10.0, {}) is None, "无 qt 时不阻断正常流程"
     assert quotes.check_adj_mismatch(qt, None) is None, "无参考收盘时不阻断"
+
+
+def test_cross_check_bar_verdicts(monkeypatch):
+    """方案A：双源同刻复核——同bar一致放行 / 同刻偏差确认坏数据 / 缺数据暂停"""
+    sina = next(s for s in sources.SOURCES if s.name == "sina")
+    bar = f"{TODAY} 09:35"
+
+    def mk(close):
+        return lambda code, start, end: pl.DataFrame([{"date": bar, "close": close}])
+
+    monkeypatch.setattr(sina, "get_minute5", mk(10.02))
+    assert quotes.cross_check_bar("600001", bar, 10.0) is None, \
+        "同刻一致（0.2%≤0.5%）→ mootdx 可信，急拉放行"
+    monkeypatch.setattr(sina, "get_minute5", mk(10.3))
+    v = quotes.cross_check_bar("600001", bar, 10.0)
+    assert v is not None and "确认坏数据" in v, "同刻偏差 3% 必须确认坏数据"
+    monkeypatch.setattr(sina, "get_minute5", lambda c, s, e: None)
+    assert "无法交叉验证" in quotes.cross_check_bar("600001", bar, 10.0), \
+        "复核源无数据 → fail-closed 暂停"
+    monkeypatch.setattr(sina, "get_minute5",
+                        lambda c, s, e: pl.DataFrame(
+                            [{"date": f"{TODAY} 09:40", "close": 10.0}]))
+    assert "缺失该bar" in quotes.cross_check_bar("600001", bar, 10.0), \
+        "复核源缺该 bar（分钟线滞后）→ 暂停"
+
+
+def test_divergence_relaxed_by_cross_check(tmp_path, monkeypatch):
+    """方案A集成：bar vs qt 偏离>1% 但双源同刻复核一致（真实急拉）→ 放行，
+    bar 照常喂状态机；notes 记录放行原因"""
+    dates = _write_market(tmp_path)
+    db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
+                         "auto_boards": [], "exit_need": 2,
+                         "max_holdings": 3, "t_mode": "off"})
+    r = premarket.run_premarket(data_dir=str(tmp_path), push=False)
+    pool_codes = [p["code"] for p in r["pool"]]
+    as_of = r["as_of"]
+    daily = store.read_daily(None, str(tmp_path))
+    base = {c: float(daily.filter((pl.col("code") == c)
+                                  & (pl.col("date") == as_of))["close"][0])
+            for c in pool_codes}
+    bar_close = {c: base[c] * 1.005 for c in pool_codes}
+
+    def fake_fetch(code, day):
+        return pl.DataFrame([
+            {"code": code, "date": f"{TODAY} 09:35", "open": base[code],
+             "high": base[code] * 1.01, "low": base[code] * 0.99,
+             "close": bar_close[code], "volume": 1e5, "amount": 1e8}])
+
+    def fake_qt(codes, timeout=5.0):
+        # 模拟急拉：qt 实时价比 bar 收盘高 3%（>1% 触发偏离告警）
+        return {c: {"name": c, "price": bar_close[c] * 1.03,
+                    "prev_close": base[c]} for c in codes}
+
+    def fake_sina(code, start, end):
+        return pl.DataFrame([
+            {"code": code, "date": f"{TODAY} 09:35", "open": base[code],
+             "high": base[code] * 1.01, "low": base[code] * 0.99,
+             "close": bar_close[code], "volume": 1e5, "amount": 0.0}])
+
+    sina = next(s for s in sources.SOURCES if s.name == "sina")
+    monkeypatch.setattr(quotes, "fetch_minute5", fake_fetch)
+    monkeypatch.setattr(quotes, "realtime_quotes", fake_qt)
+    monkeypatch.setattr(sina, "get_minute5", fake_sina)
+    out = intraday.run_intraday(data_dir=str(tmp_path), push=False,
+                                now=dt.datetime(2026, 9, 3, 9, 41))
+    assert not any("复核" in w["reason"] or "校验失败" in w["reason"]
+                   for w in out["suspended"]), \
+        f"双源一致应放行，不得出现在 suspended: {out['suspended']}"
+    assert any("放行" in n for n in out["notes"]), f"放行应记 notes: {out['notes']}"
+    assert out["fed_bars"] == len(pool_codes), "放行后 bar 应照常喂入状态机"
 
 
 def test_circuit_breaker_states(tmp_path, monkeypatch):

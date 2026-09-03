@@ -178,7 +178,7 @@ def run_intraday(data_dir=None, push: bool = True,
     active = sorted(set(pool_codes) | set(positions) | set(states))
     if not active:
         return {"skipped": "无池子/持仓/状态——请先执行盘前流程",
-                "signals": [], "suspended": [], "fed_bars": 0}
+                "signals": [], "suspended": [], "notes": [], "fed_bars": 0}
 
     mf = market_features_cached(cfg, data_dir)
     as_of = pool_state.get("as_of") or mf.calendar[-1]
@@ -205,6 +205,7 @@ def run_intraday(data_dir=None, push: bool = True,
 
     signals: list[dict] = []
     suspended: list[dict] = []
+    notes: list[str] = []
     no_data: list[str] = []
     fed_bars = 0
     any_bars = False
@@ -257,13 +258,19 @@ def run_intraday(data_dir=None, push: bool = True,
         stepper.restore(saved.get("st") or {})
         last_bar = saved.get("last_bar")
 
-        # 交叉校验（§4.3）前置：坏数据不进状态机（真金白银的损失），
-        # 校验失败整票暂停本轮（游标不推进，状态不变）
+        # 交叉校验（§4.3）前置：偏离 >1% 先双源同刻复核（方案A）——
+        # 复核一致=真实急拉放行；不一致/无法验证=坏数据暂停（游标不推进）
         if qt:
             div = quotes.check_bar_divergence(float(done["close"][-1]), qt)
             if div:
-                suspended.append({"code": code, "reason": div + "——本轮暂停该票信号"})
-                continue
+                verdict = quotes.cross_check_bar(
+                    code, done["date"][-1], float(done["close"][-1]))
+                if verdict:
+                    suspended.append({"code": code,
+                                      "reason": verdict + "——本轮暂停该票信号"})
+                    continue
+                notes.append(f"{code} {done['date'][-1]} 偏离{div.split('偏离')[1]}，"
+                             f"双源同刻复核一致（真实急拉），放行")
 
         new_bars = (done.filter(pl.col("date") > last_bar)
                     if last_bar else done)
@@ -309,7 +316,7 @@ def run_intraday(data_dir=None, push: bool = True,
         pushed = feishu.send_text(_compose_message(now, signals, suspended,
                                                    no_data, equity, cash))
     return {"as_of": as_of, "signals": signals, "suspended": suspended,
-            "no_data": no_data, "fed_bars": fed_bars,
+            "notes": notes, "no_data": no_data, "fed_bars": fed_bars,
             "equity": round(equity, 2), "cash": round(cash, 2),
             "message": _compose_message(now, signals, suspended, no_data,
                                         equity, cash) if (signals or suspended) else "",

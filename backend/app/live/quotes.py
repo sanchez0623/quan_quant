@@ -103,7 +103,9 @@ def realtime_quotes(codes: list[str], timeout: float = 5.0) -> dict[str, dict]:
 
 
 def check_bar_divergence(bar_close: float, qt: dict, tol: float = 0.01) -> Optional[str]:
-    """交叉校验：最新完成 bar 收盘 vs qt 实时价偏离超容差 -> 告警文案（None=通过）"""
+    """交叉校验：最新完成 bar 收盘 vs qt 实时价偏离超容差 -> 告警文案（None=通过）。
+    注意：bar 与快照存在 0~5 分钟时差，急拉/急跌票会真实波动超容差（误伤），
+    命中后须用 cross_check_bar 双源同刻复核，一致则放行。"""
     if not qt or not qt.get("price"):
         return None
     dev = abs(bar_close - qt["price"]) / max(qt["price"], 1e-9)
@@ -111,6 +113,39 @@ def check_bar_divergence(bar_close: float, qt: dict, tol: float = 0.01) -> Optio
         return (f"数据校验失败：bar收盘 {bar_close} vs 实时 {qt['price']} "
                 f"偏离 {dev * 100:.2f}%（>{tol * 100:.0f}%）")
     return None
+
+
+def _sina_source():
+    for src in sources.SOURCES:
+        if src.name == "sina":
+            return src
+    return None
+
+
+def cross_check_bar(code: str, bar_date: str, bar_close: float,
+                    tol: float = 0.005) -> Optional[str]:
+    """双源同刻复核（方案A）：用新浪 5 分钟线取**同一根 bar**对比收盘——
+    同刻对同刻，消除 bar/快照时差导致的急拉误伤。
+    返回 None=复核一致（mootdx 数据可信，急拉放行）；否则返回暂停文案。"""
+    day = bar_date[:10]
+    src = _sina_source()
+    if src is None:
+        return f"双源复核：新浪源不可用，{bar_date} bar无法交叉验证——本轮暂停"
+    try:
+        df = src.get_minute5(code, day, day)
+    except Exception:
+        return f"双源复核：新浪请求异常，{bar_date} bar无法交叉验证——本轮暂停"
+    if df is None or not df.height:
+        return f"双源复核：新浪无当日数据，{bar_date} bar无法交叉验证——本轮暂停"
+    row = df.filter(pl.col("date") == bar_date)
+    if not row.height:
+        return f"双源复核：新浪缺失该bar（{bar_date}，或其分钟线滞后）——本轮暂停"
+    ref = float(row["close"][0])
+    dev = abs(bar_close - ref) / max(ref, 1e-9)
+    if dev <= tol:
+        return None
+    return (f"双源复核不一致：bar收盘 {bar_close} vs 新浪同bar {ref} "
+            f"偏离 {dev * 100:.2f}%——确认坏数据")
 
 
 def check_adj_mismatch(qt: dict, db_close: Optional[float],
