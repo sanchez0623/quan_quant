@@ -165,6 +165,20 @@ export default function LiveSignals() {
   }, [refresh, loadStatus])
   const morningTask = useTaskProgress(morningTaskId, onMorningDone)
 
+  const [postcloseTaskId, setPostcloseTaskId] = useState<string | null>(null)
+  const onPostcloseDone = useCallback((status: TaskStatus,
+                                       full: { message: string } | null) => {
+    if (status === 'success') {
+      message.success('盘后流程完成：分钟线已落库，对账卡已推送')
+      refresh()
+      loadStatus()
+    } else if (status === 'failed') {
+      message.error(`盘后流程失败：${full?.message || '未知错误'}`)
+    }
+    setPostcloseTaskId(null)
+  }, [refresh, loadStatus])
+  const postcloseTask = useTaskProgress(postcloseTaskId, onPostcloseDone)
+
   const onFill = async () => {
     if (!fillTarget || !fillPrice || !fillVolume) return
     try {
@@ -260,13 +274,11 @@ export default function LiveSignals() {
     setPostcloseLoading(true)
     try {
       const r = await runPostclose()
-      message.success(
-        `盘后完成：分钟线落库 ${r.saved.length} 只${r.skipped.length ? `（失败 ${r.skipped.length}）` : ''}，` +
-        `对账卡推送${r.pushed ? '成功' : '未配置飞书'}`)
-      await refresh()
+      setPostcloseTaskId(r.task_id)
+      message.success(`盘后任务已提交（${r.task_id}），完成后自动推送对账卡，进度见下方`)
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
-        ?.response?.data?.detail || '盘后流程失败')
+        ?.response?.data?.detail || '盘后流程提交失败')
     } finally {
       setPostcloseLoading(false)
     }
@@ -456,15 +468,30 @@ export default function LiveSignals() {
         ) : (
           <Typography.Text type="secondary">尚未产生交易信号</Typography.Text>
         )}
-        {morningTaskId && (
+        {(morningTaskId || postcloseTaskId) && (
           <div style={{ marginTop: 8 }}>
-            <Progress
-              percent={Math.round(morningTask.progress)}
-              size="small" status="active"
-              strokeColor={{ from: '#1677ff', to: '#36cfc9' }} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              任务 {morningTaskId}｜{morningTask.message || '排队中...'}
-            </Typography.Text>
+            {morningTaskId && (
+              <div style={{ marginBottom: 4 }}>
+                <Progress
+                  percent={Math.round(morningTask.progress)}
+                  size="small" status="active"
+                  strokeColor={{ from: '#1677ff', to: '#36cfc9' }} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  盘前任务 {morningTaskId}｜{morningTask.message || '排队中...'}
+                </Typography.Text>
+              </div>
+            )}
+            {postcloseTaskId && (
+              <div>
+                <Progress
+                  percent={Math.round(postcloseTask.progress)}
+                  size="small" status="active"
+                  strokeColor={{ from: '#faad14', to: '#fa8c16' }} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  盘后任务 {postcloseTaskId}｜{postcloseTask.message || '排队中...'}
+                </Typography.Text>
+              </div>
+            )}
           </div>
         )}
       </Card>

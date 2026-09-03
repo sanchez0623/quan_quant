@@ -615,17 +615,6 @@ export interface IntradayStatus {
   t_mode: string
 }
 
-export interface PostcloseResult {
-  date: string
-  saved: string[]
-  skipped: string[]
-  positions: number
-  equity: number
-  cash: number
-  message: string
-  pushed: boolean
-}
-
 // ---- 滑点统计 / 影子运行（M3）----
 export interface SlippageRow {
   fill_id: number

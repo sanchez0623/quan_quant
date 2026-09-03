@@ -19,7 +19,6 @@ import type {
   LiveSummary,
   IntradayRunResult,
   IntradayStatus,
-  PostcloseResult,
   ReadinessResult,
   ShadowStats,
   SlippageResult,
@@ -360,8 +359,8 @@ export async function getIntradayStatus(): Promise<IntradayStatus> {
   return res.data
 }
 
-export async function runPostclose(): Promise<PostcloseResult> {
-  const res = await api.post<PostcloseResult>('/live/postclose')
+export async function runPostclose(): Promise<{ task_id: string }> {
+  const res = await api.post('/live/postclose')
   return res.data
 }
 

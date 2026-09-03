@@ -120,6 +120,22 @@ def live_premarket_task(task_id: str, db_path: str, data_dir: str,
                    db_path=db_path)
 
 
+def live_postclose_task(task_id: str, db_path: str, data_dir: str,
+                        push: bool = True) -> None:
+    """实盘盘后编排（LIVE_SIGNAL_SYSTEM §5 盘后）：当日分钟线合并落库 + 对账卡推送。"""
+    from .live import postclose
+    db.update_progress(task_id, 10, "盘后流程（分钟线落库/对账卡）...",
+                       db_path=db_path)
+    result = postclose.run_postclose(push=push)
+    db.finish_task(task_id, "success",
+                   payload={"saved": len(result.get("saved") or []),
+                            "skipped": len(result.get("skipped") or []),
+                            "positions": result.get("positions"),
+                            "equity": result.get("equity"),
+                            "pushed": result.get("pushed")},
+                   db_path=db_path)
+
+
 _TASK_FUNCS = {
     "backtest": backtest_task,
     "optimize": optimize_task,
@@ -127,6 +143,7 @@ _TASK_FUNCS = {
     "data_demo": data_demo_task,
     "data_update": data_update_task,
     "live_premarket": live_premarket_task,
+    "live_postclose": live_postclose_task,
 }
 
 

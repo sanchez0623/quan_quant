@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..auth import get_current_user
-from ..live import feishu, intraday, postclose, premarket, reports
+from ..live import feishu, intraday, premarket, reports
 from ..task_manager import manager
 
 router = APIRouter(prefix="/api/live", tags=["live"])
@@ -213,8 +213,12 @@ def intraday_status(_user: str = Depends(get_current_user)):
 
 @router.post("/postclose")
 def postclose_run(_user: str = Depends(get_current_user)):
-    """盘后流程：当日分钟线落库（池子∪持仓）+ 对账卡推送"""
-    return postclose.run_postclose(push=True)
+    """盘后流程（任务化，防止逐码拉行情期间请求超时/中断）：
+    当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 {task_id}"""
+    task_id = "live_" + uuid.uuid4().hex[:12]
+    db.create_task(task_id, "实盘盘后流程", "live_postclose", payload={"push": True})
+    manager.submit("live_postclose", task_id, push=True)
+    return {"task_id": task_id, "status": "pending"}
 
 
 # ---------------- M3 影子运行 / M4 就绪 ----------------
