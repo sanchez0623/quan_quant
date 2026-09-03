@@ -59,10 +59,28 @@ class FillBody(BaseModel):
     note: str = ""
 
 
+def _sync_state_on_fill(code: str, opened: bool) -> None:
+    """回填联动状态机（堵源头）：买入建仓 -> opened/full 置位（策略大脑
+    知道真实持仓，衰退退出/做T/加仓信号恢复正常）；清仓 -> 状态机复位。
+    无记录的票买入时创建状态（last_bar 空，盘中首喂从当日完成 bar 起步）；
+    last_bar 游标原样保留，不动盘中喂 bar 进度。"""
+    saved = db.get_strategy_states().get(code) or {"st": {}, "last_bar": None}
+    st = dict(saved.get("st") or {})
+    if opened:
+        if st.get("opened"):
+            return
+        st.update({"opened": 1, "full": 1})
+    else:
+        if not st.get("opened"):
+            return
+        st.update({"opened": 0, "full": 0, "adds_done": 0, "exit_stage": 0})
+    db.save_strategy_state(code, st, saved.get("last_bar"))
+
+
 @router.post("/fills")
 def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
     """回填实际成交：记流水 + 联动虚拟持仓（buy 建仓/加仓，sell 减仓/清仓）+
-    关联信号置为已成交"""
+    联动状态机（建仓置位/清仓复位）+ 关联信号置为已成交"""
     fid = db.add_live_fill(body.signal_id, body.code, body.side,
                            body.fill_price, body.fill_volume, body.fee,
                            body.fill_time, body.note)
@@ -89,6 +107,7 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
             remain = old["volume"] - body.fill_volume
             if remain <= 0:
                 db.remove_live_position(body.code)
+                _sync_state_on_fill(body.code, opened=False)
             else:
                 db.upsert_live_position(body.code, old["name"], remain,
                                         old["cost_price"], old.get("open_day"),
@@ -96,6 +115,8 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
         else:
             raise HTTPException(status_code=400,
                                 detail=f"卖出回填失败：虚拟持仓无 {body.code}")
+    if body.side == "buy":
+        _sync_state_on_fill(body.code, opened=True)
     if body.signal_id:
         db.set_live_signal_status(body.signal_id, "已成交")
     return {"fill_id": fid, "positions": db.list_live_positions()}

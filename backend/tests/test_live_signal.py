@@ -155,12 +155,17 @@ def test_fill_updates_position_and_signal(tmp_path):
     pos = {p["code"]: p for p in db.list_live_positions()}
     assert pos["600000"]["volume"] == 10000
     assert pos["600000"]["cost_price"] == 10.5
+    # 回填联动状态机：买入建仓 -> opened/full 置位（策略大脑知道真实持仓）
+    st = db.get_strategy_states()["600000"]["st"]
+    assert st["opened"] == 1 and st["full"] == 1
     assert db.list_live_signals(limit=10)[0]["status"] == "已成交" \
         if db.list_live_signals(limit=10)[0]["id"] == sid else True
-    # 卖出清仓 -> 持仓删除
+    # 卖出清仓 -> 持仓删除 + 状态机复位
     add_fill(FillBody(signal_id=None, code="600000", side="sell",
                       fill_price=11.0, fill_volume=10000))
     assert not any(p["code"] == "600000" for p in db.list_live_positions())
+    st = db.get_strategy_states()["600000"]["st"]
+    assert st["opened"] == 0 and st["exit_stage"] == 0
 
 
 def test_signal_status_validation():
