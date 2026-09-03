@@ -89,6 +89,9 @@ class BacktestRequest(BaseModel):
     monthly_withdraw_base: float = 0       # 每月提取目标额，不足月末补齐
     t_profit_withdraw_pct: float = 10      # 每笔做T盈利即时提取比例（%）
     min_t_amount: float = 20000            # 做T卖出最小金额（防碎单费用磨损）
+    # ---- 总资金止盈提取（NAV_TAKE_PROFIT，0=关闭）----
+    nav_take_profit_pct: float = 0         # 净值相对上次提取后基准涨幅达阈值（%）-> 触发一次提取
+    nav_take_profit_withdraw_pct: float = 0  # 触发时提取收益比例（%）
 
 
 def _norm_universe(universe: list[str]) -> list[str]:

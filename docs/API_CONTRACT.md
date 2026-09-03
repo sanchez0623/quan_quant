@@ -6,24 +6,24 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 
 ## 0. 实盘信号机（LIVE\_SIGNAL\_SYSTEM，详见 docs/LIVE\_SIGNAL\_SYSTEM.md）
 
-| 端点                                   | 说明                                                                                                                                           |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}`；开仓信号仅发「池内 ∩ as_of 动量分前 pool_n」，按动量分占 `max_holdings` 槽位、金额对齐 momentum_slot（试仓/满配，单票≤40% 权益、逐笔扣现金），其余候选池内候补 |
-| `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`）                                                                                                                       |
-| `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息                                                                                                         |
-| `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                          |
-| `GET /api/live/positions`            | 虚拟持仓                                                                                                                                         |
-| `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                  |
-| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...）                           |
-| `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                               |
-| `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                              |
-| `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                      |
-| `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}` |
-| `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                         |
-| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                       |
-| `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                              |
-| `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`          |
-| `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`           |
+| 端点                                   | 说明                                                                                                                                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/live/premarket`           | 触发盘前流程（T-1 特征/重选判定/gate/退出检查/飞书推送），返回 `{as_of, health, gate_state, rebalanced, pool, signals, warns, message, pushed}`；开仓信号仅发「池内 ∩ as\_of 动量分前 pool\_n」，按动量分占 `max_holdings` 槽位、金额对齐 momentum\_slot（试仓/满配，单票≤40% 权益、逐笔扣现金），其余候选池内候补 |
+| `GET /api/live/signals?limit&status` | 信号流水（`sig_signal_log`）                                                                                                                                                                                                              |
+| `POST /api/live/signals/{id}/status` | 状态变更 `{status}` ∈ 待执行/已成交/已忽略/已过期/信息                                                                                                                                                                                                |
+| `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                                                                                                                 |
+| `GET /api/live/positions`            | 虚拟持仓                                                                                                                                                                                                                                |
+| `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                                                                                                         |
+| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...）                                                                                                                  |
+| `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                                                                                                                      |
+| `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                                                                                                                     |
+| `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                                                                                                             |
+| `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}`                                                                                        |
+| `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                                                                                                                |
+| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                                                                                                              |
+| `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                                                                                                                     |
+| `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`                                                                                                 |
+| `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`                                                                                                  |
 
 M2 新增持久化：`sig_strategy_state`（SlotStepper 状态快照 + 喂 bar 游标）、`sig_meta`（盘中断流熔断心跳/盘后最后执行时间 KV），均纳入 `POST /reset` 清空范围。
 
@@ -133,6 +133,11 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "auto_boards": [],
   "auto_rank_key": "score",
   "benchmark": "000905",
+  "monthly_withdraw_base": 0,
+  "t_profit_withdraw_pct": 0,
+  "min_t_amount": 20000,
+  "nav_take_profit_pct": 0,
+  "nav_take_profit_withdraw_pct": 0,
   "start_date": "2023-01-01",
   "end_date": "2024-12-31",
   "period": "daily",
@@ -147,6 +152,11 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
 ```
 
 risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null`/缺省时自动对齐策略参数 `max_t_times`（策略无该参数则兜底 4）。响应：`{"task_id": "bt_xxx", "status": "pending"}`
+
+总资金止盈提取（NAV\_TAKE\_PROFIT，0=关闭）：
+
+- `nav_take_profit_pct`（净值相对上次提取后基准的涨幅阈值 %）+ `nav_take_profit_withdraw_pct`（触发时提取收益比例 %）：每日收盘检查，净值 ≥ 基准×(1+阈值%) 时按「收益 × 提取比例」出金（本金不动，受「累计提取不超累计盈利」护栏约束），随后基准重置为提取后净值，实现逐级锁盈；
+- 触发计入当月已提额（与 `monthly_withdraw_base` 月末兜底联动）；流水 type=`nav_take_profit`；报告 `withdrawal.nav_profit / nav_times`、`metrics.nav_withdrawn / nav_withdraw_times`。
 
 动态选股（DYNAMIC\_SELECT，仅 momentum\_t/momentum\_slot）：
 

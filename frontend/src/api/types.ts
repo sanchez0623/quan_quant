@@ -203,7 +203,7 @@ export interface RiskConfig {
   adaptive_vol_lo?: number
 }
 
-// ---- 月度出金 ----
+// ---- 月度出金 + 总资金止盈提取 ----
 export interface WithdrawalConfig {
   /** 每月提取目标额（0=关闭）：不足月末补齐 */
   monthly_withdraw_base?: number
@@ -211,6 +211,10 @@ export interface WithdrawalConfig {
   t_profit_withdraw_pct?: number
   /** 做T卖出最小金额（防碎单费用磨损） */
   min_t_amount?: number
+  /** 总资金止盈阈值（%，0=关闭）：净值相对上次提取后基准涨幅达阈值 -> 触发一次提取 */
+  nav_take_profit_pct?: number
+  /** 触发时提取收益比例（%） */
+  nav_take_profit_withdraw_pct?: number
 }
 
 // ---- 回测任务 ----
@@ -331,6 +335,10 @@ export interface Metrics {
   withdrawn_total?: number
   t_profit_withdrawn?: number
   month_topup_withdrawn?: number
+  /** 总资金止盈提取累计（落袋为安） */
+  nav_withdrawn?: number
+  /** 总资金止盈触发次数 */
+  nav_withdraw_times?: number
   /** 出金覆盖率：足额月份占比（月度目标>0 时） */
   withdrawal_coverage?: number | null
   /** 未补齐的历史缺口累计金额（有缺口时） */

@@ -189,6 +189,12 @@ export default function MetricsTab({ report }: Props) {
     { title: 'T盈利提成', value: fmtMoney(m.t_profit_withdrawn ?? 0) },
     { title: '月末补齐', value: fmtMoney(m.month_topup_withdrawn ?? 0) },
     {
+      title: '总资金止盈提取',
+      value: (m.nav_withdrawn ?? 0) > 0 || (m.nav_withdraw_times ?? 0) > 0
+        ? `${fmtMoney(m.nav_withdrawn ?? 0)}（${m.nav_withdraw_times ?? 0}次）`
+        : '-'
+    },
+    {
       title: '出金覆盖率',
       value: m.withdrawal_coverage != null ? fmtPct(m.withdrawal_coverage) : '-',
       color: m.withdrawal_coverage != null ? pnlColor(m.withdrawal_coverage) : undefined

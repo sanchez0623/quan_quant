@@ -38,6 +38,9 @@ DEFAULTS = {
     "monthly_withdraw_base": 0.0,
     "t_profit_withdraw_pct": 10.0,
     "min_t_amount": 20000.0,
+    # 总资金止盈提取（NAV_TAKE_PROFIT）：净值相对「上次提取后基准」涨幅达阈值 -> 按比例提取收益
+    "nav_take_profit_pct": 0.0,        # 总资金止盈阈值（%），0=关闭
+    "nav_take_profit_withdraw_pct": 0.0,  # 触发时提取收益比例（%），0=关闭
     # 策略未传 t_ratio/reduce_pct 时的引擎兜底比例（%）：参数化，不再写死 1/3
     "t_ratio_fallback": 33.3333,
     "reduce_pct_fallback": 33.3333,
@@ -491,7 +494,9 @@ def _equity_at(rep: dict, day: str) -> float:
 def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
     """按出金流水重建汇总（total/months 等），供跨段传递与最终报告"""
     months: dict[str, float] = {}
-    total = t_profit = topup = shortfall = recover = 0.0
+    total = t_profit = topup = shortfall = recover = nav_profit = 0.0
+    nav_times = 0
+    nav_base = None  # 最后一条 nav_take_profit 记录的基准（无则调用方回落初始资金）
     for e in log:
         a = float(e.get("amount") or 0.0)
         m = e.get("month") or (e.get("date") or "")[:7]
@@ -506,9 +511,16 @@ def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
             shortfall += a
         elif t == "shortfall_recover":
             recover += a
+        elif t == "nav_take_profit":
+            nav_profit += a
+            nav_times += 1
+            if e.get("nav_base") is not None:
+                nav_base = float(e["nav_base"])
     return {"monthly_base": round(wd_base, 2), "total": round(total, 2),
             "t_profit": round(t_profit, 2), "month_topup": round(topup, 2),
             "shortfall": round(shortfall, 2), "recover": round(recover, 2),
+            "nav_base": nav_base, "nav_profit": round(nav_profit, 2),
+            "nav_times": nav_times,
             "months": {m: round(v, 2) for m, v in months.items()},
             "log": log}
 
@@ -631,7 +643,10 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
     wd_pct = float(cfg.get("t_profit_withdraw_pct") or 0)
     min_t_amount = float(cfg.get("min_t_amount") or 0)
-    # 分段续跑：继承此前各段的出金记账（months 当月已提额 / 累计缺口等），
+    # 总资金止盈提取：阈值（%）与提取收益比例（%）
+    nav_tp_pct = float(cfg.get("nav_take_profit_pct") or 0)
+    nav_tp_wd_pct = float(cfg.get("nav_take_profit_withdraw_pct") or 0)
+    # 分段续跑：继承此前各段的出金记账（months 当月已提额 / 累计缺口 / nav 基准等），
     # 保证跨段月度出金护栏连续；log 由各段自记，最终拼接合并。
     _iw = init_withdraw or {}
     w_state = {"total": float(_iw.get("total") or 0.0),
@@ -640,6 +655,9 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                "shortfall": float(_iw.get("shortfall") or 0.0),
                "recover": float(_iw.get("recover") or 0.0),
                "months": dict(_iw.get("months") or {}),
+               "nav_base": float(_iw.get("nav_base") or 0.0) or float(portfolio.initial_cash),
+               "nav_profit": float(_iw.get("nav_profit") or 0.0),
+               "nav_times": int(_iw.get("nav_times") or 0),
                "log": []}
 
     # bars: code -> list[dict]；index: code -> {date: idx}
@@ -1103,6 +1121,40 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                         w_state["log"].append({"month": month, "date": day,
                                                "type": "shortfall_recover", "amount": round(amt, 2)})
 
+    def nav_take_profit_settle(day: str) -> None:
+        """总资金止盈提取（NAV_TAKE_PROFIT）：净值相对「上次提取后基准」涨幅达阈值 -> 按比例提取收益。
+
+        语义：nav_base 初始=初始资金，每次触发提取后重置为提取后净值；
+        于是每再涨 nav_tp_pct% 就再提一次（逐级锁盈）。提取额 = 收益 × 提取比例，
+        上限受当前现金与「累计提取不超累计盈利」护栏约束；提取计入当月已提额（月末兜底联动）。
+        """
+        if nav_tp_pct <= 0 or nav_tp_wd_pct <= 0:
+            return
+        equity = portfolio.equity(price_map)
+        nav_base = w_state["nav_base"]
+        target = nav_base * (1 + nav_tp_pct / 100.0)
+        if equity < target:
+            return
+        profit = max(0.0, equity - nav_base)  # 相对基准的收益
+        amt = min(profit * nav_tp_wd_pct / 100.0, portfolio.cash)
+        # 护栏：累计提取仍不得超出累计盈利（本金永不被提取，与月度出金同口径）
+        profit_room = max(0.0, equity + w_state["total"] - portfolio.initial_cash)
+        amt = max(0.0, min(amt, profit_room - w_state["total"]))
+        if amt > 0:
+            portfolio.cash -= amt
+            w_state["total"] += amt
+            w_state["nav_profit"] += amt
+            w_state["nav_times"] += 1
+            month = day[:7]
+            w_state["months"][month] = w_state["months"].get(month, 0.0) + amt
+            w_state["log"].append({"month": month, "date": day,
+                                   "type": "nav_take_profit", "amount": round(amt, 2),
+                                   "nav_base": round(nav_base, 2),
+                                   "equity": round(equity, 2),
+                                   "withdraw_pct": nav_tp_wd_pct})
+        # 基准重置为「提取后净值」：无论是否提足（现金不足只提部分也重置）
+        w_state["nav_base"] = equity - amt
+
     # ---------------- 主循环 ----------------
     n_bars = len(timeline)
     cur_day = None
@@ -1182,6 +1234,8 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                                            "cost": round(cost / factor, 4) if factor else round(cost, 4)})
             snapshots.append({"date": day, "cash": round(portfolio.cash, 2),
                               "market_value": round(mv, 2), "positions": positions_snapshot})
+            # 总资金止盈提取（日级触发，先于月末兜底：提取计入当月已提额）
+            nav_take_profit_settle(day)
             # 月末判定：次日跨月或已是最后交易日 -> 出金兜底结算
             nd = next_day.get(day)
             if nd is None or nd[:7] != day[:7]:
@@ -1198,6 +1252,9 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         "month_topup": round(w_state["topup"], 2),
         "shortfall": round(w_state["shortfall"], 2),
         "recover": round(w_state["recover"], 2),
+        "nav_base": round(w_state["nav_base"], 2),
+        "nav_profit": round(w_state["nav_profit"], 2),
+        "nav_times": w_state["nav_times"],
         "months": {m: round(v, 2) for m, v in w_state["months"].items()},
         "log": w_state["log"],
     }

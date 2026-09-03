@@ -129,3 +129,76 @@ def test_monthly_withdraw_universe_auto(tmp_path):
         f"log={len(wd.get('log') or [])} 条")
     m = report.get("metrics") or {}
     assert (m.get("withdrawn_total") or 0) > 0, "metrics.withdrawn_total 应同步"
+
+
+def _write_market_daily_uptrend(tmp_path, n=200, drift=0.008, seed=7):
+    """温和上涨日线（momentum_t 能盈利、又不触发崩溃保护）：
+    实测 drift=0.008/σ=0.008、200 日下 momentum_t 约 +8% 且正常交易"""
+    import numpy as np
+    import polars as pl
+    dates = synthetic.trade_dates(n)
+    rng = np.random.default_rng(seed)
+    rows = []
+    prev = 10.0
+    for d in dates:
+        ret = drift + float(rng.normal(0, 0.008))
+        c = prev * (1 + ret)
+        rows.append({"code": "600000", "date": d,
+                     "open": round(prev, 4), "high": round(max(prev, c) * 1.002, 4),
+                     "low": round(min(prev, c) * 0.998, 4), "close": round(c, 4),
+                     "volume": 1_000_000, "amount": 0.0})
+        prev = c
+    store.write_daily(pl.DataFrame(rows), str(tmp_path))
+    store.write_calendar(pl.DataFrame({"date": dates, "is_open": [1] * n}), str(tmp_path))
+    store.write_adj_factor(pl.DataFrame({
+        "code": ["600000"] * n, "date": dates, "adj_factor": [1.0] * n}), str(tmp_path))
+    store.write_stock_basic(pl.DataFrame({
+        "code": ["600000"], "name": ["测试股"], "st": [False],
+        "list_date": ["20100101"]}), str(tmp_path))
+    return dates[0], dates[-1]
+
+
+def test_nav_take_profit_withdraw(tmp_path):
+    """总资金止盈提取（NAV_TAKE_PROFIT）：净值相对基准涨幅达阈值 -> 按比例提取收益，
+    基准重置后逐级锁盈；关闭（0）时不产生任何 nav 流水"""
+    # 温和上涨日线（+8% 级别，momentum_t 正常交易），阈值 5% 必触发
+    start, end = _write_market_daily_uptrend(tmp_path)
+    cfg = {"name": "nav-tp", "strategy_id": "momentum_t", "period": "daily",
+           "params": {}, "risk_config": {}, "universe": ["600000"],
+           "monthly_withdraw_base": 0.0, "t_profit_withdraw_pct": 0.0,
+           "min_t_amount": 20000.0,
+           "nav_take_profit_pct": 5.0, "nav_take_profit_withdraw_pct": 50.0,
+           "start_date": start, "end_date": end,
+           "initial_capital": 1_000_000.0, "exclude_st": True}
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    wd = report.get("withdrawal") or {}
+    nav_log = [e for e in (wd.get("log") or []) if e.get("type") == "nav_take_profit"]
+    assert nav_log, "上涨行情下应触发总资金止盈提取"
+    assert (wd.get("nav_times") or 0) >= 1, "nav_times 应记录触发次数"
+    assert (wd.get("nav_profit") or 0) > 0, "nav_profit 应累计提取额"
+    assert (wd.get("total") or 0) > 0, "nav 提取应计入 withdrawn.total"
+    # 每次提取额 = 当次收益 × 提取比例（收益 = equity − nav_base）
+    for e in nav_log:
+        eq, base = e.get("equity"), e.get("nav_base")
+        assert eq is not None and base is not None, "流水应记录 equity/nav_base"
+        assert float(e["amount"]) <= (float(eq) - float(base)) * 0.5 + 1e-6, (
+            "提取额不得超过收益 × 提取比例")
+    m = report.get("metrics") or {}
+    assert (m.get("nav_withdrawn") or 0) == round(wd.get("nav_profit") or 0, 2), (
+        "metrics.nav_withdrawn 应与 withdrawal.nav_profit 一致")
+    assert (m.get("nav_withdraw_times") or 0) == wd.get("nav_times"), (
+        "metrics.nav_withdraw_times 应与 withdrawal.nav_times 一致")
+
+
+def test_nav_take_profit_disabled_no_op(tmp_path):
+    """nav_take_profit_pct=0（默认关闭）：不产生 nav 流水"""
+    start, end = _write_market_daily_uptrend(tmp_path / "c", seed=8)
+    cfg = {"name": "nav-off", "strategy_id": "momentum_t", "period": "daily",
+           "params": {}, "risk_config": {}, "universe": ["600000"],
+           "start_date": start, "end_date": end,
+           "initial_capital": 1_000_000.0, "exclude_st": True}
+    report = run_backtest(cfg, data_dir=str(tmp_path / "c"))
+    wd = report.get("withdrawal") or {}
+    assert not (wd.get("log") or []), "默认关闭时不应有任何出金流水"
+    m = report.get("metrics") or {}
+    assert (m.get("nav_withdraw_times") or 0) == 0

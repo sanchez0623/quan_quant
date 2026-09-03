@@ -71,6 +71,8 @@ interface BacktestFormValues {
   monthly_withdraw_base?: number
   t_profit_withdraw_pct?: number
   min_t_amount?: number
+  nav_take_profit_pct?: number
+  nav_take_profit_withdraw_pct?: number
   exclude_st?: boolean
   // ---- 动态选股（universe_auto）：分段滚动重选 ----
   universe_auto?: boolean
@@ -258,6 +260,8 @@ export default function BacktestList() {
       monthly_withdraw_base: values.monthly_withdraw_base,
       t_profit_withdraw_pct: values.t_profit_withdraw_pct,
       min_t_amount: values.min_t_amount,
+      nav_take_profit_pct: values.nav_take_profit_pct ?? 0,
+      nav_take_profit_withdraw_pct: values.nav_take_profit_withdraw_pct ?? 0,
       exclude_st: values.exclude_st ?? true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -297,7 +301,8 @@ export default function BacktestList() {
       const numericKeys = [
         'slippage_pct', 'commission_rate', 'commission_min', 'stamp_tax', 'transfer_fee',
         'handling_fee', 'regulatory_fee', 'warmup_days', 'monthly_withdraw_base',
-        't_profit_withdraw_pct', 'min_t_amount'
+        't_profit_withdraw_pct', 'min_t_amount', 'nav_take_profit_pct',
+        'nav_take_profit_withdraw_pct'
       ] as const
       numericKeys.forEach((k) => {
         const v = cfg[k]
@@ -632,6 +637,8 @@ export default function BacktestList() {
             monthly_withdraw_base: 5000,
             t_profit_withdraw_pct: 10,
             min_t_amount: 20000,
+            nav_take_profit_pct: 0,
+            nav_take_profit_withdraw_pct: 0,
             exclude_st: true,
             universe_auto: false,
             auto_idle_days: 5,
@@ -911,7 +918,7 @@ export default function BacktestList() {
               },
               {
                 key: 'withdraw',
-                label: '账户与月度出金（逐笔T盈利提成 + 月末兜底；0 关闭）',
+                label: '账户与月度出金（逐笔T盈利提成 + 月末兜底 + 总资金止盈提取；0 关闭）',
                 children: (
                   <Row gutter={16}>
                     <Col span={6}>
@@ -930,6 +937,24 @@ export default function BacktestList() {
                         extra="每笔做T盈利即时提取比例"
                       >
                         <InputNumber style={{ width: '100%' }} min={0} max={100} step={1} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      <Form.Item
+                        name="nav_take_profit_pct"
+                        label="总资金止盈（%）"
+                        extra="净值相对上次提取后基准涨幅达阈值即触发；0=关闭"
+                      >
+                        <InputNumber style={{ width: '100%' }} min={0} max={1000} step={5} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      <Form.Item
+                        name="nav_take_profit_withdraw_pct"
+                        label="止盈提取收益（%）"
+                        extra="触发时按比例提取收益部分（本金不动）；0=关闭"
+                      >
+                        <InputNumber style={{ width: '100%' }} min={0} max={100} step={5} />
                       </Form.Item>
                     </Col>
                     <Col span={6}>
