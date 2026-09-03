@@ -65,6 +65,7 @@ def run_postclose(data_dir=None, push: bool = True,
             db.update_live_position_price(p["code"], prices[p["code"]],
                                           now.isoformat(timespec="seconds"))
     equity, cash = intraday._virtual_equity(cfg, positions, prices)
+    dd_msg, _ = intraday.drawdown_breaker(cfg, equity, push=push)
 
     lines = [f"【盘后对账 {today}】",
              f"分钟线落库 {len(saved)} 只" +
@@ -85,5 +86,6 @@ def run_postclose(data_dir=None, push: bool = True,
 
     return {"date": today, "saved": saved, "skipped": skipped,
             "positions": len(positions), "equity": round(equity, 2),
-            "cash": round(cash, 2), "message": msg, "pushed": pushed,
+            "cash": round(cash, 2), "dd_warning": dd_msg,
+            "message": msg, "pushed": pushed,
             "last_run": now.isoformat()}

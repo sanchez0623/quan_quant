@@ -27,6 +27,10 @@ async def lifespan(app: FastAPI):
     if db.get_user(config.ADMIN_USERNAME) is None:
         db.create_user(config.ADMIN_USERNAME, auth.hash_password(config.ADMIN_PASSWORD))
 
+    # 实盘每日自动调度（盘前/盘后，窗口+当日幂等；auto_schedule 可关）
+    from .live import scheduler as live_scheduler
+    live_scheduler.start()
+
     # 启动：后台预热数据源健康检查（不阻塞启动；数据管理页可立即显示源可用性）
     def _warmup_health():
         try:

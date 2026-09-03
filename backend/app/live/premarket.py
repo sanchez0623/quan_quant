@@ -39,6 +39,8 @@ DEFAULT_CFG = {
     "auto_boards": [],       # 候选域：板块并集
     "t_mode": "off",         # 做T机制（盘中状态机；M2 起步 off——人工执行延迟吃收益）
     "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
+    "auto_schedule": True,   # 每日自动调度（盘前 08:25 / 盘后 15:25 交易日自动提交）
+    "dd_breaker_pct": 30.0,  # 回撤熔断阈值（%）：虚拟权益较峰值回撤达阈值强制停开仓
     # 交易成本（回填费用自动计算用，与回测 Broker 同一套费率口径）
     "fee_commission_rate": 0.00005,   # 佣金率 万0.5（双边）
     "fee_commission_min": 5.0,        # 最低佣金（元）

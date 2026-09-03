@@ -152,6 +152,39 @@ def _in_session(now: datetime) -> bool:
     return 915 <= hm <= 1505
 
 
+def drawdown_breaker(cfg: dict, equity: float, push: bool = True) -> tuple[Optional[str], bool]:
+    """回撤熔断（§9，对齐回测 max_drawdown_breaker 默认 30%）：虚拟权益较
+    峰值回撤 ≥ dd_breaker_pct% -> 强制 gate 停开仓 + 一次性飞书告警。
+    峰值存 sig_meta(live_equity_peak)；清空重来清 KV 即自然复位。
+    返回 (告警文案|None, 是否本次强制 gate)。"""
+    if equity <= 0:
+        return None, False
+    peak = float(db.get_meta("live_equity_peak") or 0)
+    if equity > peak:
+        db.set_meta("live_equity_peak", f"{equity:.2f}")
+        peak = equity
+    if peak <= 0:
+        return None, False
+    dd = (1 - equity / peak) * 100
+    limit = float(cfg.get("dd_breaker_pct") or 30)
+    if dd < limit:
+        return None, False
+    pool = db.get_live_pool()
+    if pool and not pool.get("gate_state"):
+        db.save_live_pool(pool.get("pool") or [], pool.get("as_of"), 1,
+                          pool.get("health_history") or [],
+                          pool.get("idle_start"))
+    if not db.get_meta("dd_breaker_alerted"):
+        db.set_meta("dd_breaker_alerted", "1")
+        msg = (f"【⚠ 回撤熔断】虚拟权益 {equity:,.0f} 较峰值 {peak:,.0f} "
+               f"回撤 {dd:.1f}%（≥{limit:.0f}%）——已强制停开仓，存量持仓的"
+               f"退出/止损信号照常；解除请清空重来或上调 dd_breaker_pct")
+        if push:
+            feishu.send_text(msg)
+        return msg, True
+    return "回撤熔断中（此前已告警）", True
+
+
 def _stype_of(sig: dict) -> str:
     """状态机 tag -> 实盘信号类型（tag 空串 = 衰退清仓二次）"""
     tag = sig["tag"]
@@ -202,6 +235,10 @@ def run_intraday(data_dir=None, push: bool = True,
     equity, cash = _virtual_equity(
         cfg, list(positions.values()),
         {c: q["price"] for c, q in qt_map.items()})
+    # 回撤熔断（§9）：在 gate 判定前执行——触发则本轮起强制停开仓
+    dd_msg, dd_forced = drawdown_breaker(cfg, equity, push=push)
+    if dd_forced:
+        gate_state = 1
 
     signals: list[dict] = []
     suspended: list[dict] = []
@@ -318,6 +355,7 @@ def run_intraday(data_dir=None, push: bool = True,
     return {"as_of": as_of, "signals": signals, "suspended": suspended,
             "notes": notes, "no_data": no_data, "fed_bars": fed_bars,
             "equity": round(equity, 2), "cash": round(cash, 2),
+            "dd_warning": dd_msg,
             "message": _compose_message(now, signals, suspended, no_data,
                                         equity, cash) if (signals or suspended) else "",
             "pushed": pushed}

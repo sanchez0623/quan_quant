@@ -2,6 +2,7 @@
 """实盘信号机 API（LIVE_SIGNAL_SYSTEM）：盘前/盘中/盘后全流程 + 信号/回填/
 持仓对账/配置 + M3 影子统计/M4 就绪检查"""
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -180,6 +181,8 @@ class LiveConfigBody(BaseModel):
     auto_boards: list[str] = Field(default_factory=list)
     t_mode: str = "off"
     max_holdings: int = 3
+    auto_schedule: bool = True
+    dd_breaker_pct: float = 30.0
     fee_commission_rate: float = 0.00005
     fee_commission_min: float = 5.0
     fee_stamp_tax: float = 0.0005
@@ -230,7 +233,9 @@ class MorningBody(BaseModel):
 @router.post("/morning")
 def morning_run(body: MorningBody, _user: str = Depends(get_current_user)):
     """盘前编排任务（异步）：日线增量更新 → 盘前信号流程。
-    进度在任务中心查看；数据更新全市场约数分钟。"""
+    进度在任务中心查看；数据更新全市场约数分钟。
+    写当日自动调度标记 -> 手动+自动互斥（当天只跑一次盘前）。"""
+    db.set_meta("auto_morning_date", datetime.now().strftime("%Y-%m-%d"))
     task_id = "live_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, "实盘盘前流程" + ("（含拉数据）" if body.update_data else ""),
                    "live_premarket",
@@ -256,7 +261,9 @@ def intraday_status(_user: str = Depends(get_current_user)):
 @router.post("/postclose")
 def postclose_run(_user: str = Depends(get_current_user)):
     """盘后流程（任务化，防止逐码拉行情期间请求超时/中断）：
-    当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 {task_id}"""
+    当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 {task_id}
+    写当日自动调度标记 -> 手动+自动互斥。"""
+    db.set_meta("auto_postclose_date", datetime.now().strftime("%Y-%m-%d"))
     task_id = "live_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, "实盘盘后流程", "live_postclose", payload={"push": True})
     manager.submit("live_postclose", task_id, push=True)

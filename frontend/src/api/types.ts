@@ -532,6 +532,8 @@ export interface LiveConfig {
   auto_boards: string[]
   t_mode: string
   max_holdings: number
+  auto_schedule?: boolean
+  dd_breaker_pct?: number
   fee_commission_rate: number
   fee_commission_min: number
   fee_stamp_tax: number

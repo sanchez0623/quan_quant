@@ -399,3 +399,76 @@ def test_shadow_and_slippage():
     by_side = {r["side"]: r["slip_pct"] for r in slip["rows"]}
     assert by_side["buy"] == pytest.approx(5.0), "买 10.5 vs 参考 10 → 5% 滑点成本"
     assert by_side["sell"] == pytest.approx(8.3333), "卖 11.0 vs 参考 12 → 少卖 8.33%"
+
+
+# ---------------- 每日自动调度（§5）与回撤熔断（§9） ----------------
+
+def test_scheduler_tick_windows_and_idempotent(monkeypatch):
+    """窗口内提交+当日幂等；窗口外/周末/auto_schedule=off 不提交；
+    手动标记与自动互斥"""
+    from app.live import scheduler
+    submitted: list[tuple] = []
+    monkeypatch.setattr(scheduler.manager, "submit",
+                        lambda kind, tid, **kw: submitted.append((kind, tid)))
+    monkeypatch.setattr(scheduler, "_is_trading_day", lambda t, n: True)
+
+    # 盘前窗口：首次提交 morning
+    r1 = scheduler.tick(dt.datetime(2026, 9, 3, 8, 30))
+    assert r1["submitted"] == ["morning"]
+    assert submitted[-1][0] == "live_premarket"
+    # 幂等：同日第二次 tick 不重复
+    assert scheduler.tick(dt.datetime(2026, 9, 3, 9, 0))["submitted"] == []
+    # 盘后窗口：提交 postclose
+    r2 = scheduler.tick(dt.datetime(2026, 9, 3, 15, 30))
+    assert r2["submitted"] == ["postclose"]
+    assert submitted[-1][0] == "live_postclose"
+    assert scheduler.tick(dt.datetime(2026, 9, 3, 16, 0))["submitted"] == []
+    # 窗口外（07:00）不提交
+    assert scheduler.tick(dt.datetime(2026, 9, 4, 7, 0))["submitted"] == []
+    # auto_schedule=off 空转
+    db.save_live_config({"auto_schedule": False})
+    assert scheduler.tick(dt.datetime(2026, 9, 4, 8, 30)).get("skipped")
+    db.save_live_config({"auto_schedule": True})
+    # 非交易日不提交
+    monkeypatch.setattr(scheduler, "_is_trading_day", lambda t, n: False)
+    assert scheduler.tick(dt.datetime(2026, 9, 5, 8, 30))["trading_day"] is False
+
+
+def test_scheduler_manual_auto_mutex(monkeypatch):
+    """手动提交写当日标记 -> 当天自动调度不再重复"""
+    from app.api.live import morning_run, MorningBody
+    from app.live import scheduler
+    submitted: list[tuple] = []
+    # task_manager.manager 是单例：scheduler 与 live.py 共用，mock 一次即可
+    monkeypatch.setattr(scheduler.manager, "submit",
+                        lambda kind, tid, **kw: submitted.append((kind, tid)))
+    morning_run(MorningBody(update_data=False, push=False))
+    r = scheduler.tick(dt.datetime(2026, 9, 3, 8, 30))
+    assert r["submitted"] == [], "手动跑过当天，自动不应重复"
+
+
+def test_drawdown_breaker_triggers_gate(monkeypatch):
+    """回撤熔断：回撤≥阈值 -> 强制 gate 停开仓 + 一次性告警；解除=清 KV"""
+    from app.live import intraday
+    pushed: list[str] = []
+    monkeypatch.setattr(intraday.feishu, "send_text",
+                        lambda msg: pushed.append(msg) or True)
+    cfg = {"dd_breaker_pct": 30.0}
+    db.save_live_pool([{"code": "600000", "name": "股600000"}],
+                      "2026-09-03", 0, [], None)
+    # 峰值 4,000,000；权益 3,000,000 -> 回撤 25% < 30% 不触发
+    db.set_meta("live_equity_peak", "4000000")
+    msg, forced = intraday.drawdown_breaker(cfg, 3_000_000.0, push=False)
+    assert msg is None and not forced
+    assert db.get_live_pool()["gate_state"] == 0
+    # 权益 2,700,000 -> 回撤 32.5% 触发：gate 置 1 + 告警一次
+    msg, forced = intraday.drawdown_breaker(cfg, 2_700_000.0, push=True)
+    assert forced and msg and "回撤熔断" in msg
+    assert db.get_live_pool()["gate_state"] == 1
+    assert len(pushed) == 1
+    # 再次调用：不重复告警（消息标注此前已告警）
+    msg2, forced2 = intraday.drawdown_breaker(cfg, 2_600_000.0, push=True)
+    assert forced2 and "此前已告警" in msg2 and len(pushed) == 1
+    # 权益回升（仍低于历史峰值）-> 回撤 25% 缩出熔断区间，不再强制
+    msg3, forced3 = intraday.drawdown_breaker(cfg, 3_000_000.0, push=False)
+    assert not forced3, "回撤缩回阈值内不再触发；gate 已持久需人工复位"
