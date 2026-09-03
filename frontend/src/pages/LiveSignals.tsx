@@ -67,6 +67,28 @@ function staleDays(asOf: string | null | undefined): number {
   return Math.floor((Date.now() - new Date(asOf).getTime()) / 86400000)
 }
 
+/** 回填参考股数预填：买=建议金额/参考价（100股取整）；
+ * 卖=按虚拟持仓推（清仓/止损=全部持仓，减仓/做T=按 extra 比例）。<100 股不预填 */
+function refFillVolume(s: LiveSignalItem, positions: LivePosition[]): number | null {
+  const side = ['开仓', '加仓'].includes(s.stype) ? 'buy' : 'sell'
+  const lot = (v: number): number | null =>
+    v >= 100 ? Math.floor(v / 100) * 100 : null
+  if (side === 'buy') {
+    if (!s.ref_price || !s.suggest_amount) return null
+    return lot(s.suggest_amount / s.ref_price)
+  }
+  const pos = positions.find((p) => p.code === s.code)
+  if (!pos || pos.volume <= 0) return null
+  const extra = (s.extra || {}) as { reduce_pct?: number; t_ratio?: number }
+  if (s.stype === '减仓' && extra.reduce_pct) {
+    return lot((pos.volume * extra.reduce_pct) / 100)
+  }
+  if (s.stype === '做T' && extra.t_ratio) {
+    return lot((pos.volume * extra.t_ratio) / 100)
+  }
+  return lot(pos.volume)   // 止损/清仓 = 全部持仓
+}
+
 export default function LiveSignals() {
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof getLiveSummary>> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -279,7 +301,7 @@ export default function LiveSignals() {
             <Button size="small" type="primary" onClick={() => {
               setFillTarget(s)
               setFillPrice(s.ref_price)
-              setFillVolume(null)
+              setFillVolume(refFillVolume(s, summary?.positions ?? []))
             }}>回填</Button>
             <Button size="small" onClick={() => onIgnore(s)}>忽略</Button>
           </Space>
@@ -753,6 +775,10 @@ export default function LiveSignals() {
             min={100} step={100} style={{ width: '100%' }}
             value={fillVolume} onChange={(v) => setFillVolume(v)}
             placeholder="实际成交数量" />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            参考股数已预填：买入=建议金额÷参考价（100股取整）；卖出=按当前虚拟持仓
+            （清仓/止损=全部，减仓/做T=按比例）。请以实际成交为准修改。
+          </Typography.Text>
         </Space>
       </Modal>
     </Space>
