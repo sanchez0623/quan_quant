@@ -234,6 +234,67 @@ def read_index_constituents(data_dir: Optional[str] = None) -> Optional[pl.DataF
     return df
 
 
+# ---------------- index_constituents_history（指数成分月度历史快照） ----------------
+# index_key,code,name,snap_date
+# 追加合并语义：(index_key, snap_date) 为快照单元，重复写整单元替换（幂等）；
+# 读侧按 as_of 取各指数 <=as_of 的最近一期快照（无后视镜）。
+
+def write_index_constituents_history(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
+    d = data_root(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    df = df.with_columns(pl.col("code").str.replace(r"^(sh|sz|bj)\.", "").alias("code"))
+    cols = ["index_key", "snap_date", "code", "name"]
+    df = df.select(cols).with_columns(pl.col("snap_date").cast(pl.Utf8))
+    p = d / "index_constituents_history.parquet"
+    old = pl.read_parquet(p) if p.exists() else None
+    if old is not None and old.height:
+        units = df.select(["index_key", "snap_date"]).unique()
+        old = old.join(units, on=["index_key", "snap_date"], how="anti")
+        df = pl.concat([old.select(cols), df], how="vertical")
+    _write_parquet_atomic(df.sort(cols), p)
+
+
+def read_index_constituents_history(data_dir: Optional[str] = None,
+                                    index_keys: Optional[list[str]] = None,
+                                    as_of: Optional[str] = None) -> Optional[pl.DataFrame]:
+    """读指数成分历史快照（无后视镜语义）。
+
+    as_of 给定时：仅返回各指数 <=as_of 的最近一期快照（各 index_key 独立取最近）；
+    index_keys 过滤指数；无数据 / 无符合快照返回 None（调用方降级当前快照）。"""
+    p = data_root(data_dir) / "index_constituents_history.parquet"
+    if not p.exists():
+        return None
+    df = pl.read_parquet(p)
+    if not df.height:
+        return None
+    if index_keys:
+        df = df.filter(pl.col("index_key").is_in([k for k in index_keys if k]))
+        if not df.height:
+            return None
+    if as_of:
+        df = df.filter(pl.col("snap_date") <= as_of)
+        if not df.height:
+            return None
+        latest = df.group_by("index_key").agg(pl.col("snap_date").max().alias("_max"))
+        df = (df.join(latest, on="index_key")
+              .filter(pl.col("snap_date") == pl.col("_max")).drop("_max"))
+    return df
+
+
+def parquet_stats_index_history(data_dir: Optional[str] = None) -> Optional[dict]:
+    p = data_root(data_dir) / "index_constituents_history.parquet"
+    if not p.exists():
+        return None
+    df = pl.read_parquet(p)
+    if df.height == 0:
+        return None
+    return {"rows": int(df.height), "stocks": int(df["code"].n_unique()),
+            "months": int(df["snap_date"].n_unique()),
+            "latest_snap": str(df["snap_date"].max()),
+            "earliest_snap": str(df["snap_date"].min()),
+            "updated_at": _mtime(p)}
+
+
 # ---------------- stock_industry（申万 2021 三级行业） ----------------
 # code,sw_l1,sw_l2,sw_l3,sw_code,snapshot_date；一票一行（无行业数据的票不写行）
 

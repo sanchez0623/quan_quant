@@ -3,6 +3,8 @@
 DATA_GUARD 完整性守卫 / 盘前流程 / 成交回填联动 / 虚拟持仓对账。
 注意：run_premarket 测试一律 push=False（.env 有真实 webhook，避免测试期发消息）。
 """
+import datetime as dt
+
 import numpy as np
 import polars as pl
 import pytest
@@ -13,6 +15,8 @@ from app.engine.runner import run_backtest  # noqa: F401（确保引擎可导入
 from app.live import premarket
 
 N_DAYS = 330
+_TODAY = dt.date(2026, 9, 3)   # 测试日锚：合成日历尾部恒定（防真实日期漂移，
+                               # 与 test_live_intraday.TODAY 对齐）
 
 
 @pytest.fixture(autouse=True)
@@ -44,14 +48,14 @@ def _rows(codes, dates, start_i=0):
 
 
 def test_data_guard_shrink_rejected(tmp_path):
-    dates = synthetic.trade_dates(N_DAYS)
+    dates = synthetic.trade_dates(N_DAYS, end_date=_TODAY)
     store.write_daily(_rows(["600000", "600036", "000001", "000002"], dates), str(tmp_path))
     with pytest.raises(ValueError, match="DATA_GUARD"):
         store.write_daily(_rows(["600000", "600036"], dates), str(tmp_path))
 
 
 def test_data_guard_start_push_rejected(tmp_path):
-    dates = synthetic.trade_dates(N_DAYS)
+    dates = synthetic.trade_dates(N_DAYS, end_date=_TODAY)
     store.write_daily(_rows(["600000"], dates), str(tmp_path))
     # 同一只票但只写后 200 天：票数不变、日期起点推迟 -> 守卫拦截（老历史丢失特征）
     with pytest.raises(ValueError, match="DATA_GUARD"):
@@ -60,7 +64,7 @@ def test_data_guard_start_push_rejected(tmp_path):
 
 def test_data_guard_normal_merge_ok(tmp_path):
     """合规路径：读旧表 -> concat -> 去重 -> 写回，守卫不误伤"""
-    dates = synthetic.trade_dates(N_DAYS)
+    dates = synthetic.trade_dates(N_DAYS, end_date=_TODAY)
     old = _rows(["600000", "600036"], dates)
     store.write_daily(old, str(tmp_path))
     new = _rows(["000001", "000002"], dates)
@@ -72,7 +76,7 @@ def test_data_guard_normal_merge_ok(tmp_path):
 # ---------------- 盘前流程（M1） ----------------
 
 def _write_market(tmp_path):
-    dates = synthetic.trade_dates(N_DAYS)
+    dates = synthetic.trade_dates(N_DAYS, end_date=_TODAY)
     plans = {
         "600000": [(0, 210, 0.003), (210, N_DAYS, -0.006)],
         "600036": [(0, 210, 0.003), (210, N_DAYS, -0.006)],

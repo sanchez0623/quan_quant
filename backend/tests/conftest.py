@@ -21,6 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend/
 TEST_STOCKS = ["600000", "000001", "600036"]
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _init_db():
+    """临时 meta.db 建表（幂等）：让 bs_usage 等表不依赖测试文件执行顺序"""
+    from app import db
+    db.init_db()
+    yield
+
+
 @pytest.fixture(scope="session")
 def demo_env(tmp_path_factory):
     """生成合成数据，返回 (data_dir, start_date, end_date)"""

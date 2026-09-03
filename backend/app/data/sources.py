@@ -83,8 +83,10 @@ def _bs_code(code: str) -> Optional[str]:
     """转换为 baostock 9位代码格式：sh.600000 / sz.000001
     兼容已带前缀的输入（sh.600000 / sh600000）；
     北交所(4/8/9开头) baostock 不支持返回 None。
-    科创板(688/689) **实测支持**（2026-09-02：日K/5分钟K 均正常，2023 年深度也有；
-    仅复权因子无数据）——此前"不支持科创板"的屏蔽是错误假设，已移除。"""
+    科创板(688/689) **全面支持**（2026-09-02 实测：日K/5分钟K/复权因子均正常，2023 年深度也有；
+    注意 query_adjust_factor 若 start_date 不含上市日，无除权的票会返回 0 行——
+    判断"无因子"必须从上市日起查（start_date=1990-01-01）。
+    此前"不支持科创板"的屏蔽是错误假设，已移除。"""
     code = str(code).strip()
     # 先提取纯数字部分进行判断
     pure_code = code
@@ -433,10 +435,14 @@ class BaostockSource(DataSource):
                 {"code": [code], "date": [start], "adj_factor": [1.0]})
         return pl.DataFrame(out).unique(subset=["date"]).sort("date")
 
-    def get_index_constituents(self, index_key: str) -> Optional[list[dict]]:
+    def get_index_constituents(self, index_key: str,
+                               date: Optional[str] = None) -> Optional[list[dict]]:
         """拉取指定指数成分（baostock 官方接口，秒级）。
 
         index_key: sz50 | hs300 | zz500（INDEX_REGISTRY）。
+        date: 历史快照查询日（YYYY-MM-DD；None=当前）。baostock 语义为
+        返回 <=date 的最近一次月度成分快照（updateDate 字段），约 2007 年
+        起可回溯（中证500 发布于 2007-01）。
         返回 [{code(纯数字), name, update_date}]；失败返回 None。
         """
         entry = INDEX_REGISTRY.get(index_key)
@@ -445,7 +451,7 @@ class BaostockSource(DataSource):
         qfn = getattr(self._bs, entry[0])
 
         def _q():
-            rs = qfn()
+            rs = qfn(date=date) if date else qfn()
             rows = []
             while rs.error_code == "0" and rs.next():
                 rows.append(rs.get_row_data())

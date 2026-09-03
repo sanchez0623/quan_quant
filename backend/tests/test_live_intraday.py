@@ -73,7 +73,7 @@ SEL_COLS = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
 
 def test_stepper_restore_continuity():
     """半程快照 -> restore -> 续跑：与一次性跑完的信号序列完全一致"""
-    dates = synthetic.trade_dates(340)
+    dates = synthetic.trade_dates(340, end_date=dt.date.fromisoformat(TODAY))
     rets = {i: (0.006 if i < 320 else -0.012) for i in range(len(dates))}
     df = _minute_df("600001", dates, rets)
     p = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
@@ -109,7 +109,7 @@ def test_stepper_restore_continuity():
 
 def test_stepper_walk_wrapper_matches_manual_feed():
     """_walk 包装层与手工逐 bar 喂入：输出列逐一一致（包装映射回归）"""
-    dates = synthetic.trade_dates(340)
+    dates = synthetic.trade_dates(340, end_date=dt.date.fromisoformat(TODAY))
     rets = {i: (0.006 if i < 320 else -0.012) for i in range(len(dates))}
     df = _minute_df("600001", dates, rets)
     p = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
@@ -257,6 +257,10 @@ def test_intraday_flow_and_cursor(tmp_path, monkeypatch):
     db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
                          "auto_boards": [], "exit_need": 2,
                          "max_holdings": 3, "t_mode": "off"})
+    # 信号 ts（db._now）固定为测试日：去重按 ts 日期比较，真实时钟漂移
+    # （跨天跑测试）会使盘前/盘中信号 ts 落到真实"今天"而去重失效
+    monkeypatch.setattr(db, "_now",
+                        lambda: "2026-09-03 10:00:00")
     r = premarket.run_premarket(data_dir=str(tmp_path), push=False)
     assert r["rebalanced"] and r["pool"]
     pool_codes = [p["code"] for p in r["pool"]]
@@ -438,6 +442,13 @@ def test_scheduler_manual_auto_mutex(monkeypatch):
     """手动提交写当日标记 -> 当天自动调度不再重复"""
     from app.api.live import morning_run, MorningBody
     from app.live import scheduler
+
+    class _FixedDT(dt.datetime):
+        @classmethod
+        def now(cls):   # 端点内 datetime.now() 固定为测试日（防真实日期漂移）
+            return cls(2026, 9, 3, 9, 47)
+
+    monkeypatch.setattr("app.api.live.datetime", _FixedDT)
     submitted: list[tuple] = []
     # 手动跑盘前（task_manager.manager 是单例，scheduler 与 live.py 共用）
     monkeypatch.setattr(scheduler.manager, "submit",
@@ -451,6 +462,13 @@ def test_reset_marks_schedule_done(monkeypatch):
     """清空重来 -> 当日调度标记写回：调度器当天不再自动补跑空流程"""
     from app.api.live import reset_live, ResetBody
     from app.live import scheduler
+
+    class _FixedDT(dt.datetime):
+        @classmethod
+        def now(cls):   # 端点内 datetime.now() 固定为测试日（防真实日期漂移）
+            return cls(2026, 9, 3, 21, 0)
+
+    monkeypatch.setattr("app.api.live.datetime", _FixedDT)
     submitted: list[tuple] = []
     monkeypatch.setattr(scheduler.manager, "submit",
                         lambda kind, tid, **kw: submitted.append((kind, tid)))

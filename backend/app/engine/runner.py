@@ -286,10 +286,11 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         progress_cb(2.0, "计算全市场动量特征…")
     mf = mc.market_features(data_dir=data_dir, window_start=_shift_back(start, 280),
                             window_end=end, p=pick_p)
-    domain = _auto_domain(cfg, data_dir)
+    domain = None  # 段首按各自基准日重取快照（历史成分无后视镜）
     as_of = mc.as_of_before(mf, start)
     if as_of is None:
         raise RuntimeError(f"无后视镜基准日缺失：{start} 之前无行情数据")
+    domain = _auto_domain(cfg, data_dir, as_of=as_of)
     rank_key = cfg.get("auto_rank_key") or "score"
     picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain,
                            rank_key=rank_key)
@@ -337,6 +338,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         info["end"] = trig
         info["trigger_day"] = trig
         info["trigger_reason"] = f"全空仓持续{idle_n}个交易日"
+        domain = _auto_domain(cfg, data_dir, as_of=as_of)
         picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain,
                                rank_key=rank_key)
         info["next_picked"] = _picked_rows(picked, data_dir)
@@ -353,6 +355,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
             if resume is None:
                 break
             as_of = resume
+            domain = _auto_domain(cfg, data_dir, as_of=as_of)
             picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain)
             seg_start = mc.next_after(mf, resume)
             if seg_start is None or seg_start >= end:
@@ -403,10 +406,14 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
     return report
 
 
-def _auto_domain(cfg: dict, data_dir) -> Optional[set]:
+def _auto_domain(cfg: dict, data_dir,
+                 as_of: Optional[str] = None) -> Optional[set]:
     """universe_auto 候选域：指数成分（多选并集）∩ 板块（多选并集）；均空=全市场。
 
     与手动选股 _pick_matched 维度语义一致：指数/板块各自维度内 OR，维度间 AND。
+    as_of（无后视镜基准日）给定时，指数维度优先用历史月度快照（<=as_of 最近一期，
+    消除"当前成分名单回测全期"的前视/幸存者偏差）；历史快照未回填或早于快照
+    起点时降级当前快照并打警告（兼容未回填的存量环境）。
     ST/退市剔除由 market_features 统一处理；返回空集表示候选域内无票（诚实空池）。"""
     idx_keys = [k for k in (cfg.get("auto_index") or []) if k]
     boards = [b for b in (cfg.get("auto_boards") or []) if b]
@@ -418,10 +425,19 @@ def _auto_domain(cfg: dict, data_dir) -> Optional[set]:
         bad = [k for k in idx_keys if k not in allowed_idx]
         if bad:
             raise RuntimeError(f"auto_index 含未知指数: {bad}（合法: {sorted(allowed_idx)}）")
-        idx = store.read_index_constituents(data_dir)
-        if idx is None or idx.height == 0:
-            raise RuntimeError("指数成分数据未就绪，请先在数据管理页更新行业与成分")
-        dom = set(idx.filter(pl.col("index_key").is_in(idx_keys))["code"].to_list())
+        if as_of:
+            hidx = store.read_index_constituents_history(
+                data_dir, index_keys=idx_keys, as_of=as_of)
+            if hidx is not None and hidx.height:
+                dom = set(hidx["code"].to_list())
+            else:
+                print(f"[auto_domain] 警告: {as_of} 无历史成分快照，"
+                      f"降级当前快照（结果可能含成分前视偏差）", flush=True)
+        if dom is None:
+            idx = store.read_index_constituents(data_dir)
+            if idx is None or idx.height == 0:
+                raise RuntimeError("指数成分数据未就绪，请先在数据管理页更新行业与成分")
+            dom = set(idx.filter(pl.col("index_key").is_in(idx_keys))["code"].to_list())
     if boards:
         bad_b = [b for b in boards if b not in sources.BOARD_LABELS]
         if bad_b:

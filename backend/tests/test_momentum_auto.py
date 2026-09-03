@@ -18,8 +18,9 @@ from fastapi import HTTPException
 
 from app.api.backtests import validate_backtest_config
 from app.data import store, synthetic
+from app.data.updater import _month_ends
 from app.engine import momentum_core as mc
-from app.engine.runner import run_backtest
+from app.engine.runner import _auto_domain, run_backtest
 
 N_DAYS = 330
 SEG_START = 200          # 回测开始（交易日序号）
@@ -235,6 +236,71 @@ def test_validate_auto_domain_params():
     out = validate_backtest_config(_base_cfg(auto_index=["hs300", "zz500"],
                                              auto_boards=["main"]))
     assert out["auto_index"] == ["hs300", "zz500"]
+
+
+# ---------------- 历史成分快照（无后视镜候选域） ----------------
+
+def _write_hist(tmp_path, snapshots):
+    """snapshots: [(index_key, snap_date, [codes])] -> 追加写历史快照"""
+    rows = []
+    for key, sd, codes in snapshots:
+        for c in codes:
+            rows.append({"index_key": key, "code": c, "name": f"股{c}",
+                         "snap_date": sd})
+    store.write_index_constituents_history(pl.DataFrame(rows), str(tmp_path))
+
+
+def test_index_history_write_replace_unit(tmp_path):
+    """同 (index_key, snap_date) 重写整单元替换（不残留旧成员）；其他期保留"""
+    _write_hist(tmp_path, [("zz500", "2024-06-24", ["600000", "600036"])])
+    _write_hist(tmp_path, [("zz500", "2024-06-24", ["600000"]),
+                           ("zz500", "2024-12-30", ["000001"])])
+    df = store.read_index_constituents_history(str(tmp_path))
+    assert df.filter(pl.col("snap_date") == "2024-06-24")["code"].to_list() == ["600000"]
+    assert df.filter(pl.col("snap_date") == "2024-12-30")["code"].to_list() == ["000001"]
+
+
+def test_index_history_read_latest_per_index(tmp_path):
+    """as_of 过滤：各指数独立取 <=as_of 的最近一期；无符合快照返回 None"""
+    _write_hist(tmp_path, [
+        ("hs300", "2024-06-24", ["600000"]),
+        ("hs300", "2024-12-30", ["600036"]),
+        ("zz500", "2024-06-26", ["000001"]),
+        ("zz500", "2024-12-27", ["300001"]),
+    ])
+    df = store.read_index_constituents_history(
+        str(tmp_path), index_keys=["hs300", "zz500"], as_of="2025-06-01")
+    got = {(r["index_key"], r["code"]) for r in df.to_dicts()}
+    assert got == {("hs300", "600036"), ("zz500", "300001")}
+    # as_of 早于最早快照 -> None（降级信号）
+    assert store.read_index_constituents_history(str(tmp_path), as_of="2020-01-01") is None
+    # index_keys 过滤命中
+    only = store.read_index_constituents_history(str(tmp_path), index_keys=["hs300"])
+    assert set(only["index_key"].to_list()) == {"hs300"}
+
+
+def test_auto_domain_history_and_fallback(tmp_path):
+    """as_of 给定 -> 用当期历史快照（而非前视的当前名单）；
+    快照缺失/早于起点 -> 降级当前快照；as_of=None 保持旧行为"""
+    _write_hist(tmp_path, [
+        ("zz500", "2024-06-24", ["600000"]),
+        ("zz500", "2024-12-30", ["600036"]),
+    ])
+    _write_constituents(tmp_path, {"zz500": ["300001"]})   # 当前名单（前视）
+    cfg = {"auto_index": ["zz500"], "auto_boards": []}
+    assert _auto_domain(cfg, str(tmp_path), as_of="2024-08-01") == {"600000"}
+    assert _auto_domain(cfg, str(tmp_path), as_of="2025-01-01") == {"600036"}
+    # 早于最早快照 -> 降级当前快照
+    assert _auto_domain(cfg, str(tmp_path), as_of="2023-01-01") == {"300001"}
+    # as_of=None -> 当前快照（向后兼容）
+    assert _auto_domain(cfg, str(tmp_path)) == {"300001"}
+
+
+def test_month_ends():
+    """月末生成：跨年正确、含起止月、闰年/大小月"""
+    assert _month_ends("2024-11-15", "2025-02-03") == [
+        "2024-11-30", "2024-12-31", "2025-01-31", "2025-02-28"]
+    assert _month_ends("2024-02-10", "2024-02-10") == ["2024-02-29"]
 
 
 # ---------------- validate 校验 ----------------

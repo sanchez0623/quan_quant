@@ -100,6 +100,91 @@ def _fetch_all_index_constituents() -> Optional[list[dict]]:
     return rows or None
 
 
+# ---------------- 指数成分历史快照（月度回填，无后视镜候选域） ----------------
+INDEX_HIST_START = "2016-01-01"   # 回填起点（月度快照；baostock 2007 起可回溯，
+                                  # 取 2016 起已覆盖回测期且控制首次回填时长）
+
+
+def _month_ends(start_day: str, end_day: str) -> list[str]:
+    """[start_day, end_day] 覆盖的每个自然月月末日期列表（YYYY-MM-DD）。"""
+    import calendar
+    out: list[str] = []
+    y, m = int(start_day[:4]), int(start_day[5:7])
+    ey, em = int(end_day[:4]), int(end_day[5:7])
+    while (y, m) <= (ey, em):
+        out.append(f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}")
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return out
+
+
+def sync_index_history(data_dir: Optional[str] = None,
+                       progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
+    """指数成分月度历史快照回填/增量（baostock 历史成分接口）。
+
+    表空 -> 全量回填（INDEX_HIST_START 起每月月末）；非空 -> 从表中最大
+    snap_date 所在月起补拉到当前月（同单元覆盖替换，幂等，防当月快照中途变化）。
+    snap_date 用 baostock 返回的 updateDate（快照真实生效日，读侧 <=as_of
+    过滤即无后视镜）。csi800 派生 = hs300 ∪ zz500 当期合并。
+    单期失败跳过记数，不阻断（读侧按最近可用快照取）。"""
+    from .sources import (BaostockSource, INDEX_CSI800, INDEX_PARENTS,
+                          INDEX_REGISTRY)
+
+    def report(p: float, msg: str) -> None:
+        if progress_cb:
+            progress_cb(p, msg)
+
+    bs = BaostockSource()
+    if not bs.available():
+        return {"skipped": "baostock 不可用"}
+    today = time.strftime("%Y-%m-%d")
+    existing = store.read_index_constituents_history(data_dir)
+    if existing is not None and existing.height:
+        months = _month_ends(str(existing["snap_date"].max()), today)
+        have = {(r["index_key"], r["snap_date"])
+                for r in existing.select(["index_key", "snap_date"]).to_dicts()}
+    else:
+        months = _month_ends(INDEX_HIST_START, today)
+        have = set()
+    if not months:
+        return {"months": 0, "added_months": 0}
+    added: set[str] = set()
+    failed: list[str] = []
+    total = len(months)
+    for i, qday in enumerate(months):
+        rows: list[dict] = []
+        for key in INDEX_REGISTRY:
+            res = bs.get_index_constituents(key, date=qday)
+            if res is None:
+                rows = []
+                break
+            for r in res:
+                rows.append({"index_key": key, "code": r["code"],
+                             "name": r["name"], "snap_date": r["update_date"]})
+        if not rows:
+            failed.append(qday)
+            continue
+        derived: dict[str, dict] = {}
+        for parent in INDEX_PARENTS[INDEX_CSI800]:
+            for r in rows:
+                if r["index_key"] == parent:
+                    derived.setdefault(r["code"], r)
+        for code, r in derived.items():
+            rows.append({"index_key": INDEX_CSI800, "code": code,
+                         "name": r["name"], "snap_date": r["snap_date"]})
+        new_units = {(r["index_key"], r["snap_date"]) for r in rows} - have
+        if new_units:
+            store.write_index_constituents_history(pl.DataFrame(rows), data_dir)
+            have |= new_units
+            added |= {u[1] for u in new_units}
+        if progress_cb and (i % 6 == 0 or i == total - 1):
+            report(100.0 * (i + 1) / total,
+                   f"指数历史快照 {i + 1}/{total} 月（截至 {qday[:7]}）...")
+    return {"months": total, "added_months": len(added),
+            "failed_months": failed[:8], "latest_snap": max(added) if added else None}
+
+
 def update_industry(data_dir: Optional[str] = None,
                     progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
     """更新指数成分 + 申万三级行业（scope=industry）。失败安全：
@@ -131,6 +216,15 @@ def update_industry(data_dir: Optional[str] = None,
             report(8, "警告：指数成分拉取为空，保留本地旧数据")
         else:
             report(8, "警告：指数成分拉取为空且无本地旧数据，跳过")
+
+    # ---- 步骤 1.5：指数成分历史快照（月度回填/增量，无后视镜候选域用） ----
+    report(8.5, "同步指数成分历史快照（回填/增量）...")
+    try:
+        stats["index_history"] = sync_index_history(
+            data_dir,
+            progress_cb=lambda p, m: report(8.5 + 1.0 * p / 100, m))
+    except Exception as e:  # noqa: BLE001
+        report(9.5, f"警告：指数历史快照同步失败（{e}），候选域将回退当前快照")
 
     # ---- 步骤 2：申万三级行业（理杏仁加速 -> 乐咕爬虫，全量替换） ----
     def _write_industry(df_ind, source: str) -> None:

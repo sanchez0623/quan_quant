@@ -202,6 +202,8 @@ def test_update_industry_prefers_lixinger(tmp_path, monkeypatch):
     """LIXINGER_API_KEY 存在时优先走理杏仁路径，并标注 source=lixinger"""
     monkeypatch.setenv("LIXINGER_API_KEY", "test-key")
     monkeypatch.setattr(updater, "_fetch_all_index_constituents", lambda: None)
+    monkeypatch.setattr(updater, "sync_index_history",
+                        lambda *a, **k: {"skipped": "test"})  # 历史快照单独测，不打真网
     monkeypatch.setattr(industry, "fetch_sw_industry_lixinger",
                         lambda api_key, progress_cb=None: pl.DataFrame({
                             "code": ["600000"], "sw_l1": ["银行"], "sw_l2": ["银行"],
@@ -226,6 +228,8 @@ def test_update_industry_keeps_old_on_failure(tmp_path, monkeypatch):
         "sw_l3": ["银行"], "sw_code": ["801780.SI"], "snapshot_date": ["2026-01-01"],
     }), str(tmp_path))
     monkeypatch.setattr(updater, "_fetch_all_index_constituents", lambda: None)
+    monkeypatch.setattr(updater, "sync_index_history",
+                        lambda *a, **k: {"skipped": "test"})
     monkeypatch.setattr(industry, "crawl_sw_industry",
                         lambda progress_cb=None: (_ for _ in ()).throw(RuntimeError("网络不可用")))
     stats = updater.update_industry(data_dir=str(tmp_path))
@@ -241,6 +245,8 @@ def test_update_industry_writes_new(tmp_path, monkeypatch):
         {"index_key": "hs300", "code": "600000", "name": "浦发银行",
          "update_date": "2026-08-24"},
     ])
+    monkeypatch.setattr(updater, "sync_index_history",
+                        lambda *a, **k: {"skipped": "test"})
     monkeypatch.setattr(industry, "crawl_sw_industry",
                         lambda progress_cb=None: pl.DataFrame({
                             "code": ["600000"], "sw_l1": ["银行"], "sw_l2": ["银行"],

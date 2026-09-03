@@ -23,6 +23,7 @@ def data_status(_user: str = Depends(get_current_user)):
         "adj_factor": store.parquet_stats_adj_factor(),
         "calendar": store.parquet_stats_calendar(),
         "index": store.parquet_stats_index(),
+        "index_history": store.parquet_stats_index_history(),
         "index_daily": store.parquet_stats_index_daily(),
         "industry": store.parquet_stats_industry(),
         "stock_basic": store.parquet_stats_stock_basic(),
