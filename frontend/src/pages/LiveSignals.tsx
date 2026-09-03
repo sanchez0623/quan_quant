@@ -263,8 +263,10 @@ export default function LiveSignals() {
 
   const onReset = async () => {
     await resetLiveData()
+    setShowAllCodes(false)
     message.success('已清空信号数据（流程参数配置保留）')
     await refresh()
+    loadStatus()
   }
 
   const onMorning = async (updateData: boolean) => {
