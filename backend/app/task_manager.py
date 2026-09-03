@@ -36,11 +36,12 @@ def backtest_task(task_id: str, backtest_config: dict, db_path: str, data_dir: s
 
 def optimize_task(task_id: str, backtest_config: dict, groups: list, objective: dict,
                   rounds: int, db_path: str, data_dir: str, optuna_dir: str,
-                  reports_dir: str) -> None:
+                  reports_dir: str, walk_forward_folds: int = 3) -> None:
     from .optimizer import run_optimize
     summary = run_optimize(
         task_id, backtest_config, groups=groups, objective=objective, rounds=rounds,
         db_path=db_path, data_dir=data_dir, optuna_dir=optuna_dir,
+        walk_forward_folds=walk_forward_folds,
         progress_cb=lambda p, m: db.update_progress(task_id, p, m, db_path))
     path = Path(reports_dir) / f"{task_id}.json"
     path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")

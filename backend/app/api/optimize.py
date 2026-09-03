@@ -29,6 +29,7 @@ class OptimizeObjective(BaseModel):
     n_windows: int = Field(default=3, ge=1, le=20)
     variance_penalty: float = Field(default=0.5, ge=0, le=5)
     dd_floor: float | None = Field(default=None, le=0)
+    walk_forward_folds: int = Field(default=3, ge=0, le=6)  # 样本内滚动折数，0/1=关闭
 
 
 class OptimizeRequest(BaseModel):
@@ -84,7 +85,9 @@ def create_optimize(req: OptimizeRequest, _user: str = Depends(get_current_user)
         metric = obj.metric
         rounds = req.rounds
         objective = {"metric": obj.metric, "n_windows": obj.n_windows,
-                     "variance_penalty": obj.variance_penalty, "dd_floor": obj.dd_floor}
+                     "variance_penalty": obj.variance_penalty, "dd_floor": obj.dd_floor,
+                     "walk_forward_folds": obj.walk_forward_folds}
+        walk_forward_folds = obj.walk_forward_folds
     else:
         # ---- 旧格式：平铺 -> 包装为单组单窗，行为不变 ----
         if not req.param_space:
@@ -99,15 +102,18 @@ def create_optimize(req: OptimizeRequest, _user: str = Depends(get_current_user)
         n_trials_total = req.n_trials
         objective = {"metric": req.metric, "n_windows": 1,
                      "variance_penalty": 0.0, "dd_floor": None}
+        walk_forward_folds = 3
 
     task_id = "opt_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, req.name or "寻优任务", "optimize",
                    payload={"metric": metric, "n_trials": n_trials_total,
                             "strategy_id": cfg["strategy_id"],
                             "backtest_config": cfg,
-                            "groups": groups, "objective": objective, "rounds": rounds})
+                            "groups": groups, "objective": objective, "rounds": rounds,
+                            "walk_forward_folds": walk_forward_folds})
     manager.submit("optimize", task_id, backtest_config=cfg,
-                   groups=groups, objective=objective, rounds=rounds)
+                   groups=groups, objective=objective, rounds=rounds,
+                   walk_forward_folds=walk_forward_folds)
     return {"task_id": task_id, "status": "pending"}
 
 
@@ -169,7 +175,7 @@ def optimize_detail(task_id: str, _user: str = Depends(get_current_user)):
             for k in ("trials", "param_importance", "oos_validation",
                       "best_params", "best_value", "split_date", "param_space", "config",
                       "groups_schedule", "objective", "rounds_history", "per_group_best",
-                      "robustness"):
+                      "robustness", "walk_forward", "sensitivity"):
                 if k in summary:
                     base[k] = summary[k]
             if base.get("backtest_config") is None and "config" in summary:

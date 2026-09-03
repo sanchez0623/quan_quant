@@ -15,8 +15,13 @@ const WITHDRAW_TYPE_LABEL: Record<WithdrawalLogItem['type'], string> = {
   t_profit: 'T盈利提成',
   month_topup: '月末兜底补齐',
   shortfall: '缺口（盈利不足，未提取）',
-  shortfall_recover: '历史缺口追偿'
+  shortfall_recover: '历史缺口追偿',
+  nav_take_profit: '总资金止盈提取'
 }
+
+/** 样本外绩效衰减监控：前后半段年化对比的状态文案 */
+const OOS_TEXT: Record<string, string> = { good: '健康', degraded: '衰减', poor: '失效' }
+const OOS_COLOR: Record<string, string> = { good: '#3f8600', degraded: '#fa8c16', poor: '#cf1322' }
 
 /** 月度出金明细表：每行一个月份，展开显示该月逐笔记录 */
 function WithdrawalTable({ wd }: { wd: WithdrawalSummary }) {
@@ -122,7 +127,14 @@ export default function MetricsTab({ report }: Props) {
     { title: '总交易数', value: String(m.total_trades ?? 0) },
     { title: '总盈亏', value: fmtMoney(m.total_pnl), color: pnlColor(m.total_pnl) },
     { title: '总手续费', value: fmtMoney(m.commission_total) },
-    { title: '期末权益', value: fmtMoney(m.end_equity) }
+    { title: '期末权益', value: fmtMoney(m.end_equity) },
+    ...(m.oos_health
+      ? [{
+          title: '样本外健康度',
+          value: `${OOS_TEXT[m.oos_health.label]}（后段年化 ${fmtPct(m.oos_health.back_ann)}）`,
+          color: OOS_COLOR[m.oos_health.label]
+        }]
+      : [])
   ]
 
   const breakdownCards: Array<{ title: string; value: string; color?: string }> = [

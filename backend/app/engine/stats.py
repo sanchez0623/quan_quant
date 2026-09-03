@@ -32,6 +32,42 @@ def monthly_returns(equity_curve: list[dict], start_equity: float) -> list[dict]
     return out
 
 
+def compute_oos_health(equity_curve: list[dict]) -> Optional[dict]:
+    """样本外绩效衰减监控：把权益曲线按时间切前/后半段，比较年化。
+
+    后段（样本外）显著差于前段 = 策略在数据后半段失效/过拟合，需人工复核。
+    判定：后段亏损而前段盈利 -> poor；后段 < 前段 50% -> degraded；否则 good。
+    """
+    n = len(equity_curve)
+    if n < 40:
+        return None
+    half = n // 2
+    front = equity_curve[:half]
+    back = equity_curve[half:]
+
+    def _ann(seg: list[dict]) -> Optional[float]:
+        eq = [p.get("adjusted_equity", p["equity"]) for p in seg]
+        if eq[0] <= 0 or eq[-1] <= 0:
+            return None
+        ret = eq[-1] / eq[0] - 1
+        days = len(eq) - 1
+        return (1 + ret) ** (252.0 / days) - 1 if ret > -1 else -1.0
+
+    f_ann = _ann(front)
+    b_ann = _ann(back)
+    if f_ann is None or b_ann is None:
+        return None
+    decay = (b_ann - f_ann) / abs(f_ann) if f_ann else 0.0
+    if b_ann < 0 and f_ann > 0:
+        label = "poor"
+    elif f_ann > 0 and b_ann < f_ann * 0.5:
+        label = "degraded"
+    else:
+        label = "good"
+    return {"front_ann": round(f_ann, 6), "back_ann": round(b_ann, 6),
+            "decay_pct": round(decay * 100, 1), "label": label}
+
+
 def build_metrics(trade_log: list[dict], equity_curve: list[dict],
                   start_equity: float, end_equity: float,
                   commission_total: float,
@@ -204,4 +240,6 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         "withdrawal_coverage": round(coverage, 4) if coverage is not None else None,
         "shortfall_unrecovered": round(shortfall_total, 2) if shortfall_total > 0 else None,
         "shortfall_recovered": round(recovered_total, 2) if recovered_total > 0 else None,
+        # ---- 样本外绩效衰减监控（前后半段年化对比）----
+        "oos_health": compute_oos_health(equity_curve),
     }

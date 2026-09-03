@@ -488,6 +488,72 @@ export default function OptimizeDetail() {
             </Card>
           )}
 
+          {detail.walk_forward && detail.walk_forward.enabled && (
+            <Card
+              size="small"
+              title="Walk-Forward 滚动折（样本内多折样本外评估）"
+              extra={
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  每折在独立测试段评分，跨折聚合 mean−λ×std
+                </Typography.Text>
+              }
+            >
+              <Table
+                size="small"
+                pagination={false}
+                dataSource={(detail.walk_forward.folds ?? []).map((f, i) => ({ key: i, ...f }))}
+                columns={[
+                  { title: '折', dataIndex: 'idx', width: 60, render: (_: number, r) => `折${(r.idx ?? 0) + 1}` },
+                  { title: '测试段起', dataIndex: 'test_start', width: 130 },
+                  { title: '测试段止', dataIndex: 'test_end', width: 130 },
+                  { title: '测试交易日', dataIndex: 'n_test_days', width: 110, align: 'right' }
+                ]}
+              />
+            </Card>
+          )}
+
+          {detail.sensitivity && detail.sensitivity.length > 0 && (
+            <Card
+              size="small"
+              title="参数敏感度曲面（单参数邻域 · 样本外评估）"
+              extra={
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  平台=稳健参数；尖峰=取值敏感，最优可能靠运气
+                </Typography.Text>
+              }
+            >
+              <Table
+                size="small"
+                pagination={false}
+                dataSource={detail.sensitivity.map((s, i) => ({ ...s, key: i }))}
+                columns={[
+                  { title: '参数', dataIndex: 'key' },
+                  { title: '基准值', dataIndex: 'base', width: 90 },
+                  {
+                    title: '判定',
+                    dataIndex: 'verdict',
+                    width: 90,
+                    render: (v: string) =>
+                      v === 'spike' ? <Tag color="red">尖峰</Tag> : <Tag color="green">平台</Tag>
+                  },
+                  {
+                    title: '绩效落差',
+                    dataIndex: 'spread',
+                    width: 110,
+                    align: 'right',
+                    render: (v: number) => fmtPct(v)
+                  },
+                  {
+                    title: '邻域绩效',
+                    dataIndex: 'variants',
+                    render: (vs: Array<{ value: string | number; metric: number | null }>) =>
+                      (vs ?? []).map((x) => `${x.value}:${fmtPct(x.metric)}`).join('  ')
+                  }
+                ]}
+              />
+            </Card>
+          )}
+
           {detail.groups_schedule && detail.groups_schedule.length > 0 && (
             <Card
               size="small"

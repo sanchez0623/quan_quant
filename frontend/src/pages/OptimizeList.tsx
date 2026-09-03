@@ -67,6 +67,7 @@ interface OptimizeFormValues {
     n_windows: number
     variance_penalty: number
     dd_floor?: number | null
+    walk_forward_folds?: number
   }
   param_space?: SpaceRow[]
   groups?: Array<{ name: string; n_trials: number; params?: SpaceRow[] }>
@@ -602,7 +603,8 @@ export default function OptimizeList() {
         metric: values.metric ?? 'annual_return',
         n_windows: obj?.n_windows ?? 3,
         variance_penalty: obj?.variance_penalty ?? 0.5,
-        dd_floor: obj?.dd_floor
+        dd_floor: obj?.dd_floor,
+        walk_forward_folds: obj?.walk_forward_folds ?? 3
       }
       req.n_trials = total * req.rounds
       if (req.n_trials > 2000) {
@@ -686,6 +688,16 @@ export default function OptimizeList() {
       <Col span={6}>
         <Form.Item name={['objective', 'dd_floor']} label="回撤熔断线（任一窗击穿重罚）" initialValue={-0.4}>
           <InputNumber min={-1} max={0} step={0.05} style={{ width: '100%' }} />
+        </Form.Item>
+      </Col>
+      <Col span={6}>
+        <Form.Item
+          name={['objective', 'walk_forward_folds']}
+          label="Walk-Forward 折数"
+          initialValue={3}
+          tooltip="样本内多折滚动评估（每折独立测试段），0/1=关闭（退化为单次70/30切分）"
+        >
+          <InputNumber min={0} max={6} style={{ width: '100%' }} />
         </Form.Item>
       </Col>
       <Col span={6}>

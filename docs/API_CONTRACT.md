@@ -156,6 +156,7 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 总资金止盈提取（NAV\_TAKE\_PROFIT，0=关闭）：
 
 - `nav_take_profit_pct`（净值相对上次提取后基准的涨幅阈值 %）+ `nav_take_profit_withdraw_pct`（触发时提取收益比例 %）：每日收盘检查，净值 ≥ 基准×(1+阈值%) 时按「收益 × 提取比例」出金（本金不动，受「累计提取不超累计盈利」护栏约束），随后基准重置为提取后净值，实现逐级锁盈；
+
 - 触发计入当月已提额（与 `monthly_withdraw_base` 月末兜底联动）；流水 type=`nav_take_profit`；报告 `withdrawal.nav_profit / nav_times`、`metrics.nav_withdrawn / nav_withdraw_times`。
 
 动态选股（DYNAMIC\_SELECT，仅 momentum\_t/momentum\_slot）：
@@ -297,11 +298,14 @@ metric 可选：annual\_return / sharpe / calmar / total\_return（默认 annual
   ],
   "rounds": 2,
   "objective": {"metric": "total_return", "n_windows": 3,
-                 "variance_penalty": 0.5, "dd_floor": -0.35}
+                 "variance_penalty": 0.5, "dd_floor": -0.35,
+                 "walk_forward_folds": 3}
 }
 ```
 
 - 每轮只搜一组参数（其它组固定当前最优）；`objective.n_windows` 把样本内切窗评估（score = 均值 − λ×跨窗std，任一窗回撤击穿 `dd_floor` 重罚），防单窗口过拟合；
+
+- **Walk-Forward**（`objective.walk_forward_folds`，默认 3，0/1=关闭）：把样本内区间切为 n 个连续测试段，每折回测到该折测试段末、只取测试段权益曲线评分，trial 目标 = 跨折聚合（mean − λ×std）——对时序过拟合的打击强于单次 70/30 切分。寻优完成后对 best_params 逐参数 ±1 步邻域在样本外（split 后）回测，输出参数敏感度曲面（`sensitivity`：平台=稳健 / 尖峰=取值敏感）；
 
 - 总试验预算 = Σ每组 n\_trials × rounds，上限 2000；
 

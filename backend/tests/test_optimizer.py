@@ -122,6 +122,71 @@ def test_run_optimize_grouped_coordinate_rotation(tmp_path):
     assert summary["robustness"]["verdict"] in ("robust", "fragile", "unknown")
 
 
+def test_walk_forward_folds_splits(tmp_path):
+    """Walk-forward：样本内区间切出 n 个升序连续测试段"""
+    from app.optimizer import _split_date, _walk_forward_folds
+    synthetic.generate_demo_data(stocks=["600000"], days=150, data_dir=str(tmp_path), seed=3)
+    cfg = {"strategy_id": "ma_cross", "params": {}, "risk_config": {},
+           "universe": ["600000"], "start_date": "2024-01-01", "end_date": "2030-12-31"}
+    split = _split_date(cfg, str(tmp_path))
+    assert split, "应能切出 70% 分割日"
+    folds = _walk_forward_folds(cfg, str(tmp_path), split, 3)
+    assert len(folds) == 3
+    starts = [f["test_start"] for f in folds]
+    assert starts == sorted(starts), "测试段应时间升序"
+    for f in folds:
+        assert f["test_start"] <= f["test_end"] and f["n_test_days"] >= 2
+    assert folds[-1]["test_end"] == split, "末折应覆盖到分割日"
+    # 关闭（1折）不启用
+    assert _walk_forward_folds(cfg, str(tmp_path), split, 1) == []
+
+
+def test_run_optimize_walk_forward_result(tmp_path):
+    """Walk-forward 端到端：结果带 walk_forward.enabled 与 folds"""
+    synthetic.generate_demo_data(stocks=["600000", "000001", "600036"], days=200,
+                                 data_dir=str(tmp_path), seed=11)
+    cfg = {
+        "name": "WF", "strategy_id": "ma_cross",
+        "params": {"fast": 5, "slow": 10},
+        "risk_config": {"max_position_pct_per_stock": 30},
+        "universe": ["600000", "000001", "600036"],
+        "start_date": "2024-01-01", "end_date": "2030-12-31",
+        "period": "daily", "initial_capital": 1_000_000,
+    }
+    groups = [{"name": "快线", "n_trials": 2,
+               "params": {"fast": {"type": "int", "low": 3, "high": 8}}}]
+    objective = {"metric": "calmar", "n_windows": 2, "variance_penalty": 0.5,
+                 "dd_floor": -0.4, "walk_forward_folds": 3}
+    summary = run_optimize("opt_wf", cfg, groups=groups, objective=objective, rounds=1,
+                           data_dir=str(tmp_path), optuna_dir=str(tmp_path / "optuna"))
+    assert summary["walk_forward"]["enabled"] is True
+    assert len(summary["walk_forward"]["folds"]) == 3
+    assert summary["objective"]["walk_forward_folds"] == 3
+    # 敏感度分析字段存在（OOS 段过短时可能为空列表，但不抛错）
+    assert isinstance(summary.get("sensitivity"), list)
+
+
+def test_oos_health_labels():
+    """样本外绩效衰减：前涨后跌 -> poor；前后都涨 -> good"""
+    from app.engine.stats import compute_oos_health
+    # 前 40 日翻倍、后 40 日腰斩
+    front = [1.0 * (1.02 ** i) for i in range(40)]
+    back = [front[-1] * (0.985 ** i) for i in range(40)]
+    c = [{"date": f"2026-01-{(i % 28) + 1:02d}", "equity": v, "adjusted_equity": v}
+         for i, v in enumerate(front + back)]
+    h = compute_oos_health(c)
+    assert h is not None and h["label"] == "poor"
+    assert h["front_ann"] > 0 > h["back_ann"]
+    # 前后都涨 -> good
+    all_up = [1.0 * (1.01 ** i) for i in range(80)]
+    c2 = [{"date": f"2026-01-{(i % 28) + 1:02d}", "equity": v, "adjusted_equity": v}
+          for i, v in enumerate(all_up)]
+    h2 = compute_oos_health(c2)
+    assert h2 is not None and h2["label"] == "good"
+    # 数据不足 -> None
+    assert compute_oos_health([{"date": "2026-01-01", "equity": 1.0}]) is None
+
+
 def test_pool_candidates_scans_board(tmp_path):
     """候选池扫描：仅统计 300/301/688 且窗口内有足够 bar 的股票"""
     from app.optimizer import _pool_candidates

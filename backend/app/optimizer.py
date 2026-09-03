@@ -165,6 +165,114 @@ def _window_score(windows: list[dict], metric: str, variance_penalty: float,
     return score
 
 
+# ---------------- Walk-Forward 滚动寻优（WALK_FORWARD） ----------------
+# 把「一次 70/30 切分」推广为样本内多折滚动：每折在独立测试段上评估，
+# trial 目标 = 跨折聚合（mean - λ×std），对时序过拟合的打击强于单次切分。
+
+def _walk_forward_folds(config: dict, data_dir: str, split: str,
+                        n_folds: int = 3) -> list[dict]:
+    """在样本内区间 [start, split] 上切 n 个连续测试段（expanding 训练窗口）。
+    每折回测 [start, test_end] 后只取测试段权益曲线评分。返回折列表（空=不启用）。"""
+    if n_folds <= 1:
+        return []
+    data = datafeed.load_daily(list(config.get("universe") or []),
+                               config.get("start_date"), split, data_dir)
+    all_dates = sorted({d for df in data.values()
+                        for d in (df["date"].str.slice(0, 10).unique().to_list())})
+    in_dates = [d for d in all_dates if d <= split]
+    if len(in_dates) < n_folds * 12:
+        return []
+    edges = [int(i * len(in_dates) / n_folds) for i in range(n_folds)] + [len(in_dates)]
+    folds = []
+    for i in range(n_folds):
+        test = in_dates[edges[i]:edges[i + 1]]
+        if len(test) < 2:
+            continue
+        folds.append({"idx": i, "test_start": test[0], "test_end": test[-1],
+                      "n_test_days": len(test)})
+    return folds
+
+
+def _walk_forward_score(config: dict, best_params: dict, suggested: dict,
+                        wf_folds: list[dict], metric: str, n_windows: int,
+                        variance_penalty: float, dd_floor: Optional[float],
+                        data_dir: str) -> float:
+    """每折回测 [start, test_end]，取测试段权益曲线评分；跨折聚合 mean - λ×std"""
+    if not wf_folds:
+        return -9e9
+    merged = {**best_params, **suggested}
+    scores: list[float] = []
+    for fold in wf_folds:
+        cfg = _merged_config(config, merged)
+        cfg["end_date"] = fold["test_end"]
+        try:
+            r = runner.run_backtest(cfg, data_dir=data_dir)
+        except Exception:  # noqa: BLE001
+            continue
+        curve = [p for p in (r.get("equity_curve") or [])
+                 if (p.get("date") or "") >= fold["test_start"]]
+        if len(curve) < 2:
+            continue
+        windows = _window_metrics(curve, n_windows)
+        scores.append(_window_score(windows, metric, variance_penalty, dd_floor))
+    if not scores:
+        return -9e9
+    mean_v = sum(scores) / len(scores)
+    std_v = (sum((s - mean_v) ** 2 for s in scores) / len(scores)) ** 0.5
+    return mean_v - variance_penalty * std_v
+
+
+# ---------------- 参数敏感度曲面（SENSITIVITY） ----------------
+# 对 best_params 逐参数做 ±1 步邻域扰动（其余固定），在样本外（split 后）回测：
+# 平台型（扰动绩效落差小）= 稳健参数；尖峰型（落差大）= 运气型，不可信。
+
+def _sensitivity_analysis(config: dict, best_params: dict, param_space: dict,
+                          metric: str, data_dir: str, split: str) -> list[dict]:
+    out: list[dict] = []
+    for key, sp in (param_space or {}).items():
+        base = best_params.get(key)
+        t = sp.get("type")
+        if t in ("int", "float"):
+            step = float(sp.get("step") or (1 if t == "int" else 0.1))
+            lo, hi = float(sp["low"]), float(sp["high"])
+            variants = sorted({float(base), float(base) - step, float(base) + step})
+            variants = [v for v in variants if lo <= v <= hi]
+            if len(variants) < 2:
+                continue
+        elif t == "categorical":
+            variants = list(sp.get("choices", []))
+            if not variants:
+                continue
+        else:
+            continue
+        rows: list[dict] = []
+        for v in variants:
+            p2 = dict(best_params)
+            p2[key] = int(v) if t == "int" else v
+            cfg = _merged_config(config, p2)
+            cfg["start_date"] = split
+            try:
+                val = _metric_value(runner.run_backtest(cfg, data_dir=data_dir), metric)
+            except Exception:  # noqa: BLE001
+                val = None
+            rows.append({"value": p2[key], "metric": round(val, 6) if val is not None else None})
+        vals = [x["metric"] for x in rows if x["metric"] is not None]
+        if len(vals) < 2:
+            continue
+        spread = max(vals) - min(vals)
+        base_val = next((x["metric"] for x in rows if x["value"] == base), None)
+        # 尖峰判定：扰动范围绩效落差 >5% 年化 且 相对基准显著
+        spike = spread > 0.05 and (base_val is None or spread > abs(base_val or 0) * 0.5 + 0.02)
+        out.append({
+            "key": key, "base": base,
+            "variants": rows,
+            "spread": round(spread, 6),
+            "base_metric": round(base_val, 6) if base_val is not None else None,
+            "verdict": "spike" if spike else "platform",
+        })
+    return out
+
+
 def _defaults_flat(config: dict) -> dict:
     """完整默认参数集（params + 风控），作为坐标轮换的起点与无改进时的回退"""
     base = _merged_config(config, {})
@@ -325,6 +433,7 @@ def _optuna_batch_worker(payload: dict) -> int:
     n_windows: int = payload["n_windows"]
     variance_penalty: float = payload["variance_penalty"]
     dd_floor = payload["dd_floor"]
+    wf_folds: list = payload.get("wf_folds") or []
     data_dir = payload["data_dir"]
     n = int(payload["n_trials"])
     task_id = payload["task_id"]
@@ -337,9 +446,9 @@ def _optuna_batch_worker(payload: dict) -> int:
     def objective(trial: optuna.Trial) -> float:
         suggested = _suggest(g_space, trial)
         merged = {**best_params, **suggested}
+        # 探针剪枝（保留）：前3只票单跑做 prune 参考（整段样本内）
         cfg = _merged_config(config, merged)
         cfg["end_date"] = split
-        # 探针剪枝（保留）：前3只票单跑做 prune 参考
         universe = list(cfg.get("universe") or [])
         probes = universe[:3] if len(universe) > 3 else universe
         partials = []
@@ -354,6 +463,11 @@ def _optuna_batch_worker(payload: dict) -> int:
             trial.report(sum(partials) / len(partials), k)
             if trial.should_prune():
                 raise optuna.TrialPruned()
+        # Walk-forward：跨折样本外评估（启用时替代单次整段评分）
+        if wf_folds:
+            return _walk_forward_score(config, best_params, suggested, wf_folds,
+                                       metric, n_windows, variance_penalty,
+                                       dd_floor, data_dir)
         r = runner.run_backtest(cfg, data_dir=data_dir)
         if n_windows == 1:
             return _single_score(r, metric, dd_floor)
@@ -383,6 +497,7 @@ def run_optimize(task_id: str, config: dict, *,
                  groups: list[dict], objective: dict, rounds: int = 1,
                  db_path: Optional[str] = None, data_dir: Optional[str] = None,
                  optuna_dir: Optional[str] = None,
+                 walk_forward_folds: int = 3,
                  progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
     from . import config as app_config
     data_dir = data_dir or str(app_config.DATA_DIR)
@@ -405,6 +520,9 @@ def run_optimize(task_id: str, config: dict, *,
     if split is None:
         raise RuntimeError("数据量不足以做样本内外划分（需>=10个交易日）")
 
+    # ---- Walk-forward 折：样本内多折滚动（0/1=不启用）----
+    wf_folds = _walk_forward_folds(config, data_dir, split, int(walk_forward_folds))
+
     def cb(p, m):
         if progress_cb:
             progress_cb(p, m)
@@ -419,13 +537,18 @@ def run_optimize(task_id: str, config: dict, *,
     in_days = len(base_report.get("equity_curve") or [])
     # 自适应窗口数：样本内交易日 // 30（下限1，上限请求值）
     n_windows = max(1, min(n_windows_req, in_days // 30)) if in_days >= 2 else 1
-    if n_windows == 1:
+    if wf_folds:
+        # 基线目标与 trial 同口径（跨折样本外）
+        best_value = _walk_forward_score(config, {}, {}, wf_folds, metric,
+                                         n_windows, variance_penalty, dd_floor, data_dir)
+    elif n_windows == 1:
         best_value = _single_score(base_report, metric, dd_floor)
     else:
         base_windows = _window_metrics(base_report.get("equity_curve") or [], n_windows)
         best_value = _window_score(base_windows, metric, variance_penalty, dd_floor)
     best_params: dict = _defaults_flat(config)
-    cb(3, f"基线目标值 {best_value:.4f}（窗口数 {n_windows}，样本内 {in_days} 交易日）")
+    cb(3, f"基线目标值 {best_value:.4f}（窗口数 {n_windows}，样本内 {in_days} 交易日"
+         + (f"，Walk-Forward {len(wf_folds)} 折" if wf_folds else ""))
 
     storage = f"sqlite:///{Path(optuna_dir) / (task_id + '.db')}".replace("\\", "/")
     per_group_best: list[dict] = []
@@ -477,6 +600,7 @@ def run_optimize(task_id: str, config: dict, *,
                         "best_params": best_params, "split": split,
                         "metric": metric, "n_windows": n_windows,
                         "variance_penalty": variance_penalty, "dd_floor": dd_floor,
+                        "wf_folds": wf_folds,
                         "data_dir": data_dir, "n_trials": n_w,
                         "done_base_group": group_done_base,
                         "total_trials": total_trials,
@@ -603,13 +727,26 @@ def run_optimize(task_id: str, config: dict, *,
     except Exception as e:  # noqa: BLE001
         robustness = {"verdict": "unknown", "reason": f"稳健性验证异常: {e}"}
 
+    # ---- 参数敏感度曲面（SENSITIVITY）：best_params 单参数邻域，样本外评估 ----
+    cb(99, "参数敏感度分析（邻域扰动 → 平台/尖峰判定）...")
+    all_space = {k: v for g in groups for k, v in (g.get("params") or {}).items()}
+    try:
+        sensitivity = _sensitivity_analysis(config, best_params, all_space, metric,
+                                            data_dir, split)
+    except Exception as e:  # noqa: BLE001
+        sensitivity = []
+        cb(99, f"敏感度分析跳过: {e}")
+
     cb(100, "寻优完成")
     return {
         "task_id": task_id,
         "metric": metric,
         "n_trials": total_trials,
         "objective": {"metric": metric, "n_windows": n_windows,
-                      "variance_penalty": variance_penalty, "dd_floor": dd_floor},
+                      "variance_penalty": variance_penalty, "dd_floor": dd_floor,
+                      "walk_forward_folds": len(wf_folds) if wf_folds else 0},
+        "walk_forward": {"enabled": bool(wf_folds), "folds": wf_folds},
+        "sensitivity": sensitivity,
         "groups_schedule": [{"name": g.get("name"), "n_trials": g.get("n_trials"),
                              "params": g.get("params")} for g in groups],
         "rounds_history": rounds_history,

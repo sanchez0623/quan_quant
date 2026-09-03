@@ -339,6 +339,13 @@ export interface Metrics {
   nav_withdrawn?: number
   /** 总资金止盈触发次数 */
   nav_withdraw_times?: number
+  /** 样本外绩效衰减监控（前后半段年化对比，数据不足为 null） */
+  oos_health?: {
+    front_ann: number
+    back_ann: number
+    decay_pct: number
+    label: 'good' | 'degraded' | 'poor'
+  } | null
   /** 出金覆盖率：足额月份占比（月度目标>0 时） */
   withdrawal_coverage?: number | null
   /** 未补齐的历史缺口累计金额（有缺口时） */
@@ -406,7 +413,7 @@ export interface PositionSnapshot {
 export interface WithdrawalLogItem {
   month: string
   date: string
-  type: 't_profit' | 'month_topup' | 'shortfall' | 'shortfall_recover'
+  type: 't_profit' | 'month_topup' | 'shortfall' | 'shortfall_recover' | 'nav_take_profit'
   amount: number
 }
 
@@ -753,6 +760,7 @@ export interface OptimizeObjectiveInput {
   n_windows: number
   variance_penalty: number
   dd_floor?: number | null
+  walk_forward_folds?: number
 }
 
 export interface OptimizeCreateRequest {
@@ -842,6 +850,20 @@ export interface OptimizeDetail {
   oos_validation?: OosValidation | null
   /** P0 护栏：跨池/跨时段稳健性验证 */
   robustness?: RobustnessCheck | null
+  /** Walk-Forward 滚动折（样本内多折样本外评估） */
+  walk_forward?: {
+    enabled: boolean
+    folds: Array<{ idx: number; test_start: string; test_end: string; n_test_days: number }>
+  } | null
+  /** 参数敏感度曲面（单参数邻域 · 样本外评估） */
+  sensitivity?: Array<{
+    key: string
+    base: string | number
+    variants: Array<{ value: string | number; metric: number | null }>
+    spread: number
+    base_metric?: number | null
+    verdict: 'spike' | 'platform'
+  }> | null
   /** 契约未显式列出，但“用最优参数重跑回测”需要，后端若返回则使用 */
   backtest_config?: BacktestCreateRequest | null
   error?: string | null
@@ -852,6 +874,7 @@ export interface OptimizeDetail {
     n_windows: number
     variance_penalty: number
     dd_floor?: number | null
+    walk_forward_folds?: number
   } | null
   rounds_history?: Array<{
     round: number
