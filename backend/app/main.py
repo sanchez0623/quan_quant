@@ -3,8 +3,14 @@
 import asyncio
 import contextlib
 import threading
+import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# 精准压制第三方依赖的启动噪音（py-mini-racer 0.6.0 内部 import pkg_resources，
+# setuptools<81 仍可用；升级该库可能破坏 akshare 兼容，故只压警告不升依赖）
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated",
+                        category=UserWarning, module="py_mini_racer")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
