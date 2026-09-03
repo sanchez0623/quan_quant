@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Collapse, InputNumber, Modal, Popconfirm, Progress,
-  Row, Select, Space, Statistic, Switch, Table, Tag, Typography, message
+  Alert, Button, Card, Col, Collapse, Form, Input, InputNumber, Modal,
+  Popconfirm, Progress, Row, Select, Space, Statistic, Switch, Table, Tag,
+  Typography, message
 } from 'antd'
 import {
   CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, NotificationOutlined,
-  PlayCircleOutlined, SaveOutlined, SyncOutlined, ThunderboltOutlined
+  PlayCircleOutlined, PlusOutlined, SaveOutlined, SyncOutlined, ThunderboltOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type {
@@ -202,14 +203,31 @@ export default function LiveSignals() {
     await refresh()
   }
 
-  const onSync = async () => {
+  const [syncOpen, setSyncOpen] = useState(false)
+  const [syncForm] = Form.useForm()
+  const openSync = () => {
     if (!summary) return
-    await syncLivePositions(
-      summary.positions.map((p: LivePosition) => ({
-        code: p.code, name: p.name, volume: p.volume, cost_price: p.cost_price
-      })))
-    message.success('已按当前虚拟持仓校准')
-    await refresh()
+    syncForm.setFieldsValue({
+      positions: summary.positions.map((p: LivePosition) => ({
+        code: p.code, name: p.name, volume: p.volume,
+        cost_price: p.cost_price, open_day: p.open_day
+      }))
+    })
+    setSyncOpen(true)
+  }
+
+  const onSync = async () => {
+    try {
+      const { positions } = await syncForm.validateFields()
+      await syncLivePositions(positions ?? [])
+      message.success(`已按提交列表重建虚拟持仓（${(positions ?? []).length} 只）`)
+      setSyncOpen(false)
+      await refresh()
+    } catch (err) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return
+      message.error((err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail || '校准失败')
+    }
   }
 
   const onSaveCfg = async () => {
@@ -594,8 +612,8 @@ export default function LiveSignals() {
 
       <Card size="small" title="虚拟持仓"
         extra={
-          <Button size="small" icon={<SyncOutlined />} onClick={onSync}>
-            对账校准（以当前系统持仓为准）
+          <Button size="small" icon={<SyncOutlined />} onClick={openSync}>
+            对账校准（以券商实际持仓为准）
           </Button>
         }>
         <Table<LivePosition>
@@ -606,6 +624,55 @@ export default function LiveSignals() {
           locale={{ emptyText: '暂无虚拟持仓（回填买入成交后生成）' }}
         />
       </Card>
+
+      <Modal open={syncOpen}
+        title="对账校准：以券商实际持仓为准重建虚拟持仓"
+        okText="按以上持仓重建" cancelText="取消"
+        onCancel={() => setSyncOpen(false)} onOk={onSync} width={760}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="照券商 App 持仓逐行核对/修改；不需要的行点右侧删除；全部删除后提交 = 按空仓校准。重建只改虚拟账本，不影响信号流水与成交回填记录。" />
+        <Form form={syncForm} initialValues={{ positions: [] }}>
+          <Form.List name="positions">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <Space key={key} align="baseline"
+                    style={{ display: 'flex', marginBottom: 6 }}>
+                    <Form.Item name={[name, 'code']} {...restField}
+                      rules={[{ required: true, message: '填代码' }]}>
+                      <Input placeholder="代码" style={{ width: 96 }} />
+                    </Form.Item>
+                    <Form.Item name={[name, 'name']} {...restField}>
+                      <Input placeholder="名称" style={{ width: 104 }} />
+                    </Form.Item>
+                    <Form.Item name={[name, 'volume']} {...restField}
+                      rules={[{ required: true, message: '填数量' }]}>
+                      <InputNumber placeholder="数量(股)" min={0} step={100}
+                        style={{ width: 116 }} />
+                    </Form.Item>
+                    <Form.Item name={[name, 'cost_price']} {...restField}
+                      rules={[{ required: true, message: '填成本价' }]}>
+                      <InputNumber placeholder="成本价" min={0} step={0.001}
+                        style={{ width: 108 }} />
+                    </Form.Item>
+                    <Form.Item name={[name, 'open_day']} {...restField}>
+                      <Input placeholder="开仓日(可选)" style={{ width: 116 }} />
+                    </Form.Item>
+                    <Button type="text" danger icon={<DeleteOutlined />}
+                      onClick={() => remove(name)} />
+                  </Space>
+                ))}
+                <Form.Item>
+                  <Button type="dashed" block icon={<PlusOutlined />}
+                    onClick={() => add({ volume: 100 })}>
+                    添加持仓行
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
+        </Form>
+      </Modal>
 
       <Collapse onChange={onCollapseChange}
         items={[
