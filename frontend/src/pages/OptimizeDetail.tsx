@@ -17,15 +17,16 @@ import {
   Tag,
   Typography
 } from 'antd'
-import { ArrowLeftOutlined, RedoOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, RedoOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
   createBacktest,
+  createTemplate,
   errDetail,
   getOptimizeDetail,
   resumeOptimize
 } from '../api/client'
-import type { OptimizeDetail, TrialItem } from '../api/types'
+import type { BacktestCreateRequest, OptimizeDetail, TrialItem } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import TaskStatusTag from '../components/TaskStatusTag'
 import ImportanceBar from '../components/ImportanceBar'
@@ -119,14 +120,10 @@ export default function OptimizeDetail() {
     load()
   })
 
-  const rerunBest = async () => {
-    if (!detail?.backtest_config) {
-      message.warning('该任务未返回原始回测配置（backtest_config），无法直接重跑')
-      return
-    }
+  /** 组装"最优参数"完整回测配置：best_params 里混着的风控字段拆回 risk_config */
+  const buildBestConfig = useCallback((): BacktestCreateRequest | null => {
+    if (!detail?.backtest_config) return null
     const cfg = detail.backtest_config
-    // best_params 里混着风控字段（param_space 允许搜 risk_config 的键），
-    // 必须拆回 risk_config，否则会被塞进 params 里被引擎忽略——寻优调过的风控值等于白调
     const best = detail.best_params ?? {}
     const bestParams: Record<string, string | number | boolean> = {}
     const bestRisk: Record<string, string | number> = {}
@@ -134,13 +131,24 @@ export default function OptimizeDetail() {
       if (RISK_KEYS.has(k)) (bestRisk as Record<string, string | number>)[k] = v as string | number
       else bestParams[k] = v
     })
+    return {
+      ...cfg,
+      params: { ...(cfg.params ?? {}), ...bestParams },
+      risk_config: { ...(cfg.risk_config ?? {}), ...bestRisk }
+    }
+  }, [detail])
+
+  const rerunBest = async () => {
+    const cfg = buildBestConfig()
+    if (!cfg) {
+      message.warning('该任务未返回原始回测配置（backtest_config），无法直接重跑')
+      return
+    }
     setRerunning(true)
     try {
       const res = await createBacktest({
         ...cfg,
-        name: `${detail.name || '寻优'}-最优参数重跑`,
-        params: { ...(cfg.params ?? {}), ...bestParams },
-        risk_config: { ...(cfg.risk_config ?? {}), ...bestRisk }
+        name: `${detail?.name || '寻优'}-最优参数重跑`
       })
       message.success('已用最优参数创建回测任务')
       navigate(`/backtests/${res.task_id}`)
@@ -148,6 +156,22 @@ export default function OptimizeDetail() {
       message.error(errDetail(err, '创建回测失败'))
     } finally {
       setRerunning(false)
+    }
+  }
+
+  /** 寻优结果一键存为回测模板：闭环「寻优 → 模板 → 验证/复用」 */
+  const saveBestAsTemplate = async () => {
+    const cfg = buildBestConfig()
+    if (!cfg) {
+      message.warning('该任务未返回原始回测配置（backtest_config），无法存为模板')
+      return
+    }
+    const name = `${detail?.name || '寻优'}-最优参数`
+    try {
+      await createTemplate({ name, config: { ...cfg, name } })
+      message.success(`已存为模板「${name}」，可在新建回测页载入`)
+    } catch (err) {
+      message.error(errDetail(err, '存为模板失败'))
     }
   }
 
@@ -306,15 +330,19 @@ export default function OptimizeDetail() {
                     </Typography.Text>
                   </Descriptions.Item>
                 </Descriptions>
-                <Button
-                  type="primary"
-                  icon={<ReloadOutlined />}
-                  style={{ marginTop: 12 }}
-                  loading={rerunning}
-                  onClick={rerunBest}
-                >
-                  用最优参数重跑回测
-                </Button>
+                <Space style={{ marginTop: 12 }}>
+                  <Button
+                    type="primary"
+                    icon={<ReloadOutlined />}
+                    loading={rerunning}
+                    onClick={rerunBest}
+                  >
+                    用最优参数重跑回测
+                  </Button>
+                  <Button icon={<SaveOutlined />} onClick={saveBestAsTemplate}>
+                    存为模板
+                  </Button>
+                </Space>
               </Card>
             </Col>
             <Col span={12}>

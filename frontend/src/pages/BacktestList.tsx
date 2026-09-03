@@ -20,11 +20,12 @@ import {
   Space,
   Switch,
   Table,
+  Tag,
   Tooltip,
   Typography,
   Upload
 } from 'antd'
-import { ExportOutlined, ImportOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
+import { DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
@@ -52,6 +53,42 @@ import ParamSchemaForm from '../components/ParamSchemaForm'
 import RiskConfigForm, { DEFAULT_RISK_CONFIG, RISK_FIELDS } from '../components/RiskConfigForm'
 import BacktestRangePicker from '../components/BacktestRangePicker'
 import StockPicker from '../components/StockPicker'
+
+/** 模板配置 diff：把 params/risk_config/顶层标量拍平为可对比的 key -> value 映射 */
+function flattenTemplateConfig(cfg: BacktestCreateRequest): Map<string, { group: string; value: unknown }> {
+  const map = new Map<string, { group: string; value: unknown }>()
+  const put = (group: string, key: string, value: unknown) => {
+    if (value === undefined || value === null) return
+    map.set(`${group}\u0000${key}`, { group, value })
+  }
+  Object.entries(cfg.params ?? {}).forEach(([k, v]) => put('策略参数', k, v))
+  Object.entries(cfg.risk_config ?? {}).forEach(([k, v]) => put('风控', k, v))
+  if (Array.isArray(cfg.universe)) put('基础', '股票池', cfg.universe.join(', '))
+  const topKeys: Array<[string, string]> = [
+    ['strategy_id', '策略'], ['period', '周期'], ['universe_auto', '动态选股'],
+    ['start_date', '开始日期'], ['end_date', '结束日期'], ['initial_capital', '初始资金'],
+    ['benchmark', '基准指数'], ['monthly_withdraw_base', '月提取额'],
+    ['t_profit_withdraw_pct', 'T盈利提成'], ['min_t_amount', '最小T金额'],
+    ['nav_take_profit_pct', '总资金止盈'], ['nav_take_profit_withdraw_pct', '止盈提取收益'],
+    ['auto_idle_days', '空仓触发'], ['auto_top_x', '池子大小'], ['auto_above_ma', '均线锚'],
+    ['auto_with_accel', '加速项'], ['auto_rank_key', '排序键'], ['exclude_st', '剔除ST'],
+    ['pool_gate', '池级趋势开关'], ['pool_gate_enter_th', '趋势触发阈值']
+  ]
+  const rcfg = cfg as unknown as Record<string, unknown>
+  topKeys.forEach(([k, label]) => {
+    const v = rcfg[k]
+    if (v !== undefined) put('基础', label, v)
+  })
+  return map
+}
+
+function fmtDiffVal(v: unknown): string {
+  if (v === null || v === undefined) return '-'
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  if (typeof v === 'number') return String(Math.round(v * 100) / 100)
+  if (Array.isArray(v)) return v.length ? v.join(', ') : '（空）'
+  return String(v)
+}
 
 interface BacktestFormValues {
   name: string
@@ -180,6 +217,10 @@ export default function BacktestList() {
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [templateName, setTemplateName] = useState('')
   const [saveSource, setSaveSource] = useState<{ config: BacktestCreateRequest } | null>(null)
+  // ---- 模板参数 diff ----
+  const [diffOpen, setDiffOpen] = useState(false)
+  const [diffA, setDiffA] = useState<number | undefined>(undefined)
+  const [diffB, setDiffB] = useState<number | undefined>(undefined)
   const prefillApplied = useRef(false)
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
@@ -436,6 +477,47 @@ export default function BacktestList() {
     return false // 阻止 Upload 自动上传
   }
 
+  // ---- 模板参数 diff ----
+  const paramLabelMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    strategies.forEach((s) => s.param_schema?.forEach((p) => {
+      if (p.label) m[p.key] = p.label
+    }))
+    return m
+  }, [strategies])
+  const riskLabelMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    RISK_FIELDS.forEach((f) => {
+      m[f.key] = f.label
+    })
+    return m
+  }, [])
+  const diffRows = useMemo(() => {
+    const ca = templates.find((x) => x.id === diffA)?.config
+    const cb = templates.find((x) => x.id === diffB)?.config
+    if (!ca || !cb) return []
+    const ma = flattenTemplateConfig(ca)
+    const mb = flattenTemplateConfig(cb)
+    const keys = new Set([...ma.keys(), ...mb.keys()])
+    const order: Record<string, number> = { 策略参数: 0, 风控: 1, 基础: 2 }
+    const rows: Array<{ group: string; label: string; a: string; b: string; diff: boolean }> = []
+    keys.forEach((k) => {
+      const ga = ma.get(k)?.group ?? mb.get(k)?.group ?? ''
+      const rawKey = k.split('\u0000')[1]
+      let label = rawKey
+      if (ga === '策略参数') label = paramLabelMap[rawKey] ?? rawKey
+      else if (ga === '风控') label = riskLabelMap[rawKey] ?? rawKey
+      const va = ma.get(k)?.value
+      const vb = mb.get(k)?.value
+      const sa = fmtDiffVal(va)
+      const sb = fmtDiffVal(vb)
+      rows.push({ group: ga, label, a: sa, b: sb, diff: sa !== sb })
+    })
+    return rows.sort(
+      (x, y) => (order[x.group] ?? 9) - (order[y.group] ?? 9) || x.label.localeCompare(y.label)
+    )
+  }, [templates, diffA, diffB, paramLabelMap, riskLabelMap])
+
   /** 打开保存弹窗：source 为空表示保存当前表单 */
   const openSaveModal = (source?: { config: BacktestCreateRequest }) => {
     if (source) {
@@ -614,6 +696,18 @@ export default function BacktestList() {
             <Upload accept=".json,application/json" showUploadList={false} beforeUpload={onImportConfig}>
               <Button size="small" icon={<ImportOutlined />}>导入</Button>
             </Upload>
+            <Button
+              size="small"
+              icon={<DiffOutlined />}
+              disabled={templates.length < 2}
+              onClick={() => {
+                setDiffA(templates[0]?.id)
+                setDiffB(templates[1]?.id)
+                setDiffOpen(true)
+              }}
+            >
+              对比模板
+            </Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => openSaveModal()}>
               保存当前为模板
             </Button>
@@ -1031,6 +1125,78 @@ export default function BacktestList() {
           maxLength={50}
           onPressEnter={onSaveTemplate}
           autoFocus
+        />
+      </Modal>
+
+      <Modal
+        title="模板参数对比"
+        open={diffOpen}
+        onCancel={() => setDiffOpen(false)}
+        footer={null}
+        width={960}
+        destroyOnClose
+      >
+        <Space size="large" style={{ marginBottom: 12 }}>
+          <Space size={4}>
+            <Typography.Text type="secondary">模板A：</Typography.Text>
+            <Select
+              style={{ width: 220 }}
+              value={diffA}
+              onChange={setDiffA}
+              showSearch
+              optionFilterProp="label"
+              options={templates.map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </Space>
+          <Space size={4}>
+            <Typography.Text type="secondary">模板B：</Typography.Text>
+            <Select
+              style={{ width: 220 }}
+              value={diffB}
+              onChange={setDiffB}
+              showSearch
+              optionFilterProp="label"
+              options={templates.map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            红色 = 两模板不同
+          </Typography.Text>
+        </Space>
+        <Table
+          rowKey={(r) => `${r.group}-${r.label}`}
+          size="small"
+          dataSource={diffRows}
+          pagination={false}
+          columns={[
+            {
+              title: '分组',
+              dataIndex: 'group',
+              width: 90,
+              render: (v: string) => <Tag>{v}</Tag>
+            },
+            { title: '参数', dataIndex: 'label' },
+            {
+              title: '模板A',
+              dataIndex: 'a',
+              render: (v: string, r) => (
+                <span style={r.diff ? { color: '#cf1322', fontWeight: 500 } : undefined}>{v}</span>
+              )
+            },
+            {
+              title: '模板B',
+              dataIndex: 'b',
+              render: (v: string, r) => (
+                <span style={r.diff ? { color: '#cf1322', fontWeight: 500 } : undefined}>{v}</span>
+              )
+            },
+            {
+              title: '',
+              dataIndex: 'diff',
+              width: 64,
+              render: (d: boolean) => (d ? <Tag color="red">不同</Tag> : null)
+            }
+          ]}
         />
       </Modal>
     </Space>
