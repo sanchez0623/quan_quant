@@ -11,6 +11,8 @@ import type {
   BsMonitor,
   DataDemoRequest,
   DataStatus,
+  IntegrityRequest,
+  IntegrityResult,
   ExperimentCreateRequest,
   ExperimentDetail,
   LiveConfig,
@@ -281,6 +283,11 @@ export async function deleteUser(username: string): Promise<{ status: string }> 
 // ---- 数据管理 ----
 export async function getDataStatus(): Promise<DataStatus> {
   const res = await api.get<DataStatus>('/data/status')
+  return res.data
+}
+
+export async function runDataIntegrity(data?: IntegrityRequest): Promise<IntegrityResult> {
+  const res = await api.post<IntegrityResult>('/data/integrity', data ?? {})
   return res.data
 }
 

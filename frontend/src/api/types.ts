@@ -1125,6 +1125,51 @@ export interface BsCheckResult {
   monitor: BsMonitor
 }
 
+// ---- 数据完整性自检（DATA_INTEGRITY） ----
+export interface IntegrityGap {
+  code: string
+  prev_date: string
+  date: string
+  gap_tdays: number
+}
+
+export interface IntegrityPriceAnomaly {
+  code: string
+  date: string
+  prev_close: number
+  close: number
+  close_pct: number
+}
+
+export interface IntegrityFactorAnomaly {
+  code: string
+  date: string
+  prev_factor: number
+  adj_factor: number
+  factor_pct: number
+}
+
+export interface IntegrityResult {
+  ok: boolean
+  reason?: string
+  window: { start: string; end: string } | null
+  codes_checked: number
+  coverage: { with_gap_codes: number; gap_count: number }
+  gaps: IntegrityGap[]
+  price_anomalies: IntegrityPriceAnomaly[]
+  factor_anomalies: IntegrityFactorAnomaly[]
+  generated_at: string
+}
+
+export interface IntegrityRequest {
+  codes?: string[]
+  start?: string
+  end?: string
+  gap_days?: number
+  price_jump_pct?: number
+  top_n?: number
+}
+
 export interface DataDemoRequest {
   stocks?: string[]
   days?: number

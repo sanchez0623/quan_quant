@@ -7,6 +7,7 @@ import {
   Col,
   Collapse,
   Divider,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -20,9 +21,10 @@ import {
   Switch,
   Table,
   Tooltip,
-  Typography
+  Typography,
+  Upload
 } from 'antd'
-import { PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
+import { ExportOutlined, ImportOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
@@ -397,6 +399,38 @@ export default function BacktestList() {
     }
   }
 
+  /** 导出配置为 JSON 文件（schema 标记便于导入时校验） */
+  const onExportConfig = (cfg: BacktestCreateRequest, name: string) => {
+    const payload = { schema: 'quan_quant/backtest-config@1', name, config: cfg }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(name || 'backtest_config').replace(/[\\/:*?"<>|]/g, '_')}_${dayjs().format('YYYYMMDD')}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /** 导入配置 JSON：识别 {schema,config} 包装或裸 config，回填表单 */
+  const onImportConfig = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result))
+        const cfg = parsed?.schema?.startsWith('quan_quant/') ? parsed.config : parsed
+        if (!cfg || !cfg.strategy_id) {
+          message.error('无效的配置文件：缺少 strategy_id')
+          return
+        }
+        applyConfigToForm(cfg, '已导入配置，确认后可提交回测或存为模板')
+      } catch {
+        message.error('JSON 解析失败，请检查文件内容')
+      }
+    }
+    reader.readAsText(file)
+    return false // 阻止 Upload 自动上传
+  }
+
   /** 打开保存弹窗：source 为空表示保存当前表单 */
   const openSaveModal = (source?: { config: BacktestCreateRequest }) => {
     if (source) {
@@ -553,6 +587,28 @@ export default function BacktestList() {
               </Button>
             </Popconfirm>
             <Divider type="vertical" />
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'export_form', label: '导出当前配置' },
+                  { key: 'export_template', label: '导出选中模板', disabled: !selectedTemplateId }
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'export_form') {
+                    const values = form.getFieldsValue(true)
+                    onExportConfig(buildConfigFromValues(values), values.name || 'backtest_config')
+                  } else if (key === 'export_template') {
+                    const t = templates.find((x) => x.id === selectedTemplateId)
+                    if (t) onExportConfig(t.config, t.name)
+                  }
+                }
+              }}
+            >
+              <Button size="small" icon={<ExportOutlined />}>导出</Button>
+            </Dropdown>
+            <Upload accept=".json,application/json" showUploadList={false} beforeUpload={onImportConfig}>
+              <Button size="small" icon={<ImportOutlined />}>导入</Button>
+            </Upload>
             <Button size="small" icon={<SaveOutlined />} onClick={() => openSaveModal()}>
               保存当前为模板
             </Button>

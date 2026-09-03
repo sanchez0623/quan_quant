@@ -21,8 +21,8 @@ import {
 import type { Dayjs } from 'dayjs'
 import { DatabaseOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { checkBs, createDemoData, errDetail, getBsMonitor, getDataStatus, updateData } from '../api/client'
-import type { BsMonitor, DataSourceHealth } from '../api/types'
+import { checkBs, createDemoData, errDetail, getBsMonitor, getDataStatus, runDataIntegrity, updateData } from '../api/client'
+import type { BsMonitor, DataSourceHealth, IntegrityResult } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import { fmtInt } from '../utils/format'
 
@@ -42,6 +42,13 @@ export default function DataManagement() {
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [bs, setBs] = useState<BsMonitor | null>(null)
   const [bsLoading, setBsLoading] = useState(false)
+  // ---- 数据完整性自检 ----
+  const [integrity, setIntegrity] = useState<IntegrityResult | null>(null)
+  const [integrityLoading, setIntegrityLoading] = useState(false)
+  const [integrityRange, setIntegrityRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  const [integrityStocks, setIntegrityStocks] = useState('')
+  const [gapDays, setGapDays] = useState<number>(10)
+  const [priceJump, setPriceJump] = useState<number>(25)
 
   const refreshBs = useCallback(async () => {
     try {
@@ -71,6 +78,30 @@ export default function DataManagement() {
       message.error(errDetail(err, '检查失败'))
     } finally {
       setBsLoading(false)
+    }
+  }
+
+  /** 数据完整性自检：覆盖率缺口 + 价格/复权因子突变 */
+  const onScanIntegrity = async () => {
+    const codes = integrityStocks
+      .split(/[,，\s;；]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    setIntegrityLoading(true)
+    try {
+      const res = await runDataIntegrity({
+        ...(codes.length > 0 ? { codes } : {}),
+        ...(integrityRange?.[0] ? { start: integrityRange[0].format('YYYY-MM-DD') } : {}),
+        ...(integrityRange?.[1] ? { end: integrityRange[1].format('YYYY-MM-DD') } : {}),
+        gap_days: gapDays,
+        price_jump_pct: priceJump
+      })
+      setIntegrity(res)
+      if (!res.ok) message.warning(res.reason ?? '扫描无结果')
+    } catch (err) {
+      message.error(errDetail(err, '完整性扫描失败'))
+    } finally {
+      setIntegrityLoading(false)
     }
   }
 
@@ -291,6 +322,107 @@ export default function DataManagement() {
           dataSource={status?.sources ?? []}
           columns={sourceColumns}
         />
+      </Card>
+
+      {/* 数据完整性自检：覆盖率缺口 + 价格/复权因子突变 */}
+      <Card
+        size="small"
+        title="数据完整性自检"
+        extra={
+          <Button
+            size="small"
+            type="primary"
+            icon={<SyncOutlined />}
+            loading={integrityLoading}
+            onClick={onScanIntegrity}
+          >
+            开始扫描
+          </Button>
+        }
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Space wrap>
+            <DatePicker.RangePicker
+              value={integrityRange}
+              onChange={(dates) => setIntegrityRange(dates)}
+              allowClear
+              style={{ width: 260 }}
+              placeholder={['开始日期', '结束日期']}
+            />
+            <Input
+              placeholder="指定股票代码（可选，空=全市场）"
+              value={integrityStocks}
+              onChange={(e) => setIntegrityStocks(e.target.value)}
+              allowClear
+              style={{ width: 220 }}
+            />
+            <Space size={4}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>缺口阈值(交易日)：</Typography.Text>
+              <InputNumber size="small" min={2} max={60} value={gapDays} onChange={(v) => setGapDays(v ?? 10)} style={{ width: 70 }} />
+            </Space>
+            <Space size={4}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>价格突变%：</Typography.Text>
+              <InputNumber size="small" min={5} max={100} value={priceJump} onChange={(v) => setPriceJump(v ?? 25)} style={{ width: 70 }} />
+            </Space>
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            日期留空=最近 250 交易日；缺口=相邻 bar 间跳过超过阈值的交易日（可能为停牌或缺失）；价格突变需复权因子参与，缺 factor 的股票不参与价格判定（防除权误报）。
+          </Typography.Text>
+          {integrity && integrity.ok && (
+            <>
+              <Alert
+                type={integrity.coverage.with_gap_codes > 0 || integrity.price_anomalies.length > 0 || integrity.factor_anomalies.length > 0 ? 'warning' : 'success'}
+                showIcon
+                message={`已检查 ${fmtInt(integrity.codes_checked)} 只股票（${integrity.window?.start ?? '-'} ~ ${integrity.window?.end ?? '-'}）`}
+                description={
+                  `覆盖缺口：${fmtInt(integrity.coverage.with_gap_codes)} 只（示例 ${integrity.coverage.gap_count} 条）· ` +
+                  `价格突变：${integrity.price_anomalies.length} 条 · 复权因子异常：${integrity.factor_anomalies.length} 条`
+                }
+              />
+              <Table
+                rowKey={(r) => `${r.code}-${r.date}`}
+                size="small"
+                title={() => <Typography.Text strong>覆盖缺口（可能停牌或缺数据）</Typography.Text>}
+                dataSource={integrity.gaps}
+                pagination={{ pageSize: 5 }}
+                columns={[
+                  { title: '代码', dataIndex: 'code', width: 90 },
+                  { title: '前一交易日', dataIndex: 'prev_date', width: 120 },
+                  { title: '下一交易日', dataIndex: 'date', width: 120 },
+                  { title: '跳过交易日', dataIndex: 'gap_tdays', width: 100 }
+                ]}
+              />
+              <Table
+                rowKey={(r) => `${r.code}-${r.date}-p`}
+                size="small"
+                title={() => <Typography.Text strong>价格突变（close 突变且复权因子未变）</Typography.Text>}
+                dataSource={integrity.price_anomalies}
+                pagination={{ pageSize: 5 }}
+                columns={[
+                  { title: '代码', dataIndex: 'code', width: 90 },
+                  { title: '日期', dataIndex: 'date', width: 120 },
+                  { title: '前收', dataIndex: 'prev_close', width: 90, render: (v) => (v ?? '-') },
+                  { title: '收盘', dataIndex: 'close', width: 90, render: (v) => (v ?? '-') },
+                  { title: '涨跌%', dataIndex: 'close_pct', width: 100, render: (v) => `${(v ?? 0).toFixed(1)}%` }
+                ]}
+              />
+              <Table
+                rowKey={(r) => `${r.code}-${r.date}-f`}
+                size="small"
+                title={() => <Typography.Text strong>复权因子异常（factor 突变而价格未变）</Typography.Text>}
+                dataSource={integrity.factor_anomalies}
+                pagination={{ pageSize: 5 }}
+                columns={[
+                  { title: '代码', dataIndex: 'code', width: 90 },
+                  { title: '日期', dataIndex: 'date', width: 120 },
+                  { title: '前因子', dataIndex: 'prev_factor', width: 100, render: (v) => (v ?? '-') },
+                  { title: '因子', dataIndex: 'adj_factor', width: 100, render: (v) => (v ?? '-') },
+                  { title: '因子变化%', dataIndex: 'factor_pct', width: 100, render: (v) => `${(v ?? 0).toFixed(1)}%` }
+                ]}
+              />
+            </>
+          )}
+        </Space>
       </Card>
 
       {/* baostock API 调用监控：今日用量 vs 上限 / 并发连接 / 黑名单状态 */}
