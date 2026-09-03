@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""实盘信号机 API（LIVE_SIGNAL_SYSTEM）：盘前触发 / 信号 / 回填 / 持仓对账 / 配置"""
+"""实盘信号机 API（LIVE_SIGNAL_SYSTEM）：盘前/盘中/盘后全流程 + 信号/回填/
+持仓对账/配置 + M3 影子统计/M4 就绪检查"""
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,7 +9,8 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..auth import get_current_user
-from ..live import feishu, premarket
+from ..live import feishu, intraday, postclose, premarket, reports
+from ..task_manager import manager
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 
