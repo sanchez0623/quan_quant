@@ -210,7 +210,19 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
         raise RuntimeError(f"回测窗口内无数据（universe={universe}, {start}~{end}, {period}）")
 
     # ---- 信号（start_date 之前为预热期，策略只算指标不推进状态机）----
-    prepared = strategy.prepare(data, params, start_date=start)
+    # 方案A：市场状态三态注入（momentum_slot + market_regime_on 时读指数日线计算；
+    # 指数缺失返回 None，策略降级为全程 range 不缩放，行为与现状一致）
+    market_regime = None
+    if (getattr(strategy, "id", None) == "momentum_slot"
+            and str(params.get("market_regime_on") or "off") == "on"):
+        market_regime = mc.compute_market_regime(
+            data_dir, str(params.get("regime_index") or "000905"),
+            int(params.get("regime_ma_short") or 20),
+            int(params.get("regime_ma_long") or 60),
+            int(params.get("regime_slope_n") or 5))
+    prepared = (strategy.prepare(data, params, start_date=start, market_regime=market_regime)
+                if market_regime is not None
+                else strategy.prepare(data, params, start_date=start))
 
     # risk_config 未显式设置止损而策略参数给了 stop_loss_pct -> 覆盖
     risk_cfg_dict = dict(cfg.get("risk_config") or {})

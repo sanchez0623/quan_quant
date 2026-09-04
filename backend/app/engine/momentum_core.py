@@ -389,6 +389,42 @@ def _empty_pick() -> pl.DataFrame:
     return pl.DataFrame(schema=_PICK_SCHEMA)
 
 
+def compute_market_regime(data_dir: Optional[str] = None, index_key: str = "000905",
+                          ma_short: int = 20, ma_long: int = 60,
+                          slope_n: int = 5) -> Optional[pl.DataFrame]:
+    """市场状态三态（日级，T-1 对齐）：trend / range / crash。
+
+    用指数日线（默认中证500 000905，贴近动量池中小盘）判定市场环境：
+    - trend：MA20 > MA60 且 MA20 近 slope_n 日上行（趋势确立，让利润奔跑）
+    - crash：close < MA60 且 MA60 近 slope_n 日下行（防守市，降频避险）
+    - range：其余（震荡市，做T主场）
+    返回列 day, market_regime（当日 bar 用上一完整交易日 regime，防未来函数）；
+    指数缺失返回 None，调用方降级为全程 range。"""
+    df = store.read_index_daily([index_key], data_dir)
+    if df is None or df.height == 0:
+        return None
+    df = df.sort("date")
+    df = add_ma(df, ma_short, "close", f"ma{ma_short}")
+    df = add_ma(df, ma_long, "close", f"ma{ma_long}")
+    ms, ml = f"ma{ma_short}", f"ma{ma_long}"
+    df = df.with_columns([
+        (pl.col(ms) - pl.col(ms).shift(slope_n)).alias("ms_slope"),
+        (pl.col(ml) - pl.col(ml).shift(slope_n)).alias("ml_slope"),
+    ])
+    regime = (
+        pl.when((pl.col(ms) > pl.col(ml)) & (pl.col("ms_slope") > 0)).then(pl.lit("trend"))
+        .when((pl.col("close") < pl.col(ml)) & (pl.col("ml_slope") < 0)).then(pl.lit("crash"))
+        .otherwise(pl.lit("range"))
+    ).alias("market_regime")
+    df = df.with_columns([
+        pl.col("date").str.slice(0, 10).alias("day"),
+        regime,
+    ]).select(["day", "market_regime"])
+    # T-1 对齐：当日 bar 只能用上一完整交易日的 regime（防未来函数）
+    df = df.with_columns(pl.col("market_regime").shift(1).alias("market_regime")).drop_nulls()
+    return df
+
+
 def select_top(mf: MarketFeatures, as_of_day: str, top_x: int = 30,
                min_rps: Optional[float] = None,
                domain: Optional[set] = None,

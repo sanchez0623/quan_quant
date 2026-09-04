@@ -224,12 +224,46 @@ class MomentumSlotStrategy(Strategy):
          "min": 0, "max": 10, "step": 0.1, "unit": "%", "group": "做T·机制专属",
          "show_if": {"t_mode": ["discipline"]},
          "description": "discipline模式：仅当价格回到卖出价下方N%才回补"},
+        # ---- 方案A：市场状态三态（trend/range/crash，指数日线判定，T-1 对齐） ----
+        {"key": "market_regime_on", "frozen": True, "label": "市场状态开关", "type": "categorical", "group": "市场状态",
+         "choices": ["off", "on"], "default": "off",
+         "description": "on=按市场状态三态调整核心仓预算与做T频率（趋势/震荡/防守）；off=沿用现状"},
+        {"key": "regime_index", "frozen": True, "label": "判定指数", "type": "categorical", "group": "市场状态",
+         "choices": ["000905", "000300"], "default": "000905",
+         "description": "中证500(000905) 贴近动量池中小盘；沪深300(000300) 偏大盘蓝筹"},
+        {"key": "core_scale_range", "frozen": True, "label": "震荡核心仓系数", "type": "float", "default": 0.7,
+         "min": 0.2, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
+         "description": "震荡市核心仓预算 × 系数（趋势弱，少配核心仓）"},
+        {"key": "t_scale_range", "frozen": True, "label": "震荡做T频率系数", "type": "float", "default": 1.3,
+         "min": 0.5, "max": 2.0, "step": 0.05, "unit": "×", "group": "市场状态",
+         "description": "震荡市做T次数上限 × 系数（波动主场，提升做T）"},
+        {"key": "core_scale_crash", "frozen": True, "label": "防守核心仓系数", "type": "float", "default": 0.4,
+         "min": 0.1, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
+         "description": "防守市核心仓预算 × 系数（大幅收缩避险）"},
+        {"key": "t_scale_crash", "frozen": True, "label": "防守做T频率系数", "type": "float", "default": 0.5,
+         "min": 0.1, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
+         "description": "防守市做T次数上限 × 系数（降频避险）"},
+        {"key": "regime_ma_short", "frozen": True, "label": "短均线", "type": "int", "default": 20,
+         "min": 5, "max": 60, "group": "市场状态", "advanced": True,
+         "description": "趋势判定短均线周期"},
+        {"key": "regime_ma_long", "frozen": True, "label": "长均线", "type": "int", "default": 60,
+         "min": 20, "max": 200, "group": "市场状态", "advanced": True,
+         "description": "趋势判定长均线周期"},
+        {"key": "regime_slope_n", "frozen": True, "label": "斜率窗口", "type": "int", "default": 5,
+         "min": 2, "max": 20, "group": "市场状态", "advanced": True,
+         "description": "均线近 N 日斜率方向判定"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
-                start_date: str | None = None) -> dict[str, pl.DataFrame]:
+                start_date: str | None = None,
+                market_regime: pl.DataFrame | None = None) -> dict[str, pl.DataFrame]:
         p = {k["key"]: k["default"] for k in self.param_schema}
         p.update({k: v for k, v in (params or {}).items() if v is not None})
+
+        # 方案A：市场状态三态映射（day -> regime，由 runner 注入指数日线计算）
+        regime_map: dict[str, str] = {}
+        if market_regime is not None and market_regime.height:
+            regime_map = {r[0]: r[1] for r in market_regime.rows()}
 
         # E 格：日线数据（date 无时间戳）无做T，硬关 max_t_times
         if data:
@@ -263,7 +297,7 @@ class MomentumSlotStrategy(Strategy):
                     pl.col("pool_gate").fill_null(False))
             else:
                 df = df.with_columns(pl.lit(False).alias("pool_gate"))
-            cols = self._walk(df, p, top_days.get(code, set()), start_date)
+            cols = self._walk(df, p, top_days.get(code, set()), start_date, regime_map)
             df = df.with_columns(cols)
             out[code] = df.drop("day")
 
@@ -292,7 +326,8 @@ class MomentumSlotStrategy(Strategy):
 
     @staticmethod
     def _walk(df: pl.DataFrame, p: dict, top_days: set,
-              start_date: str | None) -> list[pl.Series]:
+              start_date: str | None,
+              regime_map: dict[str, str] | None = None) -> list[pl.Series]:
         """生成 signal/tag/reason/budget_pct/t_ratio/reduce_pct 列。
 
         逐bar判定逻辑全部在 SlotStepper（本文件下方）：回测批量走完与
@@ -313,7 +348,7 @@ class MomentumSlotStrategy(Strategy):
             df = df.with_columns(pl.lit(False).alias("pool_gate"))
         dts = df["date"].to_list()
         is_eod = [i == n - 1 or dts[i][:10] != dts[i + 1][:10] for i in range(n)]
-        st = SlotStepper(p, top_days)
+        st = SlotStepper(p, top_days, regime_map=regime_map)
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
@@ -437,7 +472,7 @@ class SlotStepper:
       5) 做T（正向T逢低买入 / 反向T高抛低吸）
     """
 
-    def __init__(self, p: dict, top_days: set):
+    def __init__(self, p: dict, top_days: set, regime_map: dict[str, str] | None = None):
         self.base_min = float(p["base_pct_min"])
         self.base_max = float(p["base_pct_max"])
         self._g_mult = float(p["grid_atr_mult"])
@@ -468,6 +503,13 @@ class SlotStepper:
         # 方案D：动量状态机（off=沿用现有衰退信号）
         self.momentum_fsm_on = str(p.get("momentum_fsm_on") or "off") == "on"
         self.exit_fade_days = int(p.get("exit_fade_days") or 2)
+        # 方案A：市场状态三态（trend/range/crash）——核心仓预算与做T频率按环境缩放
+        self.market_regime_on = str(p.get("market_regime_on") or "off") == "on"
+        self.regime_map = regime_map or {}
+        self.core_scale_range = float(p.get("core_scale_range") or 1.0)
+        self.t_scale_range = float(p.get("t_scale_range") or 1.0)
+        self.core_scale_crash = float(p.get("core_scale_crash") or 1.0)
+        self.t_scale_crash = float(p.get("t_scale_crash") or 1.0)
         self.fwd_t = str(p.get("fwd_t") or "off")
         self.fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
         self.trend_clock = str(p.get("trend_clock") or "intraday")
@@ -501,6 +543,33 @@ class SlotStepper:
         self.mom_state = "idle"
         self.fade_streak = 0
         self.fade_today = False
+
+    # ---------------- 方案A：市场状态（trend/range/crash）缩放 ----------------
+
+    def _regime(self, date: str) -> str:
+        """当日市场状态；开关关 或 映射缺失时一律 trend（不缩放，兼容现状）。"""
+        if self.market_regime_on and self.regime_map:
+            return self.regime_map.get(date[:10], "trend")
+        return "trend"
+
+    def _t_cap(self, date: str) -> int:
+        """当日做T次数上限（日内 T 频率按市场状态缩放，至少 1 次）。"""
+        if not self.market_regime_on:
+            return self.max_t
+        r = self._regime(date)
+        scale = self.t_scale_crash if r == "crash" else (self.t_scale_range if r == "range" else 1.0)
+        return max(1, int(round(self.max_t * scale)))
+
+    def _core_scale(self, date: str) -> float:
+        """当日核心仓预算系数（震荡/防守收缩核心仓）。"""
+        if not self.market_regime_on:
+            return 1.0
+        r = self._regime(date)
+        if r == "crash":
+            return self.core_scale_crash
+        if r == "range":
+            return self.core_scale_range
+        return 1.0
 
     def state(self) -> dict:
         """导出状态（实盘 sig_strategy_state 落库 / 跨日恢复）"""
@@ -604,11 +673,14 @@ class SlotStepper:
         # 方案D：动量状态机（momentum_fsm_on 时用 减速/衰竭 替代「3信号凑数」判定退出）
         if self.momentum_fsm_on:
             fsm_decel = score_decay  # 减速：score 从峰值回落超 decay_pct（仅状态标记）
-            fsm_fade = ((score is not None and score < 0)
-                        or (ma_fast is not None and close < ma_fast))  # 衰竭：转负 或 跌破快均线
+            # 完整新设计（V2）：fade 仅在日线收盘（EOD）用收盘价确认。
+            # V1 实测证伪：盘中 5 分钟跌破MA20/score<0 太灵敏，插针即触发过度退出；
+            # 改为日线收盘确认后，仅当当日收盘真正转弱才触发退出，5 分钟插针被过滤。
+            fsm_fade = is_eod and ((score is not None and score < 0)
+                                   or (ma_fast is not None and close < ma_fast))
             self.fade_today = fsm_fade
             self.mom_state = "fade" if fsm_fade else ("decel" if fsm_decel else "cruise")
-            # 重设计：decel 不单独触发退出（动量正常回落会误触发，V1 实测证伪），仅 fade 触发
+            # V1 证伪：decel 不单独触发退出（动量正常回落几乎总伴随衰竭，去掉不影响）
             exit_trigger = fsm_fade
         else:
             self.fade_today = False
@@ -718,11 +790,11 @@ class SlotStepper:
                     and not pool_gate):
                 if slope_up:
                     self.opened, self.full = True, True
-                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_max,
+                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_max * self._core_scale(date),
                            "reason": "加速启动(金叉+站上快均线+入榜+斜率向上)，满配建仓"}
                 else:
                     self.opened, self.full = True, False
-                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_min,
+                    out = {"signal": 1, "tag": "开仓", "budget_pct": self.base_min * self._core_scale(date),
                            "reason": "加速启动(金叉+站上快均线+入榜)，试仓建仓"}
                 # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
                 self.high_since_open = close
@@ -737,7 +809,7 @@ class SlotStepper:
         if not self.full and slope_up and trend_ok and not pool_gate:
             self.full = True
             return {"signal": 1, "tag": "加仓",
-                    "budget_pct": max(0.0, self.base_max - self.base_min),
+                    "budget_pct": max(0.0, self.base_max - self.base_min) * self._core_scale(date),
                     "reason": "斜率确认，试仓升级满配"}
 
         # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
@@ -761,7 +833,7 @@ class SlotStepper:
 
         # ---- 5) 做T ----
         if self.t_mode == "time":
-            if " " not in date or self.t_count >= self.max_t:
+            if " " not in date or self.t_count >= self._t_cap(date):
                 return None
             hhmm = date[11:16]
             if hhmm == "09:35":
@@ -773,7 +845,7 @@ class SlotStepper:
                 return {"signal": 1, "tag": "做T", "budget_pct": self.base_min,
                         "reason": "时点T：14:50尾盘买回"}
             return None
-        if atr_pct is None or self.t_count >= self.max_t:
+        if atr_pct is None or self.t_count >= self._t_cap(date):
             return None
         g = float(atr_pct) * self._g_mult
         if g <= 0:
