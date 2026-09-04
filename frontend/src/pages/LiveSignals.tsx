@@ -20,6 +20,7 @@ import {
   saveLiveConfig, setLiveSignalStatus, syncLivePositions
 } from '../api/client'
 import { useTaskProgress } from '../hooks/useTaskProgress'
+import TaskStopButton from '../components/TaskStopButton'
 import { fmtMoney } from '../utils/format'
 
 const STYPE_TAG: Record<string, string> = {
@@ -163,6 +164,9 @@ export default function LiveSignals() {
       loadStatus()
     } else if (status === 'failed') {
       message.error(`盘前流程失败：${full?.message || '未知错误'}`)
+    } else if (status === 'cancelled') {
+      message.warning('盘前流程已停止（数据更新可能部分完成，可重新发起）')
+      refresh()
     }
     setMorningTaskId(null)
   }, [refresh, loadStatus])
@@ -177,6 +181,9 @@ export default function LiveSignals() {
       loadStatus()
     } else if (status === 'failed') {
       message.error(`盘后流程失败：${full?.message || '未知错误'}`)
+    } else if (status === 'cancelled') {
+      message.warning('盘后流程已停止')
+      refresh()
     }
     setPostcloseTaskId(null)
   }, [refresh, loadStatus])
@@ -533,24 +540,32 @@ export default function LiveSignals() {
           <div style={{ marginTop: 8 }}>
             {morningTaskId && (
               <div style={{ marginBottom: 4 }}>
-                <Progress
-                  percent={Math.round(morningTask.progress)}
-                  size="small" status="active"
-                  strokeColor={{ from: '#1677ff', to: '#36cfc9' }} />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  盘前任务 {morningTaskId}｜{morningTask.message || '排队中...'}
-                </Typography.Text>
+                <Space size={8} wrap>
+                  <Progress
+                    percent={Math.round(morningTask.progress)}
+                    size="small" status="active"
+                    style={{ width: 220 }}
+                    strokeColor={{ from: '#1677ff', to: '#36cfc9' }} />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    盘前任务 {morningTaskId}｜{morningTask.message || '排队中...'}
+                  </Typography.Text>
+                  <TaskStopButton taskId={morningTaskId} />
+                </Space>
               </div>
             )}
             {postcloseTaskId && (
               <div>
-                <Progress
-                  percent={Math.round(postcloseTask.progress)}
-                  size="small" status="active"
-                  strokeColor={{ from: '#faad14', to: '#fa8c16' }} />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  盘后任务 {postcloseTaskId}｜{postcloseTask.message || '排队中...'}
-                </Typography.Text>
+                <Space size={8} wrap>
+                  <Progress
+                    percent={Math.round(postcloseTask.progress)}
+                    size="small" status="active"
+                    style={{ width: 220 }}
+                    strokeColor={{ from: '#faad14', to: '#fa8c16' }} />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    盘后任务 {postcloseTaskId}｜{postcloseTask.message || '排队中...'}
+                  </Typography.Text>
+                  <TaskStopButton taskId={postcloseTaskId} />
+                </Space>
               </div>
             )}
           </div>

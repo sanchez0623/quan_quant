@@ -26,6 +26,7 @@ import {
   ExportOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import TaskStopButton from '../components/TaskStopButton'
 import dayjs from 'dayjs'
 import {
   createOptimize,
@@ -664,11 +665,16 @@ export default function OptimizeList() {
     },
     {
       title: '操作',
-      width: 90,
+      width: 130,
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => navigate(`/optimize/${record.task_id}`)}>
-          查看
-        </Button>
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => navigate(`/optimize/${record.task_id}`)}>
+            查看
+          </Button>
+          {(record.status === 'pending' || record.status === 'running') && (
+            <TaskStopButton taskId={record.task_id} />
+          )}
+        </Space>
       )
     }
   ]

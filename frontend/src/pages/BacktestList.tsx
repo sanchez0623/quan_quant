@@ -27,6 +27,7 @@ import {
 } from 'antd'
 import { DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import TaskStopButton from '../components/TaskStopButton'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
   createBacktest,
@@ -605,6 +606,9 @@ export default function BacktestList() {
           <Button type="link" size="small" onClick={() => navigate(`/backtests/${record.task_id}`)}>
             查看
           </Button>
+          {(record.status === 'pending' || record.status === 'running') && (
+            <TaskStopButton taskId={record.task_id} />
+          )}
           {record.config && (
             <Button
               type="link"

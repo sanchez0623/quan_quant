@@ -21,8 +21,10 @@ import {
   Typography
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import { StopOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
+  cancelTask,
   createExperiment,
   deleteExperiment,
   errDetail,
@@ -249,6 +251,16 @@ export default function ExperimentList() {
     }
   }
 
+  const onStopExperiment = async (record: ExperimentListItem) => {
+    try {
+      await Promise.all((record.sub_task_ids ?? []).map((tid) => cancelTask(tid)))
+      message.info('已请求停止全部子任务，将在各自检查点退出')
+      fetchList()
+    } catch (err) {
+      message.error(errDetail(err, '请求停止失败'))
+    }
+  }
+
   const columns: ColumnsType<ExperimentListItem> = [
     { title: '实验名', dataIndex: 'name', ellipsis: true },
     {
@@ -300,6 +312,14 @@ export default function ExperimentList() {
           <Button type="link" size="small" onClick={() => navigate(`/experiments/${record.experiment_id}`)}>
             查看
           </Button>
+          {(record.status === 'pending' || record.status === 'running') && (
+            <Popconfirm title="停止该实验" description="将停止全部未完成的子回测任务，已完成的保留"
+                        onConfirm={() => onStopExperiment(record)} okText="停止" cancelText="取消">
+              <Button type="link" size="small" danger icon={<StopOutlined />}>
+                停止
+              </Button>
+            </Popconfirm>
+          )}
           <Popconfirm title="删除该实验及其全部子回测？" onConfirm={() => onDelete(record.experiment_id)}>
             <Button type="link" size="small" danger>
               删除

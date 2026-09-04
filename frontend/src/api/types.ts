@@ -989,6 +989,7 @@ export interface ExperimentListItem {
   created_at: string
   finished_at?: string | null
   sub_count: number
+  sub_task_ids: string[]
 }
 
 // ---- AI 分析 ----

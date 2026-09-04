@@ -332,6 +332,7 @@ def list_experiments(_user: str = Depends(get_current_user)):
             "status": status, "progress": round(done / total * 100, 1),
             "error": err, "created_at": e["created_at"],
             "finished_at": e["finished_at"], "sub_count": len(e["sub_task_ids"]),
+            "sub_task_ids": e["sub_task_ids"],
         })
     return out
 

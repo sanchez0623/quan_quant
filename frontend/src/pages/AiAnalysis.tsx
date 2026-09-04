@@ -41,6 +41,7 @@ import type {
   BacktestListItem
 } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
+import TaskStopButton from '../components/TaskStopButton'
 import { fmtInt } from '../utils/format'
 
 /** 风控字段中文标签（建议卡片展示用） */
@@ -198,6 +199,8 @@ export default function AiAnalysis() {
   const { progress, message: taskMessage } = useTaskProgress(currentTaskId, (s) => {
     if (s === 'success') {
       message.success('AI 分析完成')
+    } else if (s === 'cancelled') {
+      message.warning('AI 分析已停止')
     } else {
       message.error('AI 分析失败')
     }
@@ -382,7 +385,13 @@ export default function AiAnalysis() {
               {currentTaskId && (
                 <div>
                   <Progress percent={progress} status="active" />
-                  <Typography.Text type="secondary">{taskMessage || '分析中...'}</Typography.Text>
+                  <Space size={8} wrap>
+                    <Typography.Text type="secondary">{taskMessage || '分析中...'}</Typography.Text>
+                    <TaskStopButton taskId={currentTaskId} />
+                  </Space>
+                  <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+                    注：LLM 生成阶段无检查点，停止将在其后的验证回测段生效
+                  </Typography.Text>
                 </div>
               )}
             </Space>
@@ -674,9 +683,12 @@ export default function AiAnalysis() {
               ) : (
                 <div style={{ padding: 24 }}>
                   <Progress percent={progress} status="active" />
-                  <Typography.Text type="secondary">
-                    {taskMessage || '分析任务进行中，请稍候...'}
-                  </Typography.Text>
+                  <Space size={8} wrap>
+                    <Typography.Text type="secondary">
+                      {taskMessage || '分析任务进行中，请稍候...'}
+                    </Typography.Text>
+                    <TaskStopButton taskId={currentTaskId ?? ''} />
+                  </Space>
                 </div>
               )
             ) : (
