@@ -440,6 +440,17 @@ AI 建议验证胜率统计（全部分析的 validation.verdict 计数）：
 请求：`{"scope": "daily"}`（daily | minute5 | all | industry | stock\_basic | calendar | index\_daily，默认 daily；index\_daily=基准指数日线 000905/000300，独立存储）
 响应：`{"task_id": "data_xxx", "status": "pending"}`（异步任务，进度走同一 status/WS 通道）
 
+### POST /api/tasks/{task_id}/cancel
+
+协作式取消任务（对全部任务类型生效：回测/寻优/AI/数据/实盘编排）。
+
+响应：`{"task_id": "...", "status": "cancelling", "note": "已请求停止，任务将在当前进度检查点退出"}`
+- 任务状态 pending/running -> `cancelling`；子进程在每个进度检查点（update_progress）
+  感知标记后抛出取消异常，由 run_task 统一落 `cancelled` 终态（不在写库中途强杀，
+  数据一致性由原子写保证）。取消延迟 = 到下一检查点的距离（数据更新为逐码粒度秒级；
+  长计算段之间如回测特征构建期、寻优单 trial 内部会相应延长）
+- 404：任务不存在；400：任务已终态（success/failed/cancelled）
+
 ### POST /api/data/demo
 
 请求：`{"stocks": ["600000","000001"], "days": 500}`（可选，有默认值）

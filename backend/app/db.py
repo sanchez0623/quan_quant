@@ -358,12 +358,32 @@ def llm_keys_masked(username: str, db_path: Optional[str] = None) -> list[dict]:
 
 # ---------------- tasks ----------------
 
+class TaskCancelled(RuntimeError):
+    """任务被用户请求取消（协作式：在进度检查点抛出，run_task 统一落终态）"""
+
+
 def create_task(task_id: str, name: str, task_type: str, payload: Optional[dict] = None,
                 db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
             "INSERT INTO tasks(id,name,type,status,progress,message,created_at,payload) VALUES(?,?,?,?,?,?,?,?)",
             (task_id, name, task_type, "pending", 0, "", _now(), json.dumps(payload or {}, ensure_ascii=False)))
+
+
+def request_cancel(task_id: str, db_path: Optional[str] = None) -> str:
+    """请求取消任务：pending/running -> cancelling（协作式标记）。
+
+    已终态（success/failed/cancelled）不动；任务不存在返回 not_found。
+    子进程在每个进度检查点（update_progress）感知标记后自杀，
+    run_task 统一落 cancelled 终态。"""
+    with conn(db_path) as c:
+        row = c.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            return "not_found"
+        if row[0] in ("success", "failed", "cancelled"):
+            return row[0]
+        c.execute("UPDATE tasks SET status='cancelling' WHERE id=?", (task_id,))
+        return "cancelling"
 
 
 def update_task(task_id: str, db_path: Optional[str] = None, **fields: Any) -> None:
@@ -380,8 +400,14 @@ def update_task(task_id: str, db_path: Optional[str] = None, **fields: Any) -> N
 
 def update_progress(task_id: str, progress: float, message: str = "",
                     db_path: Optional[str] = None) -> None:
-    """子进程直接写进度（短事务，WAL 下安全）"""
+    """子进程直接写进度（短事务，WAL 下安全）。
+
+    兼作协作式取消检查点：任务已被请求取消（cancelling）时抛出
+    TaskCancelled，由 run_task 统一落 cancelled 终态。"""
     with conn(db_path) as c:
+        row = c.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row and row[0] == "cancelling":
+            raise TaskCancelled(task_id)
         c.execute("UPDATE tasks SET progress=?, message=?, status='running' WHERE id=?",
                   (float(progress), message, task_id))
 

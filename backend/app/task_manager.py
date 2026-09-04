@@ -206,15 +206,26 @@ _TASK_FUNCS = {
 
 
 def run_task(kind: str, kwargs: dict) -> None:
-    """进程池统一入口：捕获所有异常写 tasks.error"""
+    """进程池统一入口：捕获所有异常写 tasks.error。
+
+    协作式取消：任务函数内抛 db.TaskCancelled（update_progress 检查点感知
+    cancelling 标记）-> 落 cancelled 终态；排队期间已被请求取消的任务
+    在入口直接跳过执行。"""
     import inspect
     task_id = kwargs["task_id"]
     db_path = kwargs.get("db_path")
     try:
+        t = db.get_task(task_id, db_path=db_path)
+        if t and t["status"] == "cancelling":
+            db.finish_task(task_id, "cancelled",
+                           error="已被用户取消（执行前）", db_path=db_path)
+            return
         fn = _TASK_FUNCS[kind]
         sig = inspect.signature(fn)
         filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
         fn(**filtered)
+    except db.TaskCancelled:
+        db.finish_task(task_id, "cancelled", error="已被用户取消", db_path=db_path)
     except Exception as e:  # noqa: BLE001
         db.finish_task(task_id, "failed",
                        error=f"{e}\n{traceback.format_exc()[-1500:]}", db_path=db_path)

@@ -356,6 +356,11 @@ export async function resetLiveData(keepConfig = true): Promise<void> {
   await api.post('/live/reset', { keep_config: keepConfig })
 }
 
+// ---- 任务通用操作 ----
+export async function cancelTask(taskId: string): Promise<void> {
+  await api.post(`/tasks/${taskId}/cancel`)
+}
+
 // ---- 盘中信号机（M2）----
 export async function runMorning(updateData = true): Promise<{ task_id: string }> {
   const res = await api.post('/live/morning', { update_data: updateData })

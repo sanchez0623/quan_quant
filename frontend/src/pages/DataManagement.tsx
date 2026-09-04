@@ -19,9 +19,9 @@ import {
   Typography
 } from 'antd'
 import type { Dayjs } from 'dayjs'
-import { DatabaseOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { DatabaseOutlined, StopOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { checkBs, createDemoData, errDetail, getBsMonitor, getDataStatus, runDataIntegrity, updateData } from '../api/client'
+import { cancelTask, checkBs, createDemoData, errDetail, getBsMonitor, getDataStatus, runDataIntegrity, updateData } from '../api/client'
 import type { BsMonitor, DataSourceHealth, IntegrityResult } from '../api/types'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import { fmtInt } from '../utils/format'
@@ -124,6 +124,8 @@ export default function DataManagement() {
     const label = task?.label ?? '任务'
     if (s === 'success') {
       message.success(`${label}完成`)
+    } else if (s === 'cancelled') {
+      message.warning(`${label}已停止`)
     } else {
       // 显示具体错误信息
       const errMsg = fullState?.message || `${label}失败`
@@ -132,6 +134,20 @@ export default function DataManagement() {
     setTask(null)
     refresh()
   })
+
+  const [cancelling, setCancelling] = useState(false)
+  const onCancelTask = async () => {
+    if (!task) return
+    setCancelling(true)
+    try {
+      await cancelTask(task.id)
+      message.info('已请求停止，任务将在当前检查点退出')
+    } catch (err) {
+      message.error(errDetail(err, '请求停止失败'))
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   const [elapsedSec, setElapsedSec] = useState(0)
   useEffect(() => {
@@ -557,6 +573,10 @@ export default function DataManagement() {
                 <Typography.Text type="secondary">
                   已耗时 {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}
                 </Typography.Text>
+                <Button size="small" danger icon={<StopOutlined />} loading={cancelling}
+                        onClick={onCancelTask}>
+                  停止
+                </Button>
               </Space>
               <Progress percent={progress} status="active" style={{ maxWidth: 480 }} />
               <div>
