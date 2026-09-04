@@ -89,15 +89,19 @@ MAX_TOOL_CALLS_PER_ROUND = 4   # 单轮允许执行的工具数上限
 
 def _run_with_tools(messages: list, profile: Optional[str], db_path: Optional[str],
                     username: Optional[str], report: dict,
-                    data_dir: Optional[str]) -> tuple[str, list[dict], dict]:
+                    data_dir: Optional[str] = None,
+                    max_rounds: Optional[int] = None,
+                    key_db_path: Optional[str] = None) -> tuple[str, list[dict], dict]:
     """下钻循环：LLM 请求工具 → 执行 → 结果回喂 → 直到给出最终回答。
     轮次/次数耗尽时强制一次无工具收尾。返回 (content, trace, 最后一次调用meta)。"""
     trace: list[dict] = []
     conv = list(messages)
     meta: dict = {}
-    for _round in range(MAX_TOOL_ROUNDS):
+    rounds = max_rounds if max_rounds is not None else MAX_TOOL_ROUNDS
+    for _round in range(rounds):
         r = chat(profile, conv, temperature=0.3, db_path=db_path,
-                 username=username, tools=drilldown.TOOL_SCHEMAS)
+                 username=username, tools=drilldown.TOOL_SCHEMAS,
+                 key_db_path=key_db_path)
         meta = r
         tcs = [tc for tc in (r.get("tool_calls") or []) if isinstance(tc, dict)]
         if not tcs:
@@ -395,7 +399,8 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                      param_importance: Optional[dict] = None,
                      username: Optional[str] = None,
                      findings: Optional[list[dict]] = None,
-                     data_dir: Optional[str] = None) -> dict:
+                     data_dir: Optional[str] = None,
+                     key_db_path: Optional[str] = None) -> dict:
     """返回 {content, model, tokens, elapsed, profile, suggestions, diagnostics,
     tool_trace}；未配置任何可用 key 抛 LLMError。findings 缺省时用规则引擎现算。
 
@@ -426,12 +431,14 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                      {"role": "user", "content": user_msg}]
     try:
         content, tool_trace, meta = _run_with_tools(
-            base_messages, profile, db_path, username, report, data_dir)
+            base_messages, profile, db_path, username, report, data_dir,
+            key_db_path=key_db_path)
     except LLMError:
         # 端点不支持 function calling（或 key 全部不可用）→ 降级为单轮静态分析
         result = chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
                                 {"role": "user", "content": user_msg}],
-                      temperature=0.3, db_path=db_path, username=username)
+                      temperature=0.3, db_path=db_path, username=username,
+                      key_db_path=key_db_path)
         content, tool_trace, meta = result["content"], [], result
     content, suggestions = _extract_suggestions(content, report)
     if tool_trace:

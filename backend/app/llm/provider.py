@@ -390,15 +390,19 @@ def _chat_via_profiles(profile_name: Optional[str], messages: list,
 
 def chat(profile_name: Optional[str], messages: list, temperature: float = 0.3,
          db_path: Optional[str] = None, username: Optional[str] = None,
-         tools: Optional[list] = None) -> dict:
+         tools: Optional[list] = None,
+         key_db_path: Optional[str] = None) -> dict:
     """统一入口。三级 Key 池（跨服务商无缝切换）：
     1. 用户 DB Key 池（私有，前端增删改管理）
     2. 环境变量池 LLM_KEY_1~9（系统级公共兜底）
     3. profiles 配置（llm.yaml 兼容）
     tools 非空时透传 OpenAI 兼容 function calling，返回体附 tool_calls（无则空列表）。
+    key_db_path：Key 池查询用库（缺省同 db_path）；与 db_path 分离用于
+    「Key 池在正式库、用量统计在临时库」的场景（如 A/B 实验脚本）。
     返回 {content, tool_calls, model, tokens, elapsed, profile}。"""
+    key_db = key_db_path or db_path
     if username:
-        user_pool = db_key_entries(username, db_path)
+        user_pool = db_key_entries(username, key_db)
         if user_pool:
             return _chat_via_pool(profile_name, messages, temperature, db_path,
                                   pool=user_pool, tools=tools)

@@ -291,7 +291,7 @@ def test_analyze_backtest_end_to_end_mock(monkeypatch):
           '"risk_config": {"atr_multiplier": 3.0}}\n```')
 
     def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
-                  tools=None):
+                  tools=None, key_db_path=None):
         assert any("规则引擎" in m["content"] or "findings" in m["content"]
                    for m in messages if m["role"] == "user")
         return {"content": md, "model": "mock", "tokens": 100, "elapsed": 0.5,
@@ -394,7 +394,7 @@ def test_agentic_loop_drills_then_answers(monkeypatch):
     seen_tool_msg = {"hit": False}
 
     def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
-                  tools=None):
+                  tools=None, key_db_path=None):
         has_tool_result = any(m.get("role") == "tool" for m in messages)
         if tools and not has_tool_result:  # 首轮：请求下钻
             return {"content": "", "model": "m", "tokens": 1, "elapsed": 0.1,
@@ -424,7 +424,7 @@ def test_agentic_loop_fallback_when_tools_unsupported(monkeypatch):
          '{"params": {"pool_n": 7}, "risk_config": {}}\n```'
 
     def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
-                  tools=None):
+                  tools=None, key_db_path=None):
         if tools:
             raise LLMError("Key 池全部条目不可用（最后错误: 400 tools not supported）")
         return {"content": md, "model": "m", "tokens": 1, "elapsed": 0.1,
@@ -443,7 +443,7 @@ def test_agentic_loop_budget_cap(monkeypatch):
     calls = {"n": 0}
 
     def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
-                  tools=None):
+                  tools=None, key_db_path=None):
         calls["n"] += 1
         if tools:  # 每轮都要求 3 次下钻（逼出总次数护栏）
             base = calls["n"] * 10
