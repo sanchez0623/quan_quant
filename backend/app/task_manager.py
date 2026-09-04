@@ -65,7 +65,8 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
     report = json.loads(report_path.read_text(encoding="utf-8"))
     db.update_progress(task_id, 20, "正在调用 LLM 生成分析（深度思考可能需数十秒）...", db_path)
     result = analyze_backtest(report, profile, db_path=db_path,
-                               param_importance=param_importance, username=username)
+                               param_importance=param_importance, username=username,
+                               data_dir=data_dir)
     db.update_progress(task_id, 90, "解析结构化建议...", db_path)
     # ---- 建议自动验证闭环（方案 B4）：同区间重跑建议配置并 A/B 对比 ----
     validation: Optional[dict] = None

@@ -272,10 +272,12 @@ def _llm_max_tokens() -> int:
 
 def _chat_once(base_url: str, model: str, api_key: str, messages: list,
                temperature: float, timeout: Optional[float] = None,
-               max_tokens: Optional[int] = None) -> dict:
+               max_tokens: Optional[int] = None, tools: Optional[list] = None) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     body = {"model": model, "messages": messages, "temperature": temperature,
             "max_tokens": max_tokens if max_tokens is not None else _llm_max_tokens()}
+    if tools:
+        body["tools"] = tools  # OpenAI 兼容 function calling；不支持端点由调用方降级
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     t0 = time.time()
     with httpx.Client(timeout=timeout or _llm_timeout(), trust_env=False) as client:
@@ -283,13 +285,15 @@ def _chat_once(base_url: str, model: str, api_key: str, messages: list,
     elapsed = round(time.time() - t0, 3)
     resp.raise_for_status()
     data = resp.json()
-    content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    if not content:
+    msg = ((data.get("choices") or [{}])[0].get("message") or {})
+    content = msg.get("content") or ""
+    tool_calls = msg.get("tool_calls") or []
+    if not content and not tool_calls:
         raise LLMError("LLM 返回空回复")
     usage = data.get("usage") or {}
     pt, ct = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
-    return {"content": content, "model": model, "prompt_tokens": pt,
-            "completion_tokens": ct, "elapsed": elapsed}
+    return {"content": content, "tool_calls": tool_calls, "model": model,
+            "prompt_tokens": pt, "completion_tokens": ct, "elapsed": elapsed}
 
 
 def _record_usage(profile_name: str, result: dict, db_path: Optional[str]) -> None:
@@ -302,7 +306,8 @@ def _record_usage(profile_name: str, result: dict, db_path: Optional[str]) -> No
 
 def _chat_via_pool(profile_name: Optional[str], messages: list,
                    temperature: float, db_path: Optional[str],
-                   pool: Optional[list[dict]] = None) -> dict:
+                   pool: Optional[list[dict]] = None,
+                   tools: Optional[list] = None) -> dict:
     """Key 池轮换：任何条目失败（余额/失效/限流/超时等）→ 切下一个（跨服务商）。
     profile_name 语义：None/'auto'=全池轮换；'deepseek'等服务商名=只用该服务商条目；
     数字字符串=只用该 key_id 条目。"""
@@ -320,12 +325,14 @@ def _chat_via_pool(profile_name: Optional[str], messages: list,
     last_err = None
     for entry in pool:
         try:
+            kw = {"timeout": entry.get("timeout"), "max_tokens": entry.get("max_tokens")}
+            if tools:
+                kw["tools"] = tools
             result = _chat_once(entry["base_url"], entry["model"], entry["api_key"],
-                                messages, temperature,
-                                timeout=entry.get("timeout"),
-                                max_tokens=entry.get("max_tokens"))
+                                messages, temperature, **kw)
             _record_usage(entry["provider"], result, db_path)
-            return {"content": result["content"], "model": result["model"],
+            return {"content": result["content"], "tool_calls": result.get("tool_calls"),
+                    "model": result["model"],
                     "tokens": result["prompt_tokens"] + result["completion_tokens"],
                     "elapsed": result["elapsed"], "profile": entry["provider"]}
         except Exception as exc:  # noqa: BLE001  任何失败（401/402/429/超时/5xx）→ 切下一个
@@ -336,7 +343,8 @@ def _chat_via_pool(profile_name: Optional[str], messages: list,
 
 
 def _chat_via_profiles(profile_name: Optional[str], messages: list,
-                       temperature: float, db_path: Optional[str]) -> dict:
+                       temperature: float, db_path: Optional[str],
+                       tools: Optional[list] = None) -> dict:
     """profiles 兼容模式：指定 profile 的 key 轮换 → fallback_chain 降级"""
     cfg = load_llm_config()
     profiles = cfg.get("profiles") or {}
@@ -356,9 +364,13 @@ def _chat_via_profiles(profile_name: Optional[str], messages: list,
         configured = True
         for ki, key in enumerate(keys, start=1):
             try:
-                result = _chat_once(p["base_url"], p["model"], key, messages, temperature)
+                result = _chat_once(p["base_url"], p["model"], key, messages, temperature,
+                                    tools=tools) if tools else \
+                    _chat_once(p["base_url"], p["model"], key, messages, temperature)
                 _record_usage(name, result, db_path)
-                return {"content": result["content"], "model": result["model"],
+                return {"content": result["content"],
+                        "tool_calls": result.get("tool_calls"),
+                        "model": result["model"],
                         "tokens": result["prompt_tokens"] + result["completion_tokens"],
                         "elapsed": result["elapsed"], "profile": name}
             except Exception as e:  # noqa: BLE001
@@ -377,16 +389,19 @@ def _chat_via_profiles(profile_name: Optional[str], messages: list,
 
 
 def chat(profile_name: Optional[str], messages: list, temperature: float = 0.3,
-         db_path: Optional[str] = None, username: Optional[str] = None) -> dict:
+         db_path: Optional[str] = None, username: Optional[str] = None,
+         tools: Optional[list] = None) -> dict:
     """统一入口。三级 Key 池（跨服务商无缝切换）：
     1. 用户 DB Key 池（私有，前端增删改管理）
     2. 环境变量池 LLM_KEY_1~9（系统级公共兜底）
     3. profiles 配置（llm.yaml 兼容）
-    返回 {content, model, tokens, elapsed, profile}。"""
+    tools 非空时透传 OpenAI 兼容 function calling，返回体附 tool_calls（无则空列表）。
+    返回 {content, tool_calls, model, tokens, elapsed, profile}。"""
     if username:
         user_pool = db_key_entries(username, db_path)
         if user_pool:
-            return _chat_via_pool(profile_name, messages, temperature, db_path, pool=user_pool)
+            return _chat_via_pool(profile_name, messages, temperature, db_path,
+                                  pool=user_pool, tools=tools)
     if key_pool_mode():
-        return _chat_via_pool(profile_name, messages, temperature, db_path)
-    return _chat_via_profiles(profile_name, messages, temperature, db_path)
+        return _chat_via_pool(profile_name, messages, temperature, db_path, tools=tools)
+    return _chat_via_profiles(profile_name, messages, temperature, db_path, tools=tools)

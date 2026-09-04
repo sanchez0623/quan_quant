@@ -17,8 +17,8 @@ import re
 from typing import Optional
 
 from ..engine.strategies import REGISTRY
-from . import diagnostics
-from .provider import chat
+from . import diagnostics, drilldown
+from .provider import LLMError, chat
 
 SYSTEM_PROMPT = (
     "你是一位资深量化策略分析师。系统已用规则引擎对回测报告完成了客观诊断"
@@ -68,6 +68,60 @@ _RISK_ENUMS = {
     "adaptive": {"off", "trend", "vol"},
     "atr_cost_base": {"first", "wavg"},
 }
+
+# ---- 数据下钻工具（方案 A）：预算护栏 ----
+TOOL_SECTION = (
+    "\n\n## 数据下钻工具（只读取证，按需使用）\n"
+    "你可以调用以下工具对摘要/findings 中的疑点取证后再下结论：\n"
+    "- query_trades(group_by=\"month\"|\"code\"|\"type\", code?, trade_type?, month?)："
+    "已平仓交易按月/票/类型分组的盈亏统计（亏损组排前）+ 极端样本；\n"
+    "- get_code_profile(code)：单票全部进出记录、盈亏汇总、回测区间周线收盘（若数据可用）；\n"
+    "- get_market_context(start_month?, end_month?)：区间策略 vs 基准月度收益对照、"
+    "平均仓位占比、最深回撤谷列表。\n"
+    "使用纪律：先基于摘要与 findings 形成假设，仅对疑点下钻（总轮次≤6，"
+    "不要用相同参数重复调用）；证据足够立即停止；"
+    "无论是否用过工具，最终回答仍必须以 ```json 建议块结尾。"
+)
+MAX_TOOL_ROUNDS = 6            # 下钻轮次上限（每轮一次 LLM 调用）
+MAX_TOOL_CALLS_TOTAL = 10      # 全程工具执行总次数上限
+MAX_TOOL_CALLS_PER_ROUND = 4   # 单轮允许执行的工具数上限
+
+
+def _run_with_tools(messages: list, profile: Optional[str], db_path: Optional[str],
+                    username: Optional[str], report: dict,
+                    data_dir: Optional[str]) -> tuple[str, list[dict], dict]:
+    """下钻循环：LLM 请求工具 → 执行 → 结果回喂 → 直到给出最终回答。
+    轮次/次数耗尽时强制一次无工具收尾。返回 (content, trace, 最后一次调用meta)。"""
+    trace: list[dict] = []
+    conv = list(messages)
+    meta: dict = {}
+    for _round in range(MAX_TOOL_ROUNDS):
+        r = chat(profile, conv, temperature=0.3, db_path=db_path,
+                 username=username, tools=drilldown.TOOL_SCHEMAS)
+        meta = r
+        tcs = [tc for tc in (r.get("tool_calls") or []) if isinstance(tc, dict)]
+        if not tcs:
+            return r["content"], trace, meta
+        conv.append({"role": "assistant", "content": r.get("content") or None,
+                     "tool_calls": r.get("tool_calls")})
+        for tc in tcs[:MAX_TOOL_CALLS_PER_ROUND]:
+            if len(trace) >= MAX_TOOL_CALLS_TOTAL:
+                break
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    args = {}
+            except json.JSONDecodeError:
+                args = {}
+            out = drilldown.execute_tool(fn.get("name"), args, report, data_dir=data_dir)
+            trace.append({"name": fn.get("name") or "unknown", "args": args})
+            conv.append({"role": "tool", "tool_call_id": tc.get("id"),
+                         "content": json.dumps(out, ensure_ascii=False)})
+        if len(trace) >= MAX_TOOL_CALLS_TOTAL:
+            break
+    final = chat(profile, conv, temperature=0.3, db_path=db_path, username=username)
+    return final["content"], trace, final
 
 
 def _extract_suggestions(content: str, report: dict) -> tuple[str, Optional[dict]]:
@@ -340,9 +394,13 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                      db_path: Optional[str] = None,
                      param_importance: Optional[dict] = None,
                      username: Optional[str] = None,
-                     findings: Optional[list[dict]] = None) -> dict:
-    """返回 {content, model, tokens, elapsed, profile, suggestions, diagnostics}；
-    未配置任何可用 key 抛 LLMError。findings 缺省时用规则引擎现算。"""
+                     findings: Optional[list[dict]] = None,
+                     data_dir: Optional[str] = None) -> dict:
+    """返回 {content, model, tokens, elapsed, profile, suggestions, diagnostics,
+    tool_trace}；未配置任何可用 key 抛 LLMError。findings 缺省时用规则引擎现算。
+
+    下钻循环：优先带工具调用（LLM 可对疑点只读取证）；端点不支持 tools
+    （报错）时自动降级为单轮静态摘要分析，能力不缩水。"""
     if findings is None:
         findings = diagnostics.diagnose(report, param_importance)
     parts = {
@@ -364,9 +422,23 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
         parts["策略参数表"] = schema
     user_msg = ("请分析以下回测报告（JSON，诊断已由系统规则引擎给出）：\n"
                 + json.dumps(parts, ensure_ascii=False, default=str))
-    result = chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_msg}],
-                  temperature=0.3, db_path=db_path, username=username)
-    content, suggestions = _extract_suggestions(result["content"], report)
-    return {**result, "content": content, "suggestions": suggestions,
-            "diagnostics": findings}
+    base_messages = [{"role": "system", "content": SYSTEM_PROMPT + TOOL_SECTION},
+                     {"role": "user", "content": user_msg}]
+    try:
+        content, tool_trace, meta = _run_with_tools(
+            base_messages, profile, db_path, username, report, data_dir)
+    except LLMError:
+        # 端点不支持 function calling（或 key 全部不可用）→ 降级为单轮静态分析
+        result = chat(profile, [{"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": user_msg}],
+                      temperature=0.3, db_path=db_path, username=username)
+        content, tool_trace, meta = result["content"], [], result
+    content, suggestions = _extract_suggestions(content, report)
+    if tool_trace:
+        counts: dict[str, int] = {}
+        for t in tool_trace:
+            counts[t["name"]] = counts.get(t["name"], 0) + 1
+        summary = "、".join(f"{k}×{v}" for k, v in counts.items())
+        content += f"\n\n> 🔎 本分析共下钻取证 {len(tool_trace)} 次：{summary}\n"
+    return {**meta, "content": content, "suggestions": suggestions,
+            "diagnostics": findings, "tool_trace": tool_trace}

@@ -290,11 +290,12 @@ def test_analyze_backtest_end_to_end_mock(monkeypatch):
           '{"params": {"mom_short": 999, "pool_n": 8}, '
           '"risk_config": {"atr_multiplier": 3.0}}\n```')
 
-    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None):
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
+                  tools=None):
         assert any("规则引擎" in m["content"] or "findings" in m["content"]
                    for m in messages if m["role"] == "user")
         return {"content": md, "model": "mock", "tokens": 100, "elapsed": 0.5,
-                "profile": "deepseek"}
+                "profile": "deepseek", "tool_calls": []}
 
     monkeypatch.setattr(analyzer, "chat", fake_chat)
     out = analyzer.analyze_backtest(rep, param_importance={"mom_short": 0.9})
@@ -307,3 +308,156 @@ def test_analyze_backtest_end_to_end_mock(monkeypatch):
     assert out["suggestions"]["risk_config"]["atr_multiplier"] == 3.0
     # json 块从正文移除
     assert "```json" not in out["content"]
+
+
+# ---------------- 下钻工具（方案 A） ----------------
+
+def test_query_trades_groups_and_filters():
+    from app.llm import drilldown
+    rep = _report()
+    out = drilldown.query_trades(rep, group_by="code")
+    groups = {g["group"]: g for g in out["groups"]}
+    assert groups["600000"]["pnl"] == -180000.0 and groups["600000"]["n"] == 6
+    # 亏损组排前
+    assert [g["group"] for g in out["groups"]][0] == "600000"
+    assert out["overall"]["n"] == 12
+    assert out["overall"]["win_rate"] == 0.25
+
+    out2 = drilldown.query_trades(rep, group_by="type", code="600000")
+    assert out2["overall"]["pnl"] == -180000.0
+    assert out2["groups"][0]["group"] == "止损"
+
+    out3 = drilldown.query_trades(rep, group_by="month", month="2099-01")
+    assert out3["overall"]["n"] == 0
+
+    assert "error" in drilldown.query_trades(rep, group_by="bogus")
+
+
+def test_get_code_profile_and_errors():
+    from app.llm import drilldown
+    rep = _report()
+    out = drilldown.get_code_profile(rep, "600000")
+    assert out["summary"]["n_trades"] == 6
+    assert out["summary"]["closed_pnl"] == -180000.0
+    assert out["summary"]["types"] == {"止损": 6}
+    assert len(out["trades"]) == 6
+    assert out["周线收盘(回测区间)"] is None  # data_dir=None 静默降级
+    assert "error" in drilldown.get_code_profile(rep, "999999")
+
+
+def test_get_market_context():
+    from app.llm import drilldown
+    ec = [{"date": "2025-01-01", "equity": 100, "drawdown": 0.0, "position_ratio": 0.5},
+          {"date": "2025-01-15", "equity": 90, "drawdown": -0.1, "position_ratio": 0.4},
+          {"date": "2025-02-01", "equity": 95, "drawdown": -0.05, "position_ratio": 0.6},
+          {"date": "2025-02-20", "equity": 110, "drawdown": 0.0, "position_ratio": 0.7}]
+    bench = [{"date": "2025-01-01", "equity": 100}, {"date": "2025-01-15", "equity": 98},
+             {"date": "2025-02-01", "equity": 99}, {"date": "2025-02-20", "equity": 102}]
+    out = drilldown.get_market_context({"equity_curve": ec,
+                                        "benchmark": {"curve": bench}})
+    assert out["period"]["strategy_ret"] == 0.10
+    assert out["period"]["bench_ret"] == 0.02
+    monthly = {m["month"]: m for m in out["monthly"]}
+    assert monthly["2025-01"]["strategy_ret"] == -0.10
+    assert monthly["2025-01"]["bench_ret"] == -0.02
+    assert monthly["2025-01"]["avg_position_ratio"] == 0.45
+    eps = out["回撤谷(最深前5)"]
+    assert len(eps) == 1 and eps[0]["depth"] == -0.1 and eps[0]["trough"] == "2025-01-15"
+    # 区间切片
+    out2 = drilldown.get_market_context({"equity_curve": ec,
+                                         "benchmark": {"curve": bench}},
+                                        start_month="2025-02")
+    assert out2["period"]["start"] == "2025-02-01"
+    assert "error" in drilldown.get_market_context({"equity_curve": []})
+
+
+def test_execute_tool_dispatch():
+    from app.llm import drilldown
+    rep = _report()
+    out = drilldown.execute_tool("query_trades", {"group_by": "code"}, rep)
+    assert out["overall"]["n"] == 12
+    assert "error" in drilldown.execute_tool("nope", {}, rep)
+    assert "error" in drilldown.execute_tool("get_code_profile", {}, rep)
+    assert "error" in drilldown.execute_tool("get_code_profile", {"code": "999999"}, rep)
+
+
+def _tool_call(cid, name, args_json):
+    return {"id": cid, "type": "function",
+            "function": {"name": name, "arguments": args_json}}
+
+
+def test_agentic_loop_drills_then_answers(monkeypatch):
+    import app.llm.analyzer as analyzer
+    rep = _report()
+    final_md = ("## 诊断解读\n查过了。\n```json\n"
+                '{"params": {"pool_n": 8}, "risk_config": {}}\n```')
+    seen_tool_msg = {"hit": False}
+
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
+                  tools=None):
+        has_tool_result = any(m.get("role") == "tool" for m in messages)
+        if tools and not has_tool_result:  # 首轮：请求下钻
+            return {"content": "", "model": "m", "tokens": 1, "elapsed": 0.1,
+                    "profile": "p",
+                    "tool_calls": [_tool_call("t1", "query_trades",
+                                              '{"group_by": "code"}')]}
+        # 收尾轮（拿到工具结果后给出最终回答）：检查工具结果已回喂
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        if tool_msgs:
+            seen_tool_msg["hit"] = '"groups"' in tool_msgs[0]["content"]
+        return {"content": final_md, "tool_calls": [], "model": "m",
+                "tokens": 2, "elapsed": 0.1, "profile": "p"}
+
+    monkeypatch.setattr(analyzer, "chat", fake_chat)
+    out = analyzer.analyze_backtest(rep)
+    assert out["suggestions"]["params"]["pool_n"] == 8
+    assert out["tool_trace"] == [{"name": "query_trades", "args": {"group_by": "code"}}]
+    assert "下钻取证 1 次：query_trades×1" in out["content"]
+    assert seen_tool_msg["hit"]
+
+
+def test_agentic_loop_fallback_when_tools_unsupported(monkeypatch):
+    import app.llm.analyzer as analyzer
+    from app.llm.provider import LLMError
+    rep = _report()
+    md = "## 诊断解读\n不支持工具也能分析。\n```json\n" \
+         '{"params": {"pool_n": 7}, "risk_config": {}}\n```'
+
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
+                  tools=None):
+        if tools:
+            raise LLMError("Key 池全部条目不可用（最后错误: 400 tools not supported）")
+        return {"content": md, "model": "m", "tokens": 1, "elapsed": 0.1,
+                "profile": "p", "tool_calls": []}
+
+    monkeypatch.setattr(analyzer, "chat", fake_chat)
+    out = analyzer.analyze_backtest(rep)
+    assert out["suggestions"]["params"]["pool_n"] == 7
+    assert out["tool_trace"] == []
+
+
+def test_agentic_loop_budget_cap(monkeypatch):
+    import app.llm.analyzer as analyzer
+    rep = _report()
+    final_md = "结论。\n```json\n{\"params\": {}, \"risk_config\": {}}\n```"
+    calls = {"n": 0}
+
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
+                  tools=None):
+        calls["n"] += 1
+        if tools:  # 每轮都要求 3 次下钻（逼出总次数护栏）
+            base = calls["n"] * 10
+            return {"content": "", "model": "m", "tokens": 1, "elapsed": 0.1,
+                    "profile": "p",
+                    "tool_calls": [_tool_call(f"t{base + i}", "query_trades",
+                                              '{"group_by": "month"}')
+                                   for i in range(3)]}
+        return {"content": final_md, "tool_calls": [], "model": "m",
+                "tokens": 2, "elapsed": 0.1, "profile": "p"}
+
+    monkeypatch.setattr(analyzer, "chat", fake_chat)
+    out = analyzer.analyze_backtest(rep)
+    assert len(out["tool_trace"]) == analyzer.MAX_TOOL_CALLS_TOTAL  # 10 次封顶
+    assert "结论。" in out["content"]  # 轮次耗尽后强制无工具收尾生效
+    assert out["suggestions"] is None  # 空建议块净化为 None（符合约定）
+    assert calls["n"] == 5  # 4 轮下钻(3+3+3+1) + 1 次强制收尾

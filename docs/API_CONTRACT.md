@@ -14,13 +14,13 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 | `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                                                                                                                 |
 | `GET /api/live/positions`            | 虚拟持仓                                                                                                                                                                                                                                |
 | `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                                                                                                         |
-| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                                                                                                  |
+| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                             |
 | `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                                                                                                                      |
 | `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                                                                                                                     |
 | `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                                                                                                             |
 | `POST /api/live/intraday`            | **M2 盘中轮询**：完成 bar → SlotStepper 步进 → 风控前置（T+1/槽位/预算）→ 推送+落库；幂等（bar 游标去重）；返回 `{signals, suspended, no_data, fed_bars, equity, cash, pushed}`                                                                                        |
 | `GET /api/live/intraday/status`      | **M2 盘中控制台快照**：各票 qt 现价/状态机状态/喂 bar 游标/心跳（轻量，不拉 K 线）                                                                                                                                                                                |
-| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送 → AI 信号质量点评（`ai_commentary` 开启且 LLM 可用时推飞书，task payload 附 `ai_commentary` 文本）；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                                              |
+| `POST /api/live/postclose`           | **M2 盘后流程（任务化）**：当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送 → AI 信号质量点评（`ai_commentary` 开启且 LLM 可用时推飞书，task payload 附 `ai_commentary` 文本）；返回 `{task_id}`（进度同盘前，前端跟踪）                                                                                |
 | `GET /api/live/slippage`             | **M3 滑点统计**：回填成交 vs 信号参考价（方向折算为滑点成本）；返回 `{rows, summary{n, avg_slip_pct, buy/sell_avg, worst}}`                                                                                                                                     |
 | `GET /api/live/shadow`               | **M3 影子运行统计**：执行率 + 影子账户（全按参考价足额执行的 FIFO 已实现盈亏）vs 实际回填；返回 `{n_signals, n_filled, fill_rate, shadow_pnl, actual_pnl, gap_pnl, days}`                                                                                                 |
 | `GET /api/live/readiness`            | **M4 就绪检查**：飞书/数据新鲜/日线覆盖/行情源探测（mootdx/新浪/qt）/t\_mode=off/影子天数≥5/滑点样本≥10/max\_holdings≤5；返回 `{ready, items[{key,label,ok,detail}]}`                                                                                                  |
@@ -398,12 +398,18 @@ available = 对应环境变量已配置。
 
 - `diagnostics`：规则引擎（backend/app/llm/diagnostics.py）的纯规则诊断 findings，
   LLM 只解读 findings 开方（禁止发明 findings 之外的问题）。
-- `suggestions`：已通过 param_schema 净化——越界值 clamp 到 min/max、未知键/非法枚举丢弃、
+
+- `suggestions`：已通过 param\_schema 净化——越界值 clamp 到 min/max、未知键/非法枚举丢弃、
   与原值相同剔除（幻觉护栏在代码层）。
+
 - `validation`：建议自动验证回测（同区间同 universe 重跑，不建独立任务）的 A/B 对比。
   `comparison.verdict ∈ 改善/持平/恶化`；`commentary` 为验证结果回喂 LLM 的二轮点评
   （best-effort，可为 null）；验证回测失败时 `validation = {"error": "...", "verdict": null}`
   且 analysis 仍为 success。
+- `tool_trace`：AI 下钻工具（query_trades / get_code_profile / get_market_context，
+  只读取证）的调用记录 `[{name, args}]`；预算护栏（轮次≤6 / 总次数≤10）耗尽强制收尾；
+  端点不支持 function calling 时自动降级单轮静态分析（tool_trace 为空数组），
+  分析正文末尾附「🔎 本分析共下钻取证 N 次」尾注。
 
 ### GET /api/ai/suggestion-stats
 
@@ -433,22 +439,24 @@ AI 建议验证胜率统计（全部分析的 validation.verdict 计数）：
 }
 ```
 
-`index_history`（指数成分月度历史快照，`index_constituents_history.parquet`）：universe_auto 候选域按段首基准日（T-1）取 ≤基准日 的最近一期快照（无后视镜，消除静态成分名单的前视/幸存者偏差）；未回填时自动降级当前快照。`index_daily` 同上独立存储。
+`index_history`（指数成分月度历史快照，`index_constituents_history.parquet`）：universe\_auto 候选域按段首基准日（T-1）取 ≤基准日 的最近一期快照（无后视镜，消除静态成分名单的前视/幸存者偏差）；未回填时自动降级当前快照。`index_daily` 同上独立存储。
 
 ### POST /api/data/update
 
 请求：`{"scope": "daily"}`（daily | minute5 | all | industry | stock\_basic | calendar | index\_daily，默认 daily；index\_daily=基准指数日线 000905/000300，独立存储）
 响应：`{"task_id": "data_xxx", "status": "pending"}`（异步任务，进度走同一 status/WS 通道）
 
-### POST /api/tasks/{task_id}/cancel
+### POST /api/tasks/{task\_id}/cancel
 
 协作式取消任务（对全部任务类型生效：回测/寻优/AI/数据/实盘编排）。
 
 响应：`{"task_id": "...", "status": "cancelling", "note": "已请求停止，任务将在当前进度检查点退出"}`
-- 任务状态 pending/running -> `cancelling`；子进程在每个进度检查点（update_progress）
-  感知标记后抛出取消异常，由 run_task 统一落 `cancelled` 终态（不在写库中途强杀，
+
+- 任务状态 pending/running -> `cancelling`；子进程在每个进度检查点（update\_progress）
+  感知标记后抛出取消异常，由 run\_task 统一落 `cancelled` 终态（不在写库中途强杀，
   数据一致性由原子写保证）。取消延迟 = 到下一检查点的距离（数据更新为逐码粒度秒级；
   长计算段之间如回测特征构建期、寻优单 trial 内部会相应延长）
+
 - 404：任务不存在；400：任务已终态（success/failed/cancelled）
 
 ### POST /api/data/demo
