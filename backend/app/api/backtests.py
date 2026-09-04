@@ -147,16 +147,26 @@ def normalize_config(cfg: dict) -> dict:
             risk[k] = v
     cfg["risk_config"] = risk
 
-    # ---- 动态选股顶层字段补全（与 BacktestCreateRequest 默认一致）----
-    # 历史模板/异常前端可能缺 auto_rank_key 等键（2026-09 实测：模板落库缺失、
-    # 载入回落 'score'，用户设的排序键静默丢失）。这里统一兜底，保证
-    # 「模板/回测/寻优/实验」读写恒全量；auto_with_accel=None 交给引擎按策略默认。
-    auto_defaults = {
+    # ---- 回测顶层标量字段登记表（TOP_LEVEL_DEFAULTS）----
+    # ⚠️ 写入规则：新增回测顶层字段时，必须同步四处，否则模板保存/载入会静默丢值——
+    #   ① 本登记表补默认；② 前端 BacktestList.tsx buildConfigFromValues；
+    #   ③ 前端 BacktestList.tsx applyConfigToForm（含 numericKeys）；④ 前端 initialValues。
+    # 历史事故：auto_rank_key / nav_take_profit_pct 未登记，模板落库缺失、载入回落默认。
+    top_defaults = {
+        # 动态选股
         "auto_idle_days": 5, "auto_top_x": 30, "auto_above_ma": 20,
         "auto_with_accel": None, "auto_min_rps": None,
         "auto_index": [], "auto_boards": [], "auto_rank_key": "score",
+        # 总资金止盈提取
+        "nav_take_profit_pct": 0.0, "nav_take_profit_withdraw_pct": 0.0,
+        # 月度出金
+        "monthly_withdraw_base": 0.0, "t_profit_withdraw_pct": 10.0, "min_t_amount": 20000.0,
+        # 池级趋势开关
+        "pool_gate": False, "pool_gate_enter_th": 0.15,
+        # 基准 / 剔除ST
+        "benchmark": "000905", "exclude_st": True,
     }
-    for k, v in auto_defaults.items():
+    for k, v in top_defaults.items():
         if cfg.get(k) is None:
             cfg[k] = v
     return cfg

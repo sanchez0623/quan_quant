@@ -24,6 +24,8 @@
 
 - max\_holdings（最大持仓只数）有**两处**需保持一致：策略参数“核心开关”组（策略层槽位管理）与风控配置（引擎最终屏障）；实际约束取更严格者，两处填不同值无意义。
 
+- **回测顶层字段写入规则（模板保存契约）**：新增回测表单可调字段（含动态选股 auto\_\*、总资金止盈 nav\_\*、月度出金等顶层字段）时，**必须同步 4 处**，否则模板保存/载入会静默丢值（历史事故：auto\_rank\_key、nav\_take\_profit\_pct 未登记导致模板落库缺失）：① 后端 `api/backtests.py` `normalize_config` 的 `top_defaults` 登记表补默认；② 前端 `BacktestList.tsx` `buildConfigFromValues`；③ 前端 `BacktestList.tsx` `applyConfigToForm`（数值键加进 `numericKeys`）；④ 前端 `BacktestList.tsx` `initialValues`。
+
 - 池级趋势开关（pool\_gate）与 universe\_auto 正交互补：gate 管“能不能买”，重选管“买谁”；换池时 gate 随新池重置（新池=门槛筛选产物，无需确认期）。
 
 - SQLite executescript 中 SQL 注释只能用 `--`，不能用 `#`。
