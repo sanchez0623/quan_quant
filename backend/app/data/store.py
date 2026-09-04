@@ -98,6 +98,18 @@ def read_daily(codes: Optional[list[str]] = None,
     return df if df.height else (df.clear() if codes else df)
 
 
+def daily_latest_date(data_dir: Optional[str] = None) -> Optional[str]:
+    """库内日线最新日期（只读 date 列，轻量）；库空/不存在返回 None。
+    供盘前编排计算增量窗口起点（避免全历史拉取 OOM）。"""
+    p = data_root(data_dir) / "daily.parquet"
+    if not p.exists():
+        return None
+    df = pl.read_parquet(p, columns=["date"])
+    if df.height == 0:
+        return None
+    return str(df["date"].max())
+
+
 # ---------------- index_daily（基准指数日线，BENCHMARK） ----------------
 
 def write_index_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:

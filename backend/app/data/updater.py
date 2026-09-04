@@ -37,6 +37,8 @@ def _validate_daily(df: pl.DataFrame, calendar_dates: list[str]) -> None:
     bad = df.filter((pl.col("close") <= 0) | (pl.col("high") < pl.col("low")))
     if bad.height:
         raise UpdateError(f"日线数据存在异常价格（{bad.height} 行）")
+    if not calendar_dates:
+        return  # 日历未就绪（测试/独立更新）时跳过日历比对
     # 每只股票的交易日应基本落在日历内（放宽至 15%，兼容节假日/停牌）
     out_of_cal = df.join(pl.DataFrame({"date": calendar_dates}), on="date", how="anti")
     if df.height and out_of_cal.height / df.height > 0.15:
@@ -492,6 +494,57 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
         adj_frames = []
         adj_ok_codes = 0
         total = len(update_codes)
+        BATCH = 200    # 分批落库：全市场全历史拉取时 frames 常驻内存会 OOM（子进程被杀）
+        daily_rows = 0
+        adj_rows = 0
+        adj_codes = 0
+        got_any = False
+        cal = store.read_calendar(data_dir)
+        cal_dates = cal["date"].to_list() if cal is not None else []
+
+        def _flush_daily() -> None:
+            """批内合并写回（含复权因子展开）。
+            不同源 volume/amount 类型可能不一致（akshare 可能为字符串且含空串），
+            先统一 schema（非严格转换：空串/非法值转 null）再与库内 concat 去重。
+            复权 grid 用批内日期（库内旧因子经 unique 合并保留）。"""
+            nonlocal frames, adj_frames, daily_rows, adj_rows, adj_codes, got_any
+            if not frames:
+                return
+            for col, dt in (("volume", pl.Int64), ("amount", pl.Float64)):
+                for j, f in enumerate(frames):
+                    if col in f.columns:
+                        frames[j] = f.with_columns(pl.col(col).cast(dt, strict=False))
+            batch = pl.concat(frames).sort(["code", "date"])
+            _validate_daily(batch, cal_dates)
+            batch_grid = {r["code"]: list(r["dates"]) for r in
+                          batch.group_by("code")
+                          .agg(pl.col("date").sort().alias("dates")).to_dicts()}
+            existing = store.read_daily(None, data_dir)
+            if existing is not None:
+                for col in ("volume", "amount"):
+                    if col in batch.columns and col in existing.columns:
+                        batch = batch.with_columns(pl.col(col).cast(existing[col].dtype))
+                batch = pl.concat([existing, batch]).unique(subset=["code", "date"],
+                                                            keep="last").sort(["code", "date"])
+            store.write_daily(batch, data_dir)
+            daily_rows = batch.height
+            got_any = True
+            # ---- 复权因子：事件级 -> 展开到每日 -> 增量合并写 parquet ----
+            if adj_frames:
+                adj_events = pl.concat(adj_frames, how="diagonal_relaxed").select(
+                    ["code", "date", pl.col("adj_factor").cast(pl.Float64)])
+                adj_daily = _expand_adj_to_daily(adj_events, batch_grid)
+                existing_adj = store.read_adj_factor(None, data_dir)
+                if existing_adj is not None and existing_adj.height:
+                    adj_daily = (pl.concat([existing_adj, adj_daily])
+                                 .unique(subset=["code", "date"], keep="last")
+                                 .sort(["code", "date"]))
+                store.write_adj_factor(adj_daily, data_dir)
+                adj_rows = adj_daily.height
+                adj_codes = adj_daily["code"].n_unique()
+                adj_frames = []
+            frames = []
+
         for i, code in enumerate(update_codes):
             report(5 + 70 * i / total, f"正在拉取日线: {code} ({i + 1}/{total})")
             df = None
@@ -515,53 +568,22 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
             done_msg = (f"日线完成: {code} ({i + 1}/{total})" if df is not None
                         else f"日线拉取失败(跳过): {code} ({i + 1}/{total})")
             report(5 + 70 * (i + 1) / total, done_msg)
-        if not frames:
+            if len(frames) >= BATCH:
+                report(5 + 70 * (i + 1) / total,
+                       f"分批落库 {i + 1}/{total}（库内 {daily_rows} 行）...")
+                _flush_daily()
+        _flush_daily()
+        if not got_any:
             raise UpdateError(
                 "所有股票日线拉取失败（数据源已安装但拉数失败，请检查网络与数据源可用性）。"
                 "可调用 POST /api/data/demo 生成演示数据用于联调与演示")
-        report(75, f"合并与校验日线数据（{len(frames)} 只有效）...")
-        # 不同源 volume/amount 类型可能不一致（akshare 可能为字符串且含空串，如停牌日成交额 ""），
-        # 先统一为与本地 daily.parquet 一致的 schema（volume Int64 / amount Float64）再合并；
-        # 非严格转换：空串/非法值转 null，避免 strict_cast 抛错中断整个更新
-        for col, dt in (("volume", pl.Int64), ("amount", pl.Float64)):
-            for i, f in enumerate(frames):
-                if col in f.columns:
-                    frames[i] = f.with_columns(pl.col(col).cast(dt, strict=False))
-        merged = pl.concat(frames).sort(["code", "date"])
-        cal = store.read_calendar(data_dir)
-        _validate_daily(merged, cal["date"].to_list() if cal is not None else sorted(merged["date"].unique().to_list()))
-        existing = store.read_daily(None, data_dir)
-        if existing is not None:
-            # 统一 schema：新数据 volume/amount 转为既有数据的类型（Int64/Float64），避免 concat 报错
-            for col in ("volume", "amount"):
-                if col in merged.columns and col in existing.columns:
-                    merged = merged.with_columns(pl.col(col).cast(existing[col].dtype))
-            merged = pl.concat([existing, merged]).unique(subset=["code", "date"],
-                                                          keep="last").sort(["code", "date"])
-        store.write_daily(merged, data_dir)
-        stats["daily_rows"] = merged.height
-
-        # ---- 复权因子：事件级 -> 展开到每日 -> 增量合并写 parquet ----
-        if adj_frames:
-            report(76, f"展开并合并复权因子（{len(adj_frames)} 只）...")
-            adj_events = pl.concat(adj_frames, how="diagonal_relaxed").select(
-                ["code", "date", pl.col("adj_factor").cast(pl.Float64)])
-            # 以本次实际日线日期为网格展开（保证每个有行情的交易日都有因子）
-            grid = (merged.group_by("code")
-                    .agg(pl.col("date").sort().alias("dates"))
-                    .to_dicts())
-            daily_dates = {r["code"]: list(r["dates"]) for r in grid}
-            adj_daily = _expand_adj_to_daily(adj_events, daily_dates)
-            existing_adj = store.read_adj_factor(None, data_dir)
-            if existing_adj is not None and existing_adj.height:
-                adj_daily = (pl.concat([existing_adj, adj_daily])
-                             .unique(subset=["code", "date"], keep="last")
-                             .sort(["code", "date"]))
-            store.write_adj_factor(adj_daily, data_dir)
-            stats["adj_factor_rows"] = adj_daily.height
-            stats["adj_factor_codes"] = adj_daily["code"].n_unique()
+        if adj_ok_codes == 0:
+            report(76, "警告：未获取到任何复权因子，后复权将退化为恒等（除权日会有假跳空）")
         else:
-            report(74, "警告：未获取到任何复权因子，后复权将退化为恒等（除权日会有假跳空）")
+            report(76, f"日线更新完成（{daily_rows} 行，复权因子 {adj_rows} 行 / {adj_codes} 只）")
+        stats["daily_rows"] = daily_rows
+        stats["adj_factor_rows"] = adj_rows
+        stats["adj_factor_codes"] = adj_codes
         stats["adj_ok_codes"] = adj_ok_codes
 
     if "minute5" in scopes:

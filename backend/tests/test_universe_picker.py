@@ -371,3 +371,57 @@ def test_search_bycodes_pick_exclude_st_and_delisted(pick_env):
     assert "600999" not in res["codes"], "退市股无条件排除"
     res = _pick({"filters": {"boards": ["bse"], "exclude_st": False}})
     assert res["codes"] == ["830799"], "ST 开关关时 ST 可入选、退市不可"
+
+
+# ---------------- 日线更新分批落库（OOM 治理） ----------------
+
+class _BatchFakeSrc:
+    """假日线源：每股返回 3 个交易日的日线 + 事件级复权因子"""
+
+    name = "baostock"
+    role = "daily主源"
+
+    def available(self):
+        return True
+
+    def get_daily(self, code, start, end):
+        return pl.DataFrame({
+            "code": [code] * 3,
+            "date": ["2026-01-05", "2026-01-06", "2026-01-07"],
+            "open": [10.0] * 3, "high": [10.5] * 3, "low": [9.8] * 3,
+            "close": [10.2] * 3, "volume": [1000] * 3, "amount": [10200.0] * 3,
+        })
+
+    def get_adj_factor(self, code):
+        return pl.DataFrame({
+            "code": [code] * 3,
+            "date": ["2026-01-05", "2026-01-06", "2026-01-07"],
+            "adj_factor": [1.0, 1.0, 1.02],
+        })
+
+
+def test_update_daily_batched_equivalence(tmp_path, monkeypatch):
+    """分批落库（>200 只触发多批 flush）与单批等价：全库行数完整、
+    无重复、无票缩水（DATA_GUARD 不误伤）"""
+    n = 210  # BATCH=200 -> 触发 1 次中途 flush + 1 次收尾
+    codes = [f"{600000 + i}" for i in range(n)]
+    monkeypatch.setattr(store.config, "DATA_DIR", tmp_path)
+    store.write_stock_basic(pl.DataFrame({
+        "code": codes, "name": [f"股{c}" for c in codes],
+        "st": [False] * n, "list_date": [None] * n,
+    }), str(tmp_path))
+    monkeypatch.setattr(updater.sources, "check_health",
+                        lambda timeout=10, on_each=None: {"baostock": True})
+    monkeypatch.setattr(updater.sources, "SOURCES", [_BatchFakeSrc()])
+
+    stats = updater.update(scope="daily", data_dir=str(tmp_path),
+                           start_date="2026-01-05", end_date="2026-01-07")
+
+    df = store.read_daily(None, str(tmp_path))
+    assert df.height == n * 3, "全部批次数据完整落库"
+    assert df["code"].n_unique() == n
+    assert df.height == df.unique(subset=["code", "date"]).height, "无重复行"
+    assert stats["daily_rows"] == n * 3
+    assert stats["adj_factor_codes"] == n
+    adj = store.read_adj_factor(None, str(tmp_path))
+    assert adj.height == n * 3, "复权因子逐批展开合并完整"

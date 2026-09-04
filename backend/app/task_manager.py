@@ -118,10 +118,18 @@ def live_premarket_task(task_id: str, db_path: str, data_dir: str,
     → 盘前信号流程（特征重算/重选/gate/退出检查/推送）→ AI 盘前简报（可选）。"""
     from .live import premarket
     if update_data:
+        from datetime import datetime as _dt, timedelta as _td
+        from .data import store as _store
+        latest = _store.daily_latest_date(data_dir=data_dir)
+        if latest is None:
+            raise RuntimeError(
+                "日线库为空：请先在数据管理页执行一次全量更新（建议填写日期区间分批拉取），"
+                "盘前编排不做首次全历史建库（全市场全历史拉取会内存溢出）")
+        start = (_dt.strptime(latest, "%Y-%m-%d") - _td(days=5)).strftime("%Y-%m-%d")
         db.update_task(task_id, db_path=db_path, status="running",
-                       message="日线增量更新...")
+                       message=f"日线增量更新（{start} 起，库内最新 {latest}）...")
         from .data import updater
-        updater.update(scope="daily", data_dir=data_dir,
+        updater.update(scope="daily", data_dir=data_dir, start_date=start,
                        progress_cb=lambda p, m: db.update_progress(
                            task_id, 5 + p * 0.8, m, db_path=db_path))
         from .engine import datafeed
