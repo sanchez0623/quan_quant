@@ -41,6 +41,9 @@ interface StockPickerProps {
   /** 动量趋势预筛的基准日来源（=回测开始日，取其前一交易日收盘数据）；
    * 为空时动量模式不可用——防止用未来数据选股（无后视镜） */
   startDate?: string
+  /** 开放的模式子集（默认全部三模式）。例如数据更新场景
+   * 传 ['manual', 'condition'] 隐藏动量趋势（无基准日） */
+  modes?: PickMode[]
 }
 
 /** 预览/已应用股票代码+名称 Tag 流（最多显示 N 个，可展开全部） */
@@ -71,10 +74,12 @@ export default function StockPicker({
   meta,
   onMetaChange,
   disabled,
-  startDate
+  startDate,
+  modes
 }: StockPickerProps) {
   const codes = value ?? []
-  const [mode, setMode] = useState<PickMode>('manual')
+  const enabledModes = modes ?? ['manual', 'condition', 'momentum']
+  const [mode, setMode] = useState<PickMode>(enabledModes[0])
   // ---- 手动模式：远程搜索 + 批量粘贴 ----
   const [stocks, setStocks] = useState<StockItem[]>([])
   const [stockSearching, setStockSearching] = useState(false)
@@ -322,7 +327,7 @@ export default function StockPicker({
           { value: 'manual', label: '手动选择' },
           { value: 'condition', label: '条件选股' },
           { value: 'momentum', label: '动量趋势' }
-        ]}
+        ].filter((o) => enabledModes.includes(o.value as PickMode))}
       />
 
       {mode === 'manual' ? (

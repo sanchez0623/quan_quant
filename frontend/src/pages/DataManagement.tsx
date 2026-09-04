@@ -40,8 +40,7 @@ export default function DataManagement() {
   const [scope, setScope] = useState<'daily' | 'minute5' | 'index_daily' | 'all'>('daily')
   const [task, setTask] = useState<{ id: string; label: string } | null>(null)
   const [demoDays, setDemoDays] = useState<number>(500)
-  const [stocksInput, setStocksInput] = useState('')
-  // 条件选股范围（选股器同款组件：指数成分/申万行业/板块），与手动输入合并去重
+  // 更新范围（StockPicker 精简版：手动搜索 + 条件选股，无动量）；空 = 全市场
   const [pickCodes, setPickCodes] = useState<string[]>([])
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [bs, setBs] = useState<BsMonitor | null>(null)
@@ -165,16 +164,11 @@ export default function DataManagement() {
   }, [task])
 
   const onUpdate = async () => {
-    const stocks = stocksInput
-      .split(/[,，\s;；]+/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-    // 手动指定 + 条件选股（选股器同款）合并去重；均为空 = 全市场
-    const all = Array.from(new Set([...stocks, ...pickCodes]))
+    // 更新范围 = StockPicker（手动搜索/条件选股/批量粘贴）；空 = 全市场
     try {
       const res = await updateData(
         scope,
-        all.length > 0 ? all : undefined,
+        pickCodes.length > 0 ? pickCodes : undefined,
         dateRange
           ? {
               startDate: dateRange[0]?.format('YYYY-MM-DD') || undefined,
@@ -184,8 +178,8 @@ export default function DataManagement() {
       )
       setTask({ id: res.task_id, label: '数据更新' })
       message.info(
-        all.length > 0
-          ? `更新任务已提交（限定 ${all.length} 只，约为全量的 ${Math.max(1, Math.round((all.length / 5400) * 100))}%，耗时按比例缩短）`
+        pickCodes.length > 0
+          ? `更新任务已提交（限定 ${pickCodes.length} 只，约为全量的 ${Math.max(1, Math.round((pickCodes.length / 5400) * 100))}%，耗时按比例缩短）`
           : '更新任务已提交（全量）'
       )
     } catch (err) {
@@ -544,28 +538,24 @@ export default function DataManagement() {
                     开始更新
                   </Button>
                 </Space>
-                <Space.Compact style={{ width: 480 }}>
-                  <Input
-                    placeholder="指定股票代码（可选，逗号/空格分隔），如：600021, 600000；留空=更新全部股票"
-                    value={stocksInput}
-                    onChange={(e) => setStocksInput(e.target.value)}
-                    allowClear
-                  />
-                </Space.Compact>
                 <Collapse
                   size="small"
                   items={[
                     {
                       key: 'picker',
-                      label: `按条件选股限定范围（选股器同款）${pickCodes.length > 0 ? `——已选 ${pickCodes.length} 只` : ''}`,
-                      children: <StockPicker value={pickCodes} onChange={setPickCodes} />
+                      label: `更新范围（可选，留空=全市场）${pickCodes.length > 0 ? `——已选 ${pickCodes.length} 只` : ''}`,
+                      children: (
+                        <StockPicker value={pickCodes} onChange={setPickCodes}
+                                     modes={['manual', 'condition']} />
+                      )
                     }
                   ]}
                 />
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   日期留空=拉取全历史；指定日期则只拉该区间（5分钟线受数据源约 2 年深度限制）。
-                  更新范围 = 手动代码 ∪ 条件选股（去重）；两者均留空 = 全市场（约 5500 只，日线+5分钟约 1.6 万次请求、1~2 小时）。
+                  更新范围留空 = 全市场（约 5500 只，日线+5分钟约 1.6 万次请求、1~2 小时）。
                   例：只更新中证500 成分（500 只）约需 1500 次请求、20 分钟内完成。
+                  手动模式支持代码/名称搜索与批量粘贴，替代原来的代码输入框。
                 </Typography.Text>
               </Space>
             </div>
