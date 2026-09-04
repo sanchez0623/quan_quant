@@ -389,15 +389,33 @@ def _empty_pick() -> pl.DataFrame:
     return pl.DataFrame(schema=_PICK_SCHEMA)
 
 
+def _adx_column(df: pl.DataFrame, n: int = 14) -> pl.DataFrame:
+    """平均趋向指数 ADX（Wilder 平滑，ewm alpha=1/n 近似）。
+    返回 df 追加 adx 列。需要 high/low/close 列。"""
+    hi = pl.col("high"); lo = pl.col("low"); cl = pl.col("close")
+    up = hi - hi.shift(1)
+    dn = lo.shift(1) - lo
+    plus_dm = pl.when((up > dn) & (up > 0)).then(up).otherwise(0.0)
+    minus_dm = pl.when((dn > up) & (dn > 0)).then(dn).otherwise(0.0)
+    tr = pl.max_horizontal([hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()])
+    atr = tr.ewm_mean(alpha=1.0 / n, adjust=False, ignore_nulls=True)
+    pdi = 100.0 * plus_dm.ewm_mean(alpha=1.0 / n, adjust=False, ignore_nulls=True) / atr
+    mdi = 100.0 * minus_dm.ewm_mean(alpha=1.0 / n, adjust=False, ignore_nulls=True) / atr
+    dx = 100.0 * (pdi - mdi).abs() / (pdi + mdi)
+    return df.with_columns(dx.ewm_mean(alpha=1.0 / n, adjust=False, ignore_nulls=True).alias("adx"))
+
+
 def compute_market_regime(data_dir: Optional[str] = None, index_key: str = "000905",
-                          ma_short: int = 20, ma_long: int = 60,
-                          slope_n: int = 5) -> Optional[pl.DataFrame]:
+                          ma_short: int = 10, ma_long: int = 30,
+                          slope_n: int = 3, adx_period: int = 14,
+                          adx_th: float = 20.0) -> Optional[pl.DataFrame]:
     """市场状态三态（日级，T-1 对齐）：trend / range / crash。
 
     用指数日线（默认中证500 000905，贴近动量池中小盘）判定市场环境：
-    - trend：MA20 > MA60 且 MA20 近 slope_n 日上行（趋势确立，让利润奔跑）
-    - crash：close < MA60 且 MA60 近 slope_n 日下行（防守市，降频避险）
+    - trend：ADX ≥ adx_th（有趋势）且 MA10 > MA30 且 MA10 近 slope_n 日上行
+    - crash：close < MA30 且 MA30 近 slope_n 日下行（下跌趋势确立）
     - range：其余（震荡市，做T主场）
+    短均线(10/30) + ADX 相比纯均线交叉响应更快，减少暴涨初期的滞后误判。
     返回列 day, market_regime（当日 bar 用上一完整交易日 regime，防未来函数）；
     指数缺失返回 None，调用方降级为全程 range。"""
     df = store.read_index_daily([index_key], data_dir)
@@ -406,14 +424,18 @@ def compute_market_regime(data_dir: Optional[str] = None, index_key: str = "0009
     df = df.sort("date")
     df = add_ma(df, ma_short, "close", f"ma{ma_short}")
     df = add_ma(df, ma_long, "close", f"ma{ma_long}")
+    df = _adx_column(df, int(adx_period))
     ms, ml = f"ma{ma_short}", f"ma{ma_long}"
     df = df.with_columns([
         (pl.col(ms) - pl.col(ms).shift(slope_n)).alias("ms_slope"),
         (pl.col(ml) - pl.col(ml).shift(slope_n)).alias("ml_slope"),
     ])
     regime = (
-        pl.when((pl.col(ms) > pl.col(ml)) & (pl.col("ms_slope") > 0)).then(pl.lit("trend"))
-        .when((pl.col("close") < pl.col(ml)) & (pl.col("ml_slope") < 0)).then(pl.lit("crash"))
+        pl.when((pl.col("adx") >= adx_th)
+                & (pl.col(ms) > pl.col(ml)) & (pl.col("ms_slope") > 0))
+        .then(pl.lit("trend"))
+        .when((pl.col("close") < pl.col(ml)) & (pl.col("ml_slope") < 0))
+        .then(pl.lit("crash"))
         .otherwise(pl.lit("range"))
     ).alias("market_regime")
     df = df.with_columns([

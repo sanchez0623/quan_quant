@@ -237,21 +237,40 @@ class MomentumSlotStrategy(Strategy):
         {"key": "t_scale_range", "frozen": True, "label": "震荡做T频率系数", "type": "float", "default": 1.3,
          "min": 0.5, "max": 2.0, "step": 0.05, "unit": "×", "group": "市场状态",
          "description": "震荡市做T次数上限 × 系数（波动主场，提升做T）"},
+        {"key": "t_scale_trend", "frozen": True, "label": "趋势做T频率系数", "type": "float", "default": 0.7,
+         "min": 0.3, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
+         "description": "趋势市做T次数上限 × 系数（单边趋势做T易卖飞后不回落，降频）"},
         {"key": "core_scale_crash", "frozen": True, "label": "防守核心仓系数", "type": "float", "default": 0.4,
          "min": 0.1, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
          "description": "防守市核心仓预算 × 系数（大幅收缩避险）"},
         {"key": "t_scale_crash", "frozen": True, "label": "防守做T频率系数", "type": "float", "default": 0.5,
          "min": 0.1, "max": 1.0, "step": 0.05, "unit": "×", "group": "市场状态",
          "description": "防守市做T次数上限 × 系数（降频避险）"},
-        {"key": "regime_ma_short", "frozen": True, "label": "短均线", "type": "int", "default": 20,
+        {"key": "regime_ma_short", "frozen": True, "label": "短均线", "type": "int", "default": 10,
          "min": 5, "max": 60, "group": "市场状态", "advanced": True,
-         "description": "趋势判定短均线周期"},
-        {"key": "regime_ma_long", "frozen": True, "label": "长均线", "type": "int", "default": 60,
-         "min": 20, "max": 200, "group": "市场状态", "advanced": True,
+         "description": "趋势判定短均线周期（短均线提高响应，减少暴涨初期滞后误判）"},
+        {"key": "regime_ma_long", "frozen": True, "label": "长均线", "type": "int", "default": 30,
+         "min": 10, "max": 200, "group": "市场状态", "advanced": True,
          "description": "趋势判定长均线周期"},
-        {"key": "regime_slope_n", "frozen": True, "label": "斜率窗口", "type": "int", "default": 5,
+        {"key": "regime_slope_n", "frozen": True, "label": "斜率窗口", "type": "int", "default": 3,
          "min": 2, "max": 20, "group": "市场状态", "advanced": True,
          "description": "均线近 N 日斜率方向判定"},
+        {"key": "regime_adx_period", "frozen": True, "label": "ADX周期", "type": "int", "default": 14,
+         "min": 5, "max": 60, "group": "市场状态", "advanced": True,
+         "description": "趋势强度 ADX 的 Wilder 平滑周期"},
+        {"key": "regime_adx_th", "frozen": True, "label": "ADX阈值", "type": "int", "default": 20,
+         "min": 10, "max": 40, "group": "市场状态", "advanced": True,
+         "description": "ADX ≥ 阈值判为有趋势（经典 20~25 分界），低于则视为震荡"},
+        # ---- 方案C：排名驱动槽位轮动（老化淘汰+补位，相对排名视角） ----
+        {"key": "slot_rotation_on", "frozen": True, "label": "排名轮动开关", "type": "categorical", "group": "衰退退出",
+         "choices": ["off", "on"], "default": "off",
+         "description": "on=持仓N个交易日未创新高且跌出候选池->强制淘汰（相对排名驱动轮动，退出资金补位更强候选）；off=沿用现状"},
+        {"key": "slot_stale_days", "frozen": True, "label": "槽位老化天数", "type": "int", "default": 5,
+         "min": 2, "max": 20, "unit": "交易日", "group": "衰退退出",
+         "description": "持仓连续N个交易日未创开仓以来新高视为老化"},
+        {"key": "slot_high_window", "frozen": True, "label": "新高窗口", "type": "int", "default": 20,
+         "min": 5, "max": 60, "unit": "交易日", "group": "衰退退出", "advanced": True,
+         "description": "相对排名的参考新高窗口（判定候选池强弱）"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
@@ -508,8 +527,13 @@ class SlotStepper:
         self.regime_map = regime_map or {}
         self.core_scale_range = float(p.get("core_scale_range") or 1.0)
         self.t_scale_range = float(p.get("t_scale_range") or 1.0)
+        self.t_scale_trend = float(p.get("t_scale_trend") or 1.0)
         self.core_scale_crash = float(p.get("core_scale_crash") or 1.0)
         self.t_scale_crash = float(p.get("t_scale_crash") or 1.0)
+        # 方案C：排名驱动槽位轮动（老化淘汰+补位，默认关）
+        self.slot_rotation_on = str(p.get("slot_rotation_on") or "off") == "on"
+        self.slot_stale_days = int(p.get("slot_stale_days") or 5)
+        self.slot_high_window = int(p.get("slot_high_window") or 20)
         self.fwd_t = str(p.get("fwd_t") or "off")
         self.fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
         self.trend_clock = str(p.get("trend_clock") or "intraday")
@@ -543,6 +567,8 @@ class SlotStepper:
         self.mom_state = "idle"
         self.fade_streak = 0
         self.fade_today = False
+        # 方案C：最近一次创开仓以来新高的 day_idx（老化判定：N 日未新高+跌出候选）
+        self.last_new_high_idx = -1
 
     # ---------------- 方案A：市场状态（trend/range/crash）缩放 ----------------
 
@@ -557,7 +583,12 @@ class SlotStepper:
         if not self.market_regime_on:
             return self.max_t
         r = self._regime(date)
-        scale = self.t_scale_crash if r == "crash" else (self.t_scale_range if r == "range" else 1.0)
+        if r == "crash":
+            scale = self.t_scale_crash
+        elif r == "range":
+            scale = self.t_scale_range
+        else:
+            scale = self.t_scale_trend
         return max(1, int(round(self.max_t * scale)))
 
     def _core_scale(self, date: str) -> float:
@@ -586,6 +617,7 @@ class SlotStepper:
                 "mom_state": self.mom_state,
                 "fade_streak": self.fade_streak,
                 "fade_today": int(self.fade_today),
+                "last_new_high_idx": self.last_new_high_idx,
                 "high_since_open": self.high_since_open,
                 "ref": self.ref, "t_count": self.t_count,
                 "score_peak": self.score_peak, "cur_day": self.cur_day}
@@ -608,6 +640,7 @@ class SlotStepper:
         self.mom_state = str(st.get("mom_state") or "idle")
         self.fade_streak = int(st.get("fade_streak") or 0)
         self.fade_today = bool(st.get("fade_today"))
+        self.last_new_high_idx = int(st.get("last_new_high_idx") or -1)
         self.high_since_open = st.get("high_since_open")
         self.ref = st.get("ref")
         self.t_count = int(st.get("t_count") or 0)
@@ -644,6 +677,7 @@ class SlotStepper:
         prev_high = self.high_since_open
         if self.opened and self.high_since_open is not None and close > self.high_since_open:
             self.high_since_open = close
+            self.last_new_high_idx = day_idx  # 方案C：记录最近创新高时间（老化判定）
 
         macd_ok = dif is not None and dea is not None and dif > dea
         above_fast = ma_fast is not None and close > ma_fast
@@ -672,16 +706,17 @@ class SlotStepper:
 
         # 方案D：动量状态机（momentum_fsm_on 时用 减速/衰竭 替代「3信号凑数」判定退出）
         if self.momentum_fsm_on:
-            fsm_decel = score_decay  # 减速：score 从峰值回落超 decay_pct（仅状态标记）
-            # 完整新设计（V2）：fade 仅在日线收盘（EOD）用收盘价确认。
-            # V1 实测证伪：盘中 5 分钟跌破MA20/score<0 太灵敏，插针即触发过度退出；
-            # 改为日线收盘确认后，仅当当日收盘真正转弱才触发退出，5 分钟插针被过滤。
+            fsm_decel = score_decay  # 减速：score 从峰值回落超 decay_pct
+            # fade 仅日线收盘（EOD）用收盘价确认：盘中 5 分钟插针跌破MA20/score<0
+            # 不触发退出（V1 证伪：盘中过灵敏）；仅当日收盘真正转弱才算衰竭。
             fsm_fade = is_eod and ((score is not None and score < 0)
                                    or (ma_fast is not None and close < ma_fast))
             self.fade_today = fsm_fade
             self.mom_state = "fade" if fsm_fade else ("decel" if fsm_decel else "cruise")
-            # V1 证伪：decel 不单独触发退出（动量正常回落几乎总伴随衰竭，去掉不影响）
-            exit_trigger = fsm_fade
+            # 状态机完整语义：decel(减速)->触发首减（只减仓降险，给反弹窗口）；
+            # fade(衰竭,EOD确认)->触发二清离场（严格，连续 exit_fade_days 日确认）。
+            # 这样 decel 恢复价值、二清不因盘中插针过频，规避 V1 全链过灵敏。
+            exit_trigger = fsm_decel or fsm_fade
         else:
             self.fade_today = False
             self.mom_state = "idle"
@@ -783,6 +818,19 @@ class SlotStepper:
             self.exit_stage = 0
             return None
 
+        # ---- 1.5) 方案C：排名驱动槽位轮动（老化淘汰+补位） ----
+        # 持仓 N 个交易日未创开仓以来新高 且 跌出候选池 -> 强制淘汰（相对排名视角，
+        # 退出资金自动补位池内更强候选）。置于衰退退出之后，作为组合层轮动补充。
+        if self.slot_rotation_on and self.opened and trend_ok:
+            stale = (day_idx - self.last_new_high_idx) >= self.slot_stale_days
+            if stale and day not in self.top_days:
+                self.opened, self.full, self.adds_done = False, False, 0
+                self.exit_stage = 0
+                self.has_reduced = False
+                self.last_exit_idx = day_idx
+                return {"signal": -1, "tag": "",
+                        "reason": f"槽位轮动({self.slot_stale_days}日未新高+跌出候选)"}
+
         if not self.opened:
             # ---- 2) 加速启动建仓（池级开关 pool_gate 抑制：POOL_GATE）----
             if (macd_ok and above_fast and day in self.top_days
@@ -798,6 +846,7 @@ class SlotStepper:
                            "reason": "加速启动(金叉+站上快均线+入榜)，试仓建仓"}
                 # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
                 self.high_since_open = close
+                self.last_new_high_idx = day_idx  # 方案C：新高基准自开仓日起算
                 self.last_add_idx = day_idx
                 self.has_reduced = False  # 新持仓周期：重置退出状态
                 self.fade_streak = 0      # 方案D：重置衰竭连续性

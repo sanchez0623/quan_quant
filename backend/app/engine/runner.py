@@ -217,9 +217,11 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
             and str(params.get("market_regime_on") or "off") == "on"):
         market_regime = mc.compute_market_regime(
             data_dir, str(params.get("regime_index") or "000905"),
-            int(params.get("regime_ma_short") or 20),
-            int(params.get("regime_ma_long") or 60),
-            int(params.get("regime_slope_n") or 5))
+            int(params.get("regime_ma_short") or 10),
+            int(params.get("regime_ma_long") or 30),
+            int(params.get("regime_slope_n") or 3),
+            int(params.get("regime_adx_period") or 14),
+            float(params.get("regime_adx_th") or 20))
     prepared = (strategy.prepare(data, params, start_date=start, market_regime=market_regime)
                 if market_regime is not None
                 else strategy.prepare(data, params, start_date=start))
