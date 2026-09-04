@@ -174,6 +174,10 @@ function pickRiskConfig(formRisk: unknown): Record<string, string | number> {
         v = v === false || v === 0 || v === '0' ? 0 : 1
       }
       out[f.key] = v as string | number
+    } else if (f.key === 'take_profit_pct') {
+      // 留空 = 不启用止盈（hint：0 表示不启用）：避免留空被 DEFAULT_RISK_CONFIG 的
+      // 默认 40 静默覆盖，导致「保存模板→载入显示 40」与用户留空意图不符
+      out[f.key] = 0
     } else if (DEFAULT_RISK_CONFIG[f.key] !== undefined) {
       out[f.key] = DEFAULT_RISK_CONFIG[f.key]
     }
