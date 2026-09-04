@@ -351,7 +351,7 @@ def remove_template(template_id: int, user: str = Depends(get_current_user)):
 
 # ---------------- AI 生成回测名称（AI_NAME） ----------------
 
-# 有辨识度的策略参数 key（供 AI 命名时挑选），覆盖各策略 param_schema
+# 有辨识度的策略/风控参数 key（供 AI 命名时挑选），覆盖各策略 param_schema + RiskConfigModel
 _NAME_KEY_PARAMS = {
     # momentum_t / momentum_slot 动量系
     "mom_short", "mom_mid", "mom_long", "mom_gap_n", "exit_need", "rps_top",
@@ -360,7 +360,39 @@ _NAME_KEY_PARAMS = {
     "t_mode", "t_debt_max_days", "t_max_chase_pct", "reentry_discount",
     # 双均线 / 网格
     "fast", "slow", "grid_band", "t_pct", "vol_window",
+    # 动态选股
+    "auto_top_x", "auto_above_ma", "auto_with_accel", "auto_min_rps", "auto_rank_key",
+    # 池级趋势开关（POOL_GATE）
+    "pool_gate", "pool_gate_enter_th",
+    # 风控关键项（对齐 RiskConfigModel）
+    "max_holdings", "max_position_pct_per_stock", "stop_loss_mode", "stop_loss_pct",
+    "atr_trail_mult", "atr_cost_base", "atr_trail_floor", "take_profit_pct",
+    "adaptive", "trailing_stop_pct",
+    # 总资金止盈（NAV_TAKE_PROFIT）
+    "nav_take_profit_pct", "nav_take_profit_withdraw_pct",
 }
+
+
+def _norm_num(v):
+    """数值统一成 float，避免 6 vs 6.0 被误判为非默认值"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return float(v)
+    return v
+
+
+def _non_default_params(items: dict, defaults: dict) -> dict:
+    """只保留「白名单内 + 非默认值」的参数，降低 AI 输入噪音、聚焦差异点"""
+    out = {}
+    for k, v in (items or {}).items():
+        if k not in _NAME_KEY_PARAMS or v is None:
+            continue
+        if k in defaults and _norm_num(defaults[k]) == _norm_num(v):
+            continue
+        out[k] = v
+    return out
+
 
 class GenNameRequest(BaseModel):
     strategy_id: str
@@ -384,8 +416,17 @@ def generate_name(req: GenNameRequest, user: str = Depends(get_current_user)):
                             detail="未配置 LLM API Key：请到「Key 管理」页添加 API Key（DeepSeek/OpenRouter 等）")
     strategy = REGISTRY.get(req.strategy_id)
     sname = getattr(strategy, "name", None) or req.strategy_id
-    risk_keys = ("stop_loss_mode", "stop_loss_pct", "take_profit_pct",
-                 "atr_trail_mult", "adaptive", "max_holdings")
+    # 默认值对照：param_schema default / RiskConfigModel 默认，仅挑“非默认值”差异项
+    param_defaults = apply_param_defaults(req.strategy_id, {})
+    risk_defaults = RiskConfigModel().model_dump()
+    key_params = _non_default_params(req.params, param_defaults)
+    key_risk = _non_default_params(req.risk_config, risk_defaults)
+    # 全默认时退化为全量摘要（截断），避免 AI 无从命名
+    if not key_params:
+        full = json.dumps(req.params or {}, ensure_ascii=False)
+        if len(full) > 400:
+            full = full[:400] + "..."
+        key_params = full
     summary = {
         "策略": sname,
         "周期": req.period,
@@ -394,21 +435,16 @@ def generate_name(req: GenNameRequest, user: str = Depends(get_current_user)):
         "动态选股": bool(req.universe_auto),
         "股票数": "自动生成" if req.universe_auto else len(req.universe or []),
         "基准": req.benchmark,
-        "关键参数": {k: v for k, v in (req.params or {}).items()
-                    if v is not None and k in _NAME_KEY_PARAMS},
-        "风控": {k: v for k, v in (req.risk_config or {}).items()
-                if k in risk_keys and v is not None},
+        "差异参数": key_params,
+        "风控差异": key_risk,
     }
-    # 参数全量过长时保留关键参数，其余截断
-    full = json.dumps(req.params or {}, ensure_ascii=False)
-    if len(full) > 400:
-        full = full[:400] + "..."
-    if not summary["关键参数"]:
-        summary["关键参数"] = full
     prompt = json.dumps(summary, ensure_ascii=False)
     messages = [
-        {"role": "system", "content": "你是 A 股量化回测任务的命名助手。根据用户给出的策略与关键参数配置，"
-                                      "生成一个简洁、信息量高的中文任务名（6~24 字），要体现策略/周期/资金档等特征。"
+        {"role": "system", "content": "你是 A 股量化回测任务的命名助手。用户会给出策略与参数配置，"
+                                      "其中「差异参数/风控差异」是相对默认值被改动过的关键项。"
+                                      "请抓住 2~4 个最能体现本次回测特色的差异点（如：动量窗、做T、仓位、"
+                                      "风控收紧、总资金止盈等）生成一个简洁、信息量高的中文任务名（6~24 字）。"
+                                      "名称应体现策略/周期/资金档特征 + 关键差异，不要堆砌默认值。"
                                       "只输出名称本身，不要任何解释、引号或前后缀。"},
         {"role": "user", "content": f"配置摘要：{prompt}\n请生成一个合适的回测任务名。"},
     ]
