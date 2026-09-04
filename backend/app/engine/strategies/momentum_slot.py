@@ -134,6 +134,12 @@ class MomentumSlotStrategy(Strategy):
         {"key": "partial_exit_pct", "frozen": True, "label": "首次减仓比例", "type": "float", "default": 50,
          "min": 10, "max": 80, "step": 5, "unit": "%", "group": "衰退退出",
          "description": "衰退初期首次减仓比例，剩余仓位待二次信号清仓（渐进式退出）"},
+        {"key": "exit_confirm_days", "frozen": True, "label": "二清确认期", "type": "int", "default": 0,
+         "min": 0, "max": 10, "unit": "交易日", "group": "衰退退出",
+         "description": "首减后进入确认期：期内收复快均线且重新入榜则取消二清；出现新死叉立即二清；期满仍弱才二清。0=关闭（保持原行为，首减后下一bar即清）"},
+        {"key": "out_top_days", "frozen": True, "label": "跌出榜单确认日", "type": "int", "default": 0,
+         "min": 0, "max": 5, "unit": "交易日", "group": "衰退退出",
+         "description": "连续 N 日不在候选榜才计一次「跌出榜单」信号（事件化，不再每天重复触发）。0=原行为（每天不在榜即信号）"},
         # ---- G7 做T·正向T ----
         {"key": "fwd_t", "label": "正向T开关", "type": "categorical", "group": "做T·正向T",
          "choices": ["off", "on"], "default": "off",
@@ -450,6 +456,9 @@ class SlotStepper:
         self.atr_stop_k = float(p.get("atr_stop_k") or -3.0)
         self.decay_pct = float(p.get("decay_pct") or 0.15)
         self.partial_exit_pct = float(p.get("partial_exit_pct") or 50)
+        # 优化：二清确认期 / 跌出榜单事件化（0=关闭，保持原行为，A/B 基线不变）
+        self.exit_confirm_days = int(p.get("exit_confirm_days") or 0)
+        self.out_top_days = int(p.get("out_top_days") or 0)
         self.fwd_t = str(p.get("fwd_t") or "off")
         self.fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
         self.trend_clock = str(p.get("trend_clock") or "intraday")
@@ -472,6 +481,13 @@ class SlotStepper:
         self.score_peak: float | None = None
         # 渐进式退出阶段: 0=无退出, 1=已部分减仓待清仓, 2=已清仓
         self.exit_stage = 0
+        # 优化：二清确认期状态（首减日 / 上一bar MACD金叉态判新死叉）
+        self.first_reduce_idx = -10**9
+        self.macd_was_ok = False
+        self.has_reduced = False  # 本次持仓是否已首减过（取消二清后不再重复首减）
+        # 优化：跌出榜单事件化状态（日级连续性）
+        self.out_top_count = 0
+        self.out_top_fired = False
 
     def state(self) -> dict:
         """导出状态（实盘 sig_strategy_state 落库 / 跨日恢复）"""
@@ -480,6 +496,11 @@ class SlotStepper:
                 "last_add_idx": self.last_add_idx,
                 "last_exit_idx": self.last_exit_idx,
                 "exit_stage": self.exit_stage,
+                "first_reduce_idx": self.first_reduce_idx,
+                "macd_was_ok": int(self.macd_was_ok),
+                "has_reduced": int(self.has_reduced),
+                "out_top_count": self.out_top_count,
+                "out_top_fired": int(self.out_top_fired),
                 "high_since_open": self.high_since_open,
                 "ref": self.ref, "t_count": self.t_count,
                 "score_peak": self.score_peak, "cur_day": self.cur_day}
@@ -494,6 +515,11 @@ class SlotStepper:
         self.last_add_idx = int(st.get("last_add_idx") if st.get("last_add_idx") is not None else -10**9)
         self.last_exit_idx = int(st.get("last_exit_idx") if st.get("last_exit_idx") is not None else -10**9)
         self.exit_stage = int(st.get("exit_stage") or 0)
+        self.first_reduce_idx = int(st.get("first_reduce_idx") if st.get("first_reduce_idx") is not None else -10**9)
+        self.macd_was_ok = bool(st.get("macd_was_ok"))
+        self.has_reduced = bool(st.get("has_reduced"))
+        self.out_top_count = int(st.get("out_top_count") or 0)
+        self.out_top_fired = bool(st.get("out_top_fired"))
         self.high_since_open = st.get("high_since_open")
         self.ref = st.get("ref")
         self.t_count = int(st.get("t_count") or 0)
@@ -510,6 +536,13 @@ class SlotStepper:
             self.ref = None
             self.t_count = 0
             self.score_peak = None
+            # 优化：跌出榜单连续性（日级事件化，out_top_days>0 时启用）
+            if self.out_top_days > 0:
+                if day not in self.top_days:
+                    self.out_top_count += 1
+                else:
+                    self.out_top_count = 0
+                    self.out_top_fired = False
         trend_ok = (self.trend_clock != "daily") or is_eod
 
         # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高
@@ -532,14 +565,22 @@ class SlotStepper:
                            and score < self.score_peak * (1 - self.decay_pct))
         else:
             score_decay = False
+        # 优化：跌出榜单事件化——out_top_days>0 时连续 N 日不在榜才计一次，不再每天重复触发
+        if self.out_top_days > 0:
+            out_trigger = self.out_top_count >= self.out_top_days and not self.out_top_fired
+            if out_trigger:
+                self.out_top_fired = True  # 本次跌出序列只计一次，重新入榜时由 cur_day 分支重置
+        else:
+            out_trigger = day not in self.top_days  # 原行为：每天不在榜即信号
         s3 = ((score is not None and score < 0)
-              or (day not in self.top_days)
+              or out_trigger
               or score_decay)
 
         # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
         if self.opened and bias is not None and bias < self.atr_stop_k:
             self.opened, self.full, self.adds_done = False, False, 0
             self.exit_stage = 0
+            self.has_reduced = False
             return {"signal": -1, "tag": "止损",
                     "reason": (f"ATR硬止损(bias={bias:.1f}<-{self.atr_stop_k})"
                                f" 价格跌破{self.atr_stop_k}倍ATR")}
@@ -553,17 +594,48 @@ class SlotStepper:
             if score is not None and score < 0: hits.append("动量转负")
             if day not in self.top_days: hits.append("跌出榜单")
             if self.exit_stage == 0:
+                if self.has_reduced:
+                    # 已首减过（此前取消过二清）：信号再次满足 -> 直接清仓，不再重复首减
+                    self.opened, self.full, self.adds_done = False, False, 0
+                    self.exit_stage = 2
+                    self.last_exit_idx = day_idx
+                    self.has_reduced = False
+                    return {"signal": -1, "tag": "",
+                            "reason": f"衰退清仓(二次): {'+'.join(hits)}"}
+                self.has_reduced = True
                 self.exit_stage = 1
+                self.first_reduce_idx = day_idx
+                self.macd_was_ok = bool(macd_ok)
                 return {"signal": -1, "tag": "减仓",
                         "reduce_pct": self.partial_exit_pct,
                         "reason": (f"衰退初期(首次减{self.partial_exit_pct:.0f}%): "
                                    f"{'+'.join(hits)}")}
             if self.exit_stage == 1:
+                # 二清决策：确认期三出口（exit_confirm_days=0 时跳过，保持原行为：下一bar即清）
+                if self.exit_confirm_days > 0 and (day_idx - self.first_reduce_idx) < self.exit_confirm_days:
+                    # 出口2：观察期内出现新死叉（急跌）-> 立即二清
+                    if (not macd_ok) and self.macd_was_ok:
+                        self.opened, self.full, self.adds_done = False, False, 0
+                        self.exit_stage = 2
+                        self.last_exit_idx = day_idx
+                        self.has_reduced = False
+                        return {"signal": -1, "tag": "",
+                                "reason": f"衰退确认(新死叉): {'+'.join(hits)}"}
+                    # 出口1：观察期内收复快均线且重新入榜 -> 取消二清，恢复半仓持有
+                    if close > ma_fast and day in self.top_days:
+                        self.exit_stage = 0
+                        return None
+                    return None  # 观察期内待定（不加仓/不做T，等待出口）
                 self.opened, self.full, self.adds_done = False, False, 0
                 self.exit_stage = 2
                 self.last_exit_idx = day_idx
+                self.has_reduced = False
                 return {"signal": -1, "tag": "",
                         "reason": f"衰退清仓(二次): {'+'.join(hits)}"}
+        elif self.exit_stage == 1 and self.exit_confirm_days > 0 and not (int(s1) + int(s2) + int(s3)) >= self.exit_need:
+            # 待二清但衰退信号已不满足（去持续性后可能出现）-> 取消二清，恢复持有
+            self.exit_stage = 0
+            return None
 
         if not self.opened:
             # ---- 2) 加速启动建仓（池级开关 pool_gate 抑制：POOL_GATE）----
@@ -581,6 +653,7 @@ class SlotStepper:
                 # P1：冷却期自开仓日起算；新高基准 = 开仓bar收盘
                 self.high_since_open = close
                 self.last_add_idx = day_idx
+                self.has_reduced = False  # 新持仓周期：重置退出状态
                 return out
             return None
 
