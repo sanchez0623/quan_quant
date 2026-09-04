@@ -1256,9 +1256,24 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                               "market_value": round(mv, 2), "positions": positions_snapshot})
             # 总资金止盈提取（日级触发，先于月末兜底：提取计入当月已提额）
             nav_take_profit_settle(day)
-            # 月末判定：次日跨月或已是最后交易日 -> 出金兜底结算
+            # 月末判定：次日跨月 -> 出金兜底结算；
+            # 回测最后一天（无次日）：仅当恰为全局日历当月最后交易日（回测在月末收尾）才结算，
+            # 否则月中结束不应提前出整月（bt_ec242f203d83：2026-09-03 结束却结算整月 2 万）
             nd = next_day.get(day)
-            if nd is None or nd[:7] != day[:7]:
+            month_end = nd is not None and nd[:7] != day[:7]
+            if not month_end and nd is None:
+                try:
+                    cal = store.read_calendar(data_dir)
+                    if cal is not None and cal.height:
+                        m = day[:7]
+                        month_days = sorted(d for d in cal["date"].to_list()
+                                            if d[:7] == m)
+                        month_end = bool(month_days and day >= month_days[-1])
+                    else:
+                        month_end = True
+                except Exception:
+                    month_end = True  # 无法判断全局日历：保持旧行为（最后一天结算）
+            if month_end:
                 month_settle(day)
         if progress_cb and ti % 50 == 0:
             progress_cb(min(99.0, ti / n_bars * 100), f"回测中: {t}")

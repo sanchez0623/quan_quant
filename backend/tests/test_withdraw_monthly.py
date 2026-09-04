@@ -225,3 +225,25 @@ def test_summarize_withdraw_shortfall_not_counted():
     assert abs(s["total"] - (853.24 + 427.55 + 19572.45 + 73438.77)) < 1e-6
     assert abs(s["shortfall"] - 19146.76) < 1e-6
     assert abs(s["recover"] - 73438.77) < 1e-6
+
+
+def test_month_settle_not_trigger_on_mid_month_end(tmp_path):
+    """回测在月中结束：最后一个月不应提前结算出金（bt_ec242f203d83 2026-09-03 问题）"""
+    start, end = _write_market_daily_uptrend(tmp_path, n=200, seed=9)
+    cal = store.read_calendar(str(tmp_path))
+    cal_days = sorted(cal["date"].to_list())
+    last_month = end[:7]
+    month_days = [d for d in cal_days if d[:7] == last_month]
+    if end >= month_days[-1]:
+        return  # 结束日恰是当月最后交易日（月末收尾），本用例不适用
+    cfg = {"name": "mid-end", "strategy_id": "momentum_t", "period": "daily",
+           "params": {}, "risk_config": {}, "universe": ["600000"],
+           "monthly_withdraw_base": 20000.0, "t_profit_withdraw_pct": 0.0,
+           "min_t_amount": 20000.0,
+           "start_date": start, "end_date": end,
+           "initial_capital": 1_000_000.0, "exclude_st": True}
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    wd = report.get("withdrawal") or {}
+    last_total = (wd.get("months") or {}).get(last_month, 0)
+    assert last_total == 0, (
+        f"月中结束不应结算最后月出金，实际最后月提取 {last_total}（{last_month}）")
