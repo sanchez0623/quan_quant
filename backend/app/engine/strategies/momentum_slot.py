@@ -140,6 +140,12 @@ class MomentumSlotStrategy(Strategy):
         {"key": "out_top_days", "frozen": True, "label": "跌出榜单确认日", "type": "int", "default": 0,
          "min": 0, "max": 5, "unit": "交易日", "group": "衰退退出",
          "description": "连续 N 日不在候选榜才计一次「跌出榜单」信号（事件化，不再每天重复触发）。0=原行为（每天不在榜即信号）"},
+        {"key": "momentum_fsm_on", "frozen": True, "label": "动量状态机", "type": "categorical", "group": "衰退退出",
+         "choices": ["off", "on"], "default": "off",
+         "description": "on=用动量状态机（减速/衰竭）替代「3信号凑数」判定退出；off=沿用现有衰退信号"},
+        {"key": "exit_fade_days", "frozen": True, "label": "衰竭确认日", "type": "int", "default": 2,
+         "min": 0, "max": 10, "unit": "交易日", "group": "衰退退出",
+         "description": "动量状态机模式下，连续衰竭 N 个交易日确认二清（默认2，给首减后1天缓冲）"},
         # ---- G7 做T·正向T ----
         {"key": "fwd_t", "label": "正向T开关", "type": "categorical", "group": "做T·正向T",
          "choices": ["off", "on"], "default": "off",
@@ -459,6 +465,9 @@ class SlotStepper:
         # 优化：二清确认期 / 跌出榜单事件化（0=关闭，保持原行为，A/B 基线不变）
         self.exit_confirm_days = int(p.get("exit_confirm_days") or 0)
         self.out_top_days = int(p.get("out_top_days") or 0)
+        # 方案D：动量状态机（off=沿用现有衰退信号）
+        self.momentum_fsm_on = str(p.get("momentum_fsm_on") or "off") == "on"
+        self.exit_fade_days = int(p.get("exit_fade_days") or 2)
         self.fwd_t = str(p.get("fwd_t") or "off")
         self.fwd_t_budget = float(p.get("fwd_t_budget_pct") or 25) / 100.0
         self.trend_clock = str(p.get("trend_clock") or "intraday")
@@ -488,6 +497,10 @@ class SlotStepper:
         # 优化：跌出榜单事件化状态（日级连续性）
         self.out_top_count = 0
         self.out_top_fired = False
+        # 方案D：动量状态机状态（mom_state=idle/cruise/decel/fade；fade_streak=连续衰竭交易日）
+        self.mom_state = "idle"
+        self.fade_streak = 0
+        self.fade_today = False
 
     def state(self) -> dict:
         """导出状态（实盘 sig_strategy_state 落库 / 跨日恢复）"""
@@ -501,6 +514,9 @@ class SlotStepper:
                 "has_reduced": int(self.has_reduced),
                 "out_top_count": self.out_top_count,
                 "out_top_fired": int(self.out_top_fired),
+                "mom_state": self.mom_state,
+                "fade_streak": self.fade_streak,
+                "fade_today": int(self.fade_today),
                 "high_since_open": self.high_since_open,
                 "ref": self.ref, "t_count": self.t_count,
                 "score_peak": self.score_peak, "cur_day": self.cur_day}
@@ -520,6 +536,9 @@ class SlotStepper:
         self.has_reduced = bool(st.get("has_reduced"))
         self.out_top_count = int(st.get("out_top_count") or 0)
         self.out_top_fired = bool(st.get("out_top_fired"))
+        self.mom_state = str(st.get("mom_state") or "idle")
+        self.fade_streak = int(st.get("fade_streak") or 0)
+        self.fade_today = bool(st.get("fade_today"))
         self.high_since_open = st.get("high_since_open")
         self.ref = st.get("ref")
         self.t_count = int(st.get("t_count") or 0)
@@ -543,6 +562,12 @@ class SlotStepper:
                 else:
                     self.out_top_count = 0
                     self.out_top_fired = False
+            # 方案D：结转昨日衰竭连续性（跨交易日）
+            if self.fade_today:
+                self.fade_streak += 1
+            else:
+                self.fade_streak = 0
+            self.fade_today = False
         trend_ok = (self.trend_clock != "daily") or is_eod
 
         # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高
@@ -576,6 +601,20 @@ class SlotStepper:
               or out_trigger
               or score_decay)
 
+        # 方案D：动量状态机（momentum_fsm_on 时用 减速/衰竭 替代「3信号凑数」判定退出）
+        if self.momentum_fsm_on:
+            fsm_decel = score_decay  # 减速：score 从峰值回落超 decay_pct（仅状态标记）
+            fsm_fade = ((score is not None and score < 0)
+                        or (ma_fast is not None and close < ma_fast))  # 衰竭：转负 或 跌破快均线
+            self.fade_today = fsm_fade
+            self.mom_state = "fade" if fsm_fade else ("decel" if fsm_decel else "cruise")
+            # 重设计：decel 不单独触发退出（动量正常回落会误触发，V1 实测证伪），仅 fade 触发
+            exit_trigger = fsm_fade
+        else:
+            self.fade_today = False
+            self.mom_state = "idle"
+            exit_trigger = (int(s1) + int(s2) + int(s3)) >= self.exit_need
+
         # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
         if self.opened and bias is not None and bias < self.atr_stop_k:
             self.opened, self.full, self.adds_done = False, False, 0
@@ -586,13 +625,21 @@ class SlotStepper:
                                f" 价格跌破{self.atr_stop_k}倍ATR")}
 
         # ---- 1) 衰退初期退出：渐进式（首次减仓->二次清仓） ----
-        if self.opened and trend_ok and (int(s1) + int(s2) + int(s3)) >= self.exit_need:
-            hits = []
-            if s1: hits.append("MACD死叉")
-            if s2: hits.append(f"跌破MA{self.ma_fast_n}")
-            if score_decay: hits.append("动量衰减")
-            if score is not None and score < 0: hits.append("动量转负")
-            if day not in self.top_days: hits.append("跌出榜单")
+        if self.opened and trend_ok and exit_trigger:
+            if self.momentum_fsm_on:
+                # 状态机 hits：减速/衰竭
+                hits = []
+                if fsm_decel: hits.append("动量减速")
+                if fsm_fade:
+                    hits.append("动量衰竭" if (score is not None and score < 0)
+                                else f"跌破MA{self.ma_fast_n}")
+            else:
+                hits = []
+                if s1: hits.append("MACD死叉")
+                if s2: hits.append(f"跌破MA{self.ma_fast_n}")
+                if score_decay: hits.append("动量衰减")
+                if score is not None and score < 0: hits.append("动量转负")
+                if day not in self.top_days: hits.append("跌出榜单")
             if self.exit_stage == 0:
                 if self.has_reduced:
                     # 已首减过（此前取消过二清）：信号再次满足 -> 直接清仓，不再重复首减
@@ -611,7 +658,30 @@ class SlotStepper:
                         "reason": (f"衰退初期(首次减{self.partial_exit_pct:.0f}%): "
                                    f"{'+'.join(hits)}")}
             if self.exit_stage == 1:
-                # 二清决策：确认期三出口（exit_confirm_days=0 时跳过，保持原行为：下一bar即清）
+                if self.momentum_fsm_on:
+                    # 二清（状态机）：衰竭连续确认 exit_fade_days 天 -> 立即二清
+                    fade_n = self.fade_streak + (1 if fsm_fade else 0)
+                    if fsm_fade and self.exit_fade_days > 0 and fade_n >= self.exit_fade_days:
+                        self.opened, self.full, self.adds_done = False, False, 0
+                        self.exit_stage = 2
+                        self.last_exit_idx = day_idx
+                        self.has_reduced = False
+                        return {"signal": -1, "tag": "",
+                                "reason": f"衰退清仓(衰竭{fade_n}日): {'+'.join(hits)}"}
+                    # 新死叉（急跌）-> 立即二清
+                    if (not macd_ok) and self.macd_was_ok:
+                        self.opened, self.full, self.adds_done = False, False, 0
+                        self.exit_stage = 2
+                        self.last_exit_idx = day_idx
+                        self.has_reduced = False
+                        return {"signal": -1, "tag": "",
+                                "reason": f"衰退确认(新死叉): {'+'.join(hits)}"}
+                    # 收复快均线且重新入榜 -> 取消二清，恢复半仓持有
+                    if close > ma_fast and day in self.top_days:
+                        self.exit_stage = 0
+                        return None
+                    return None  # 待衰竭确认 / 恢复
+                # ---- 原（非状态机）二清：确认期三出口 ----
                 if self.exit_confirm_days > 0 and (day_idx - self.first_reduce_idx) < self.exit_confirm_days:
                     # 出口2：观察期内出现新死叉（急跌）-> 立即二清
                     if (not macd_ok) and self.macd_was_ok:
@@ -632,8 +702,12 @@ class SlotStepper:
                 self.has_reduced = False
                 return {"signal": -1, "tag": "",
                         "reason": f"衰退清仓(二次): {'+'.join(hits)}"}
-        elif self.exit_stage == 1 and self.exit_confirm_days > 0 and not (int(s1) + int(s2) + int(s3)) >= self.exit_need:
-            # 待二清但衰退信号已不满足（去持续性后可能出现）-> 取消二清，恢复持有
+        elif self.exit_stage == 1 and not self.momentum_fsm_on and self.exit_confirm_days > 0 and not exit_trigger:
+            # 原逻辑：待二清但衰退信号已不满足（去持续性后可能出现）-> 取消二清，恢复持有
+            self.exit_stage = 0
+            return None
+        elif self.exit_stage == 1 and self.momentum_fsm_on and not exit_trigger:
+            # 状态机：减速/衰竭均不满足 -> 取消二清，恢复持有
             self.exit_stage = 0
             return None
 
@@ -654,6 +728,8 @@ class SlotStepper:
                 self.high_since_open = close
                 self.last_add_idx = day_idx
                 self.has_reduced = False  # 新持仓周期：重置退出状态
+                self.fade_streak = 0      # 方案D：重置衰竭连续性
+                self.mom_state = "cruise"
                 return out
             return None
 

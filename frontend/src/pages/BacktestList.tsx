@@ -170,7 +170,7 @@ function pickRiskConfig(formRisk: unknown): Record<string, string | number> {
       // 布尔型开关统一归一为数字 1/0：后端任务配置存 bool(true/false)（pydantic 强转），
       // 前端表单 select 用数字选项(1/0)。类型不一致会导致载入后下拉显示空白、
       // 规则说明判断错（floor===0 对 false 不成立），看起来像"没保存"。
-      if (f.key === 'atr_trail_floor') {
+      if (f.key === 'atr_trail_floor' || f.key === 'trade_tier_on') {
         v = v === false || v === 0 || v === '0' ? 0 : 1
       }
       out[f.key] = v as string | number

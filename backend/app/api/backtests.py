@@ -43,6 +43,11 @@ class RiskConfigModel(BaseModel):
     adaptive_vol_n: int = 120
     adaptive_vol_hi: float = 0.7
     adaptive_vol_lo: float = 0.3
+    # ---- 双层止损（方案B）：交易仓(做T)独立档，默认关。默认档取敏感度实测最优 sp=10/tm=5 ----
+    trade_tier_on: bool = False
+    trade_atr_mult: float = 3.0
+    trade_trail_mult: float = 5.0
+    trade_stop_pct: float = 10.0
 
 
 class BacktestRequest(BaseModel):

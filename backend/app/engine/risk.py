@@ -43,6 +43,14 @@ class RiskConfig:
         self.adaptive_vol_n = int(cfg.get("adaptive_vol_n", 120) or 120)
         self.adaptive_vol_hi = float(cfg.get("adaptive_vol_hi", 0.7) or 0.7)
         self.adaptive_vol_lo = float(cfg.get("adaptive_vol_lo", 0.3) or 0.3)
+        # ---- 双层止损（方案B）：交易仓(做T)用独立档，核心仓(开仓/加仓)沿用默认档 ----
+        # trade_tier_on=off 时所有 group 走默认档，行为与现状一致。
+        # 默认档参数经敏感度实测（bt_84f3d9c10301 数据集）取最优：sp=10 成本底线放
+        # 宽到正常波动不扫损（做T需要"等反弹"呼吸空间），tm=5 保留极端下跌保护。
+        self.trade_tier_on = bool(cfg.get("trade_tier_on", False))
+        self.trade_atr_mult = float(cfg.get("trade_atr_mult", 3.0) or 0)      # 交易仓硬止损倍数 k1
+        self.trade_trail_mult = float(cfg.get("trade_trail_mult", 5.0) or 0)  # 交易仓移动锁盈倍数 k2
+        self.trade_stop_pct = float(cfg.get("trade_stop_pct", 10.0) or 0)     # 交易仓成本底线(%)
 
 
 class RiskManager:
@@ -136,10 +144,32 @@ class RiskManager:
                    bar: dict | None = None) -> tuple[str, str] | None:
         """返回 (动作: stop_loss|take_profit, reason) 或 None。
 
-        bar 为当前行情字典，供自适应止损读取趋势/波动列；不传则自适应退化为中性倍数 1.0。"""
+        bar 为当前行情字典，供自适应止损读取趋势/波动列；不传则自适应退化为中性倍数 1.0。
+        方案B（双层止损）：交易仓(tag=做T)用独立档，核心仓沿用默认档。"""
         c = self.cfg
-        if c.take_profit_pct > 0 and price >= pos.cost_price * (1 + c.take_profit_pct / 100):
+        is_trade = c.trade_tier_on and pos.tag == "做T"
+        if not is_trade and c.take_profit_pct > 0 and price >= pos.cost_price * (1 + c.take_profit_pct / 100):
             return "take_profit", f"止盈{c.take_profit_pct:g}%"
+        if is_trade:
+            # 交易仓(做T)：成本底线 + 独立 ATR 移动线（做T仓不参与固定止盈，靠网格高抛/止损离场）
+            if c.trade_stop_pct > 0 and price <= pos.cost_price * (1 - c.trade_stop_pct / 100):
+                return "stop_loss", f"T仓成本止损{c.trade_stop_pct:g}%"
+            if atr is None or atr <= 0:
+                return None
+            k1 = c.trade_atr_mult or c.atr_multiplier
+            k2 = c.trade_trail_mult or c.atr_trail_mult
+            cost_base = pos.first_price if c.atr_cost_base == "first" else pos.cost_price
+            cost_line = cost_base - atr * k1
+            trail_line = pos.highest_price - atr * k2
+            stop = max(cost_line, trail_line)
+            if c.atr_trail_floor:
+                pos.trail_stop = max(pos.trail_stop, stop)
+                stop = pos.trail_stop
+            else:
+                pos.trail_stop = stop
+            if price <= stop:
+                return "stop_loss", f"T仓ATR止损(k1={k1:.2f},k2={k2:.2f})"
+            return None
         if c.stop_loss_mode == "fixed":
             if price <= pos.cost_price * (1 - c.stop_loss_pct / 100):
                 return "stop_loss", f"固定止损{c.stop_loss_pct:g}%"

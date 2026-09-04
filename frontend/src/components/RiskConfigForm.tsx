@@ -123,6 +123,43 @@ export const RISK_FIELDS: RiskField[] = [
       { value: 0, label: '关（可回落）' }
     ]
   },
+  // ---- 双层止损（方案B）：做T仓独立档，核心仓沿用默认档 ----
+  {
+    key: 'trade_tier_on',
+    label: '双层止损(做T仓)',
+    hint: '开启后：核心仓(开仓/加仓)用默认止损档，做T仓用下方独立档（成本底线+独立ATR）',
+    type: 'select',
+    group: '止损',
+    options: [
+      { value: 1, label: '开（做T仓独立档）' },
+      { value: 0, label: '关（沿用单一止损）' }
+    ]
+  },
+  {
+    key: 'trade_stop_pct',
+    label: 'T仓成本底线（%）',
+    hint: '做T仓价格 ≤ 成本×(1−底线%) 即止损（做T仓不参与固定止盈，靠网格高抛）',
+    group: '止损',
+    show_if: { trade_tier_on: [1] }
+  },
+  {
+    key: 'trade_atr_mult',
+    label: 'T仓硬止损倍数 k1',
+    hint: '做T仓止损线 = max(成本−k1×ATR, 最高价−k2×ATR) 的 k1',
+    step: 0.5,
+    precision: 1,
+    group: '止损',
+    show_if: { trade_tier_on: [1] }
+  },
+  {
+    key: 'trade_trail_mult',
+    label: 'T仓移动倍数 k2',
+    hint: '做T仓止损线 = max(成本−k1×ATR, 最高价−k2×ATR) 的 k2（越小越紧锁盈）',
+    step: 0.5,
+    precision: 1,
+    group: '止损',
+    show_if: { trade_tier_on: [1] }
+  },
   // ---- 自适应止损：仅 atr_trailing 生效（k1/k2 按市况缩放）----
   {
     key: 'adaptive',
@@ -237,7 +274,11 @@ export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
   adaptive_vol_n: 120,
   adaptive_vol_hi: 0.7,
   adaptive_vol_lo: 0.3,
-  max_drawdown_breaker: 30
+  max_drawdown_breaker: 30,
+  trade_tier_on: 0,
+  trade_stop_pct: 10,
+  trade_atr_mult: 3,
+  trade_trail_mult: 5
 }
 
 /** 分组顺序（未列出的组排在末尾） */
