@@ -276,17 +276,27 @@ export default function LiveSignals() {
     loadStatus()
   }
 
-  const onMorning = async (updateData: boolean) => {
+  const onMorning = async (updateData: boolean, force = false) => {
     setMorningLoading(true)
     try {
-      const r = await runMorning(updateData)
+      const r = await runMorning(updateData, force)
       setMorningTaskId(r.task_id)
       message.success(
         `盘前编排任务已提交（${r.task_id}）${updateData ? '：先做全市场日线增量更新（约数分钟），' : ''}` +
         '完成后自动执行盘前流程并推送，进度见下方')
     } catch (err) {
-      message.error((err as { response?: { data?: { detail?: string } } })
-        ?.response?.data?.detail || '盘前编排提交失败')
+      const e = err as { response?: { status?: number; data?: { detail?: string } } }
+      if (!force && e?.response?.status === 409) {
+        Modal.confirm({
+          title: '今日盘前流程已执行',
+          content: e.response.data?.detail || '今天已跑过盘前流程，确定强制重跑并再次推送吗？',
+          okText: '强制重跑',
+          cancelText: '取消',
+          onOk: () => onMorning(updateData, true)
+        })
+        return
+      }
+      message.error(e?.response?.data?.detail || '盘前编排提交失败')
     } finally {
       setMorningLoading(false)
     }
@@ -316,15 +326,25 @@ export default function LiveSignals() {
     }
   }
 
-  const onPostclose = async () => {
+  const onPostclose = async (force = false) => {
     setPostcloseLoading(true)
     try {
-      const r = await runPostclose()
+      const r = await runPostclose(force)
       setPostcloseTaskId(r.task_id)
       message.success(`盘后任务已提交（${r.task_id}），完成后自动推送对账卡，进度见下方`)
     } catch (err) {
-      message.error((err as { response?: { data?: { detail?: string } } })
-        ?.response?.data?.detail || '盘后流程提交失败')
+      const e = err as { response?: { status?: number; data?: { detail?: string } } }
+      if (!force && e?.response?.status === 409) {
+        Modal.confirm({
+          title: '今日盘后流程已执行',
+          content: e.response.data?.detail || '今天已跑过盘后对账，确定强制重跑并再次推送吗？',
+          okText: '强制重跑',
+          cancelText: '取消',
+          onOk: () => onPostclose(true)
+        })
+        return
+      }
+      message.error(e?.response?.data?.detail || '盘后流程提交失败')
     } finally {
       setPostcloseLoading(false)
     }
@@ -514,7 +534,7 @@ export default function LiveSignals() {
               盘前流程（自动拉数据）
             </Button>
             <Button icon={<ThunderboltOutlined />} loading={postcloseLoading}
-              onClick={onPostclose}>
+              onClick={() => onPostclose()}>
               盘后落库与对账
             </Button>
           </Space>

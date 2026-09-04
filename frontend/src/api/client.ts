@@ -362,8 +362,8 @@ export async function cancelTask(taskId: string): Promise<void> {
 }
 
 // ---- 盘中信号机（M2）----
-export async function runMorning(updateData = true): Promise<{ task_id: string }> {
-  const res = await api.post('/live/morning', { update_data: updateData })
+export async function runMorning(updateData = true, force = false): Promise<{ task_id: string }> {
+  const res = await api.post('/live/morning', { update_data: updateData, force })
   return res.data
 }
 
@@ -377,8 +377,8 @@ export async function getIntradayStatus(): Promise<IntradayStatus> {
   return res.data
 }
 
-export async function runPostclose(): Promise<{ task_id: string }> {
-  const res = await api.post('/live/postclose')
+export async function runPostclose(force = false): Promise<{ task_id: string }> {
+  const res = await api.post('/live/postclose', { force })
   return res.data
 }
 

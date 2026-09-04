@@ -236,6 +236,7 @@ def reset_live(body: ResetBody, _user: str = Depends(get_current_user)):
 class MorningBody(BaseModel):
     update_data: bool = True   # 先做日线增量更新（含完整性守卫）
     push: bool = True
+    force: bool = False        # 当日已执行过时强制重跑（默认幂等拦截）
 
 
 @router.post("/morning")
@@ -243,7 +244,11 @@ def morning_run(body: MorningBody, _user: str = Depends(get_current_user)):
     """盘前编排任务（异步）：日线增量更新 → 盘前信号流程。
     进度在任务中心查看；数据更新全市场约数分钟。
     写当日自动调度标记 -> 手动+自动互斥（当天只跑一次盘前）。"""
-    db.set_meta("auto_morning_date", datetime.now().strftime("%Y-%m-%d"))
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not body.force and db.get_meta("auto_morning_date") == today:
+        raise HTTPException(status_code=409,
+                            detail="今日盘前流程已执行（自动或手动），如需强制重跑请传 force=true")
+    db.set_meta("auto_morning_date", today)
     task_id = "live_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, "实盘盘前流程" + ("（含拉数据）" if body.update_data else ""),
                    "live_premarket",
@@ -266,12 +271,20 @@ def intraday_status(_user: str = Depends(get_current_user)):
     return intraday.status_snapshot()
 
 
+class PostcloseBody(BaseModel):
+    force: bool = False        # 当日已执行过时强制重跑（默认幂等拦截）
+
+
 @router.post("/postclose")
-def postclose_run(_user: str = Depends(get_current_user)):
+def postclose_run(body: PostcloseBody, _user: str = Depends(get_current_user)):
     """盘后流程（任务化，防止逐码拉行情期间请求超时/中断）：
     当日分钟线合并落库（池子∪持仓∪跟踪）+ 对账卡推送；返回 {task_id}
     写当日自动调度标记 -> 手动+自动互斥。"""
-    db.set_meta("auto_postclose_date", datetime.now().strftime("%Y-%m-%d"))
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not body.force and db.get_meta("auto_postclose_date") == today:
+        raise HTTPException(status_code=409,
+                            detail="今日盘后流程已执行（自动或手动），如需强制重跑请传 force=true")
+    db.set_meta("auto_postclose_date", today)
     task_id = "live_" + uuid.uuid4().hex[:12]
     db.create_task(task_id, "实盘盘后流程", "live_postclose", payload={"push": True})
     manager.submit("live_postclose", task_id, push=True)

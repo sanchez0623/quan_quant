@@ -167,7 +167,8 @@ def live_postclose_task(task_id: str, db_path: str, data_dir: str,
     result = postclose.run_postclose(push=push)
     ai_commentary = None
     cfg = _live_cfg()
-    if push and cfg.get("ai_commentary", True):
+    # 空仓：对账卡未推送，AI 点评同样跳过（无持仓/无信号可评，避免空仓噪音）
+    if push and cfg.get("ai_commentary", True) and not result.get("empty"):
         db.update_progress(task_id, 90, "AI 生成盘后点评...", db_path)
         from .llm import commentary
         from .live import feishu, reports

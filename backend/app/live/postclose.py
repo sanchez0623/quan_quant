@@ -81,11 +81,13 @@ def run_postclose(data_dir=None, push: bool = True,
     if not positions:
         lines.append("  （空仓）")
     msg = "\n".join(lines)
-    pushed = feishu.send_text(msg) if push else False
+    # 空仓对账卡无核对价值：不推飞书（避免"0只/空仓"式打扰）；有持仓才推送
+    empty = not positions
+    pushed = feishu.send_text(msg) if (push and not empty) else False
     db.set_meta("postclose_last", json.dumps(now.isoformat()))
 
     return {"date": today, "saved": saved, "skipped": skipped,
             "positions": len(positions), "equity": round(equity, 2),
             "cash": round(cash, 2), "dd_warning": dd_msg,
-            "message": msg, "pushed": pushed,
-            "last_run": now.isoformat()}
+            "empty": empty, "pushed": pushed,
+            "message": msg, "last_run": now.isoformat()}
