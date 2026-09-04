@@ -557,12 +557,11 @@ export default function DataManagement() {
                   items={[
                     {
                       key: 'picker',
-                      label: `按条件选股限定范围（选股器同款）${pickCodes.length > 0 ? `——已选 ${pickCodes.length} 只` : ''}`
+                      label: `按条件选股限定范围（选股器同款）${pickCodes.length > 0 ? `——已选 ${pickCodes.length} 只` : ''}`,
+                      children: <StockPicker value={pickCodes} onChange={setPickCodes} />
                     }
                   ]}
-                >
-                  <StockPicker value={pickCodes} onChange={setPickCodes} />
-                </Collapse>
+                />
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   日期留空=拉取全历史；指定日期则只拉该区间（5分钟线受数据源约 2 年深度限制）。
                   更新范围 = 手动代码 ∪ 条件选股（去重）；两者均留空 = 全市场（约 5500 只，日线+5分钟约 1.6 万次请求、1~2 小时）。
