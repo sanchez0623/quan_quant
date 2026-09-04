@@ -44,6 +44,10 @@ interface StockPickerProps {
   /** 开放的模式子集（默认全部三模式）。例如数据更新场景
    * 传 ['manual', 'condition'] 隐藏动量趋势（无基准日） */
   modes?: PickMode[]
+  /** 条件模式精简：隐藏抽样参数（数量/种子/重新抽样/剔除ST），
+   * 自动全量预览（不剔 ST——数据更新要全量），单按钮直接应用。
+   * 适用于「更新范围」等与随机抽样语义无关的场景 */
+  conditionSimple?: boolean
 }
 
 /** 预览/已应用股票代码+名称 Tag 流（最多显示 N 个，可展开全部） */
@@ -75,7 +79,8 @@ export default function StockPicker({
   onMetaChange,
   disabled,
   startDate,
-  modes
+  modes,
+  conditionSimple
 }: StockPickerProps) {
   const codes = value ?? []
   const enabledModes = modes ?? ['manual', 'condition', 'momentum']
@@ -273,8 +278,15 @@ export default function StockPicker({
         })
         setPreview(res)
       } else {
-        const random = { n: n ?? undefined, seed: lockSeed ? seed : undefined }
-        const res = await pickStocks({ filters: { ...industryFilters, index, boards, exclude_st: excludeSt }, random })
+        // 精简模式（更新范围）：固定全量、不剔 ST——抽样与更新语义无关
+        const random = conditionSimple
+          ? { n: undefined, seed: undefined }
+          : { n: n ?? undefined, seed: lockSeed ? seed : undefined }
+        const res = await pickStocks({
+          filters: { ...industryFilters, index, boards,
+                     exclude_st: conditionSimple ? false : excludeSt },
+          random
+        })
         setPreview(res)
       }
     } catch (err) {
@@ -285,7 +297,7 @@ export default function StockPicker({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, industryFilters, index, boards, excludeSt, n, seed, lockSeed,
-      startDate, moTopX, moAboveMa, moAccel, moMinRps])
+      startDate, moTopX, moAboveMa, moAccel, moMinRps, conditionSimple])
 
   // 仅条件选股自动预览（动量预筛需全市场特征计算，手动触发）
   useEffect(() => {
@@ -581,70 +593,77 @@ export default function StockPicker({
                   disabled={disabled}
                 />
               </div>
-              <Space size="large">
-                <Space size={4}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>剔除ST：</Typography.Text>
-                  <Switch size="small" checked={excludeSt} onChange={setExcludeSt} disabled={disabled} />
+              {!conditionSimple && (
+                <Space size="large">
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>剔除ST：</Typography.Text>
+                    <Switch size="small" checked={excludeSt} onChange={setExcludeSt} disabled={disabled} />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>数量 n：</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      min={1}
+                      value={n}
+                      onChange={(v) => setN(v ?? undefined)}
+                      placeholder="全量"
+                      disabled={disabled}
+                    />
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      种子 seed：{lockSeed && <LockOutlined style={{ color: '#faad14' }} />}
+                    </Typography.Text>
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      value={seed}
+                      onChange={(v) => setSeed(v ?? undefined)}
+                      disabled={disabled || lockSeed}
+                      style={{ width: 110 }}
+                    />
+                    <Button size="small" icon={<ReloadOutlined />} onClick={onResample} disabled={disabled || lockSeed}>
+                      重新抽样
+                    </Button>
+                    <Switch
+                      size="small"
+                      checked={lockSeed}
+                      onChange={setLockSeed}
+                      checkedChildren="锁定"
+                      unCheckedChildren="解锁"
+                      disabled={disabled}
+                    />
+                  </Space>
                 </Space>
-                <Space size={4}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>数量 n：</Typography.Text>
-                  <InputNumber
-                    size="small"
-                    min={1}
-                    value={n}
-                    onChange={(v) => setN(v ?? undefined)}
-                    placeholder="全量"
-                    disabled={disabled}
-                  />
-                </Space>
-                <Space size={4}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    种子 seed：{lockSeed && <LockOutlined style={{ color: '#faad14' }} />}
-                  </Typography.Text>
-                  <InputNumber
-                    size="small"
-                    min={0}
-                    value={seed}
-                    onChange={(v) => setSeed(v ?? undefined)}
-                    disabled={disabled || lockSeed}
-                    style={{ width: 110 }}
-                  />
-                  <Button size="small" icon={<ReloadOutlined />} onClick={onResample} disabled={disabled || lockSeed}>
-                    重新抽样
-                  </Button>
-                  <Switch
-                    size="small"
-                    checked={lockSeed}
-                    onChange={setLockSeed}
-                    checkedChildren="锁定"
-                    unCheckedChildren="解锁"
-                    disabled={disabled}
-                  />
-                </Space>
-              </Space>
-              {lockSeed && (
+              )}
+              {lockSeed && !conditionSimple && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   种子已锁定（来自已应用的选股溯源 meta），确保模板载入/实验复现得到相同池子。
                 </Typography.Text>
               )}
               <Divider style={{ margin: '4px 0' }} />
               <Space align="start">
-                <Button type="primary" size="small" loading={previewLoading} onClick={doPreview}>
-                  预览
-                </Button>
+                {!conditionSimple && (
+                  <Button type="primary" size="small" loading={previewLoading} onClick={doPreview}>
+                    预览
+                  </Button>
+                )}
                 <Button
+                  type={conditionSimple ? 'primary' : 'default'}
                   size="small"
                   icon={<AppstoreAddOutlined />}
                   onClick={onApply}
                   disabled={disabled || !preview || preview.codes.length === 0}
                 >
-                  应用为股票池
+                  {conditionSimple ? '应用为更新范围' : '应用为股票池'}
                 </Button>
                 {preview && (
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    命中 {preview.total_matched} 只 → 抽取 {preview.total_picked} 只
-                    {preview.seed_used != null ? `（seed=${preview.seed_used}）` : ''}
-                    {preview.truncated ? '（命中数不足，已全取）' : ''}
+                    {conditionSimple
+                      ? `命中 ${preview.total_matched} 只（全量，含ST）`
+                      : `命中 ${preview.total_matched} 只 → 抽取 ${preview.total_picked} 只` +
+                        (preview.seed_used != null ? `（seed=${preview.seed_used}）` : '') +
+                        (preview.truncated ? '（命中数不足，已全取）' : '')}
                   </Typography.Text>
                 )}
               </Space>

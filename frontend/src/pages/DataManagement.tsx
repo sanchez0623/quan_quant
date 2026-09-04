@@ -546,7 +546,8 @@ export default function DataManagement() {
                       label: `更新范围（可选，留空=全市场）${pickCodes.length > 0 ? `——已选 ${pickCodes.length} 只` : ''}`,
                       children: (
                         <StockPicker value={pickCodes} onChange={setPickCodes}
-                                     modes={['manual', 'condition']} />
+                                     modes={['manual', 'condition']}
+                                     conditionSimple />
                       )
                     }
                   ]}
