@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """实盘信号机 API（LIVE_SIGNAL_SYSTEM）：盘前/盘中/盘后全流程 + 信号/回填/
 持仓对账/配置 + M3 影子统计/M4 就绪检查"""
+import json
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..auth import get_current_user
+from ..engine import momentum_core as mc
 from ..live import feishu, intraday, premarket, reports
 from ..task_manager import manager
 
@@ -198,6 +200,119 @@ def save_config(body: LiveConfigBody, _user: str = Depends(get_current_user)):
     cfg = body.model_dump()
     db.save_live_config(cfg)
     return cfg
+
+
+# ---- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT）----
+# 模板顶层标量 -> 实盘键（universe_auto 组与 auto_* 行为键）
+_TEMPLATE_SCALARS = {
+    "auto_idle_days": "auto_idle_days",
+    "auto_top_x": "top_x",
+    "auto_above_ma": "above_ma",
+    "auto_with_accel": "with_accel",
+    "auto_min_rps": "min_rps",
+    "auto_rank_key": "rank_key",
+    "auto_index": "auto_index",
+    "auto_boards": "auto_boards",
+    "pool_gate_enter_th": "enter_th",   # params.enter_th 优先，缺失时兜底
+}
+# 模板 params 内的标量 -> 实盘键（momentum_slot/momentum_t 通用）
+_PARAMS_SCALARS = {
+    "max_holdings": "max_holdings",
+    "pool_n": "pool_n",
+    "exit_need": "exit_need",
+    "enter_th": "enter_th",
+    "t_mode": "t_mode",
+}
+# 模板费率 -> 实盘费率（BacktestRequest 顶层与实盘 fee_* 同义不同名）
+_TEMPLATE_FEES = {
+    "commission_rate": "fee_commission_rate",
+    "commission_min": "fee_commission_min",
+    "stamp_tax": "fee_stamp_tax",
+    "transfer_fee": "fee_transfer_fee",
+    "handling_fee": "fee_handling_fee",
+    "regulatory_fee": "fee_regulatory_fee",
+}
+
+
+class ApplyTemplateBody(BaseModel):
+    template_id: int
+    dry_run: bool = True            # True=仅返回注入预览，不落库
+    apply_capital: bool = False     # 实盘资金默认独立管理，勾选才覆盖
+    apply_fees: bool = True         # 模板费率同步实盘回填/交易成本口径
+
+
+def _build_template_updates(tpl_cfg: dict, cur: dict,
+                            apply_capital: bool, apply_fees: bool):
+    """模板配置 -> 实盘键值映射。返回 (updates, skipped)。
+    updates: {live_key: new_value}；skipped: [(source_key, reason)]"""
+    params = tpl_cfg.get("params") or {}
+    updates: dict = {}
+    skipped: list = []
+
+    for src, dst in _TEMPLATE_SCALARS.items():
+        v = tpl_cfg.get(src)
+        if v is None:
+            continue
+        if src == "auto_with_accel" and v is None:
+            skipped.append((src, "模板跟随策略默认，实盘保留现值"))
+            continue
+        updates[dst] = v
+    for src, dst in _PARAMS_SCALARS.items():
+        if src in params and params[src] is not None:
+            updates[dst] = params[src]
+    if params.get("enter_th") is not None:
+        updates["enter_th"] = params["enter_th"]   # params 优先于 pool_gate 兜底
+    if apply_fees:
+        for src, dst in _TEMPLATE_FEES.items():
+            if tpl_cfg.get(src) is not None:
+                updates[dst] = tpl_cfg[src]
+    # mom 特征键：直接进 sig_config（cfg_pick_params 特征重算时承接）——
+    # 盘前/盘中/盘后与回测同一把尺（档1对齐的实盘落点）
+    for k in mc.PICK_SYNC_KEYS:
+        if params.get(k) is not None:
+            updates[k] = params[k]
+    if apply_capital and tpl_cfg.get("initial_capital") is not None:
+        updates["initial_capital"] = tpl_cfg["initial_capital"]
+    else:
+        skipped.append(("initial_capital",
+                        "实盘资金独立管理（勾选「覆盖实盘资金」可注入）"))
+
+    # 实盘独有键永不注入：auto_schedule / dd_breaker_pct / ai_briefing /
+    # ai_commentary / suggest_pct / 飞书配置
+    max_h = updates.get("max_holdings")
+    rc_max = ((tpl_cfg.get("risk_config") or {}).get("max_holdings"))
+    if max_h is not None and rc_max is not None and rc_max != max_h:
+        updates["max_holdings"] = min(int(max_h), int(rc_max))  # 双处取严
+    return updates, skipped
+
+
+@router.post("/apply_template")
+def apply_template(body: ApplyTemplateBody, user: str = Depends(get_current_user)):
+    """回测模板 -> 实盘配置注入（dry_run 预览 / 确认写入 sig_config）"""
+    tpl = next((t for t in db.list_templates(user)
+                if t.get("id") == body.template_id), None)
+    if not tpl:
+        raise HTTPException(404, f"模板 {body.template_id} 不存在")
+    try:
+        tpl_cfg = json.loads(tpl["config"]) if isinstance(tpl["config"], str) \
+            else tpl["config"]
+    except Exception:
+        raise HTTPException(400, "模板配置解析失败")
+    cur = {**premarket.DEFAULT_CFG, **db.get_live_config()}
+    updates, skipped = _build_template_updates(
+        tpl_cfg, cur, body.apply_capital, body.apply_fees)
+    preview = {
+        "template": {"id": tpl.get("id"), "name": tpl.get("name")},
+        "updates": [{"key": k, "old": cur.get(k), "new": v}
+                    for k, v in sorted(updates.items())],
+        "skipped": [{"key": k, "reason": r} for k, r in skipped],
+    }
+    if body.dry_run:
+        preview["applied"] = False
+        return preview
+    db.save_live_config({**cur, **updates})
+    preview["applied"] = True
+    return preview
 
 
 @router.get("/summary")

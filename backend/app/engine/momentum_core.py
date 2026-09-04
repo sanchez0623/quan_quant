@@ -71,6 +71,18 @@ def pick_params(above_ma: int = 20, with_accel: bool = False) -> dict:
     return p
 
 
+# 动量特征参数白名单（档1参数对齐 §3）：回测任务 params 覆盖预筛默认值的键集，
+# 也是实盘「模板注入」（apply_template）承接的键集——预筛/排名/特征与回测同尺。
+PICK_SYNC_KEYS = (
+    "macd_fast", "macd_slow", "macd_signal",
+    "mom_short", "mom_mid", "mom_long",
+    "w_short", "w_mid", "w_accel",
+    "crash_sigma", "crash_vol_n", "crash_abs_cap",
+    "vol_window", "vol_q_hi", "vol_q_lo",
+    "add_breakout_n",
+)
+
+
 def aggregate_daily(df: pl.DataFrame) -> pl.DataFrame:
     """任意周期K线 -> 日线聚合：day / d_close(收盘) / d_high / d_low"""
     return (df.with_columns(pl.col("date").str.slice(0, 10).alias("day"))

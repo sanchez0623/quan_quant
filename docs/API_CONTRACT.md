@@ -15,6 +15,7 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 | `GET /api/live/positions`            | 虚拟持仓                                                                                                                                                                                                                                |
 | `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                                                                                                         |
 | `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                             |
+| `POST /api/live/apply_template`      | **回测模板 → 实盘配置注入**：`{template_id, dry_run=true, apply_capital=false, apply_fees=true}` → 预览/写入。映射：auto\_\* 组（idle\_days/top\_x/above\_ma/with\_accel/min\_rps/rank\_key/候选域）+ params（max\_holdings 双处取严/pool\_n/exit\_need/enter\_th/t\_mode）+ mom 特征键（PICK\_SYNC\_KEYS 16 键进 sig\_config，`intraday.cfg_pick_params` 特征重算承接）+ 费率。**不注入**：initial\_capital（默认，勾选覆盖）、auto\_schedule/dd\_breaker\_pct/ai\_开关/suggest\_pct 等实盘独有键。dry\_run 返回 `{updates[{key,old,new}], skipped[{key,reason}], applied}` |
 | `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                                                                                                                      |
 | `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                                                                                                                     |
 | `POST /api/live/morning`             | **M2 盘前编排任务（异步）**：`{update_data=true, push=true}` → 日线增量更新（含 DATA\_GUARD）→ 盘前流程；返回 `{task_id}`（任务中心查进度）                                                                                                                             |
@@ -406,9 +407,10 @@ available = 对应环境变量已配置。
   `comparison.verdict ∈ 改善/持平/恶化`；`commentary` 为验证结果回喂 LLM 的二轮点评
   （best-effort，可为 null）；验证回测失败时 `validation = {"error": "...", "verdict": null}`
   且 analysis 仍为 success。
-- `tool_trace`：AI 下钻工具（query_trades / get_code_profile / get_market_context，
+
+- `tool_trace`：AI 下钻工具（query\_trades / get\_code\_profile / get\_market\_context，
   只读取证）的调用记录 `[{name, args}]`；预算护栏（轮次≤6 / 总次数≤10）耗尽强制收尾；
-  端点不支持 function calling 时自动降级单轮静态分析（tool_trace 为空数组），
+  端点不支持 function calling 时自动降级单轮静态分析（tool\_trace 为空数组），
   分析正文末尾附「🔎 本分析共下钻取证 N 次」尾注。
 
 ### GET /api/ai/suggestion-stats

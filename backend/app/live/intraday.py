@@ -57,22 +57,33 @@ def _stepper_params(cfg: dict) -> dict:
     return p
 
 
+def cfg_pick_params(cfg: dict) -> dict:
+    """实盘特征/选股参数构建：above_ma/with_accel 之上，承接 sig_config 中
+    模板注入的 mom 特征键（mc.PICK_SYNC_KEYS，apply_template 写入）——
+    盘前/盘中/盘后特征重算与回测任务 params 同一把尺。"""
+    p = mc.pick_params(above_ma=int(cfg.get("above_ma") or 20),
+                       with_accel=bool(cfg.get("with_accel")))
+    for k in mc.PICK_SYNC_KEYS:
+        if cfg.get(k) is not None:
+            p[k] = cfg[k]
+    return p
+
+
 def _feats_params(cfg: dict) -> dict:
-    return mc.pick_params(above_ma=int(cfg["above_ma"]),
-                          with_accel=bool(cfg["with_accel"]))
+    """实盘特征参数（含模板注入的 mom 键，与盘前/回测同尺）"""
+    return cfg_pick_params(cfg)
 
 
 def market_features_cached(cfg: dict, data_dir=None) -> mc.MarketFeatures:
     """全市场日线特征（280 自然日窗口，与盘前 premarket 同口径），按日缓存。
-    key 含 data_dir——不同数据目录（测试隔离）不得串染。"""
+    key 含 data_dir（测试隔离）与全部特征参数（mom 键变更即失效）。"""
     day = datetime.now().strftime("%Y-%m-%d")
-    key = (day, int(cfg["above_ma"]), bool(cfg["with_accel"]), str(data_dir))
+    p = _feats_params(cfg)
+    key = (day, str(sorted(p.items())), str(data_dir))
     if _MF_CACHE.get("key") == key:
         return _MF_CACHE["mf"]
     mf = mc.market_features(
-        data_dir=data_dir, window_start=_shift_back(day, 280),
-        p=mc.pick_params(above_ma=int(cfg["above_ma"]),
-                         with_accel=bool(cfg["with_accel"])))
+        data_dir=data_dir, window_start=_shift_back(day, 280), p=p)
     _MF_CACHE.clear()
     _MF_CACHE.update({"key": key, "mf": mf})
     return mf

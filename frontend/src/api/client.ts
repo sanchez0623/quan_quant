@@ -43,6 +43,8 @@ import type {
   Strategy,
   TaskCreateResponse,
   TaskStatusResponse,
+  TemplateApplyPreview,
+  TemplateApplyRequest,
   TemplateCreateRequest,
   UserCreateRequest,
   UserItem
@@ -165,6 +167,14 @@ export async function createTemplate(
 
 export async function deleteTemplate(templateId: number): Promise<{ status: string }> {
   const res = await api.delete<{ status: string }>(`/backtests/templates/${templateId}`)
+  return res.data
+}
+
+/** 回测模板 -> 实盘配置注入（dry_run 预览 / 确认写入 sig_config） */
+export async function applyTemplateToLive(
+  data: TemplateApplyRequest
+): Promise<TemplateApplyPreview> {
+  const res = await api.post<TemplateApplyPreview>('/live/apply_template', data)
   return res.data
 }
 

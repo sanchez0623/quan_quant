@@ -296,6 +296,21 @@ export interface TemplateCreateRequest {
   config: BacktestCreateRequest
 }
 
+/** 回测模板 -> 实盘配置注入（TEMPLATE_INJECT）：dry_run 预览 / 确认写入 */
+export interface TemplateApplyPreview {
+  template: { id: number; name: string }
+  updates: { key: string; old: unknown; new: unknown }[]
+  skipped: { key: string; reason: string }[]
+  applied: boolean
+}
+
+export interface TemplateApplyRequest {
+  template_id: number
+  dry_run: boolean
+  apply_capital: boolean
+  apply_fees?: boolean
+}
+
 export interface TaskStatusResponse {
   task_id: string
   status: TaskStatus

@@ -69,8 +69,7 @@ def run_premarket(data_dir: Optional[str] = None,
         data_dir=data_dir,
         window_start=_shift_back(
             datetime.now().strftime("%Y-%m-%d"), 280),
-        p=mc.pick_params(above_ma=int(cfg["above_ma"]),
-                         with_accel=bool(cfg["with_accel"])))
+        p=intraday.cfg_pick_params(cfg))
     if not mf.calendar:
         raise RuntimeError("无行情数据（请先在数据管理页更新日线）")
     as_of = mf.calendar[-1]          # 数据最新日 = T-1（盘前无今日数据，无后视镜天然满足）
@@ -177,8 +176,7 @@ def run_premarket(data_dir: Optional[str] = None,
                 slots = int(cfg.get("max_holdings") or 3)
                 cash = cash_all * (1 - intraday.CASH_RESERVE_PCT / 100)
                 used = 0
-                p_feats = mc.pick_params(above_ma=int(cfg["above_ma"]),
-                                         with_accel=bool(cfg["with_accel"]))
+                p_feats = intraday.cfg_pick_params(cfg)
                 for r in picked.to_dicts():
                     if used >= slots:
                         break

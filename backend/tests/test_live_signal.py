@@ -236,3 +236,60 @@ def test_position_price_snapshot(tmp_path, monkeypatch):
     postclose.run_postclose(data_dir=str(tmp_path), push=False)
     pos = db.list_live_positions()[0]
     assert pos["last_price"] == 10.8
+
+
+# ---------------- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT） ----------------
+
+def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):
+    """模板注入：dry_run 预览不落库 / apply 写入 sig_config / mom 键承接
+    cfg_pick_params / 资金默认跳过 / max_holdings 双处取严"""
+    from app.api import live as live_api
+    from app.live import intraday as li
+    saved_cfg = db.get_live_config()
+    try:
+        tpl_cfg = {
+            "strategy_id": "momentum_slot",
+            "params": {"max_holdings": 5, "pool_n": 6, "exit_need": 2,
+                       "enter_th": 0.2, "t_mode": "grid", "macd_fast": 10},
+            "risk_config": {"max_holdings": 4},
+            "auto_idle_days": 3, "auto_top_x": 20, "auto_above_ma": 60,
+            "auto_with_accel": False, "auto_min_rps": 70.0,
+            "auto_rank_key": "mom_gap",
+            "auto_index": ["zz500"], "auto_boards": [],
+            "pool_gate_enter_th": 0.25,
+            "initial_capital": 1_000_000,
+            "commission_rate": 0.0003, "commission_min": 5,
+            "stamp_tax": 0.0005, "transfer_fee": 0.00001,
+            "handling_fee": 0.0000341, "regulatory_fee": 0.00002,
+        }
+        tid = db.add_template("tester", "模板A", tpl_cfg)
+
+        pre = live_api.apply_template(live_api.ApplyTemplateBody(
+            template_id=tid, dry_run=True), user="tester")
+        upd = {u["key"]: u["new"] for u in pre["updates"]}
+        skip = {s["key"] for s in pre["skipped"]}
+        assert pre["applied"] is False
+        assert upd["top_x"] == 20 and upd["above_ma"] == 60
+        assert upd["rank_key"] == "mom_gap" and upd["auto_index"] == ["zz500"]
+        assert upd["max_holdings"] == 4, "params 5 与 risk 4 取严"
+        assert upd["enter_th"] == 0.2, "params.enter_th 优先于 pool_gate 兜底"
+        assert upd["t_mode"] == "grid"
+        assert upd["macd_fast"] == 10, "mom 特征键进 sig_config"
+        assert upd["fee_commission_rate"] == 0.0003
+        assert "initial_capital" not in upd and "initial_capital" in skip
+
+        res = live_api.apply_template(live_api.ApplyTemplateBody(
+            template_id=tid, dry_run=False), user="tester")
+        assert res["applied"] is True
+        cfg = db.get_live_config()
+        assert cfg["top_x"] == 20 and cfg["max_holdings"] == 4
+        assert cfg["macd_fast"] == 10 and cfg["initial_capital"] == 3_000_000
+        p = li.cfg_pick_params(cfg)
+        assert p["macd_fast"] == 10, "特征重算承接模板 mom 键（与回测同尺）"
+
+        res2 = live_api.apply_template(live_api.ApplyTemplateBody(
+            template_id=tid, dry_run=False, apply_capital=True), user="tester")
+        assert any(u["key"] == "initial_capital" for u in res2["updates"])
+        assert db.get_live_config()["initial_capital"] == 1_000_000
+    finally:
+        db.save_live_config(saved_cfg)

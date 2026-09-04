@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Collapse, Form, Input, InputNumber, Modal,
+  Alert, Button, Card, Checkbox, Col, Collapse, Form, Input, InputNumber, Modal,
   Popconfirm, Progress, Row, Select, Space, Statistic, Switch, Table, Tag,
   Typography, message
 } from 'antd'
@@ -10,14 +10,15 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type {
-  IntradayCodeStatus, IntradayRunResult, IntradayStatus, LiveConfig,
-  LivePosition, LiveSignalItem, ReadinessResult, ShadowStats, SlippageResult,
-  TaskStatus
+  BacktestTemplateItem, IntradayCodeStatus, IntradayRunResult, IntradayStatus,
+  LiveConfig, LivePosition, LiveSignalItem, ReadinessResult, ShadowStats,
+  SlippageResult, TaskStatus, TemplateApplyPreview
 } from '../api/types'
 import {
-  addLiveFill, getIntradayStatus, getLiveSummary, getReadiness, getShadowStats,
-  getSlippage, resetLiveData, runIntraday, runMorning, runPostclose,
-  saveLiveConfig, setLiveSignalStatus, syncLivePositions
+  addLiveFill, applyTemplateToLive, getIntradayStatus, getLiveSummary,
+  getReadiness, getShadowStats, getSlippage, getTemplates, resetLiveData,
+  runIntraday, runMorning, runPostclose, saveLiveConfig, setLiveSignalStatus,
+  syncLivePositions
 } from '../api/client'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import TaskStopButton from '../components/TaskStopButton'
@@ -213,6 +214,58 @@ export default function LiveSignals() {
   const onIgnore = async (s: LiveSignalItem) => {
     await setLiveSignalStatus(s.id, '已忽略')
     await refresh()
+  }
+
+  // ---- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT） ----
+  const [tplOpen, setTplOpen] = useState(false)
+  const [tplList, setTplList] = useState<BacktestTemplateItem[]>([])
+  const [tplId, setTplId] = useState<number | null>(null)
+  const [tplPreview, setTplPreview] = useState<TemplateApplyPreview | null>(null)
+  const [tplCapital, setTplCapital] = useState(false)
+  const [tplApplying, setTplApplying] = useState(false)
+
+  const openTplModal = async () => {
+    setTplOpen(true)
+    setTplId(null)
+    setTplPreview(null)
+    setTplCapital(false)
+    try {
+      setTplList(await getTemplates())
+    } catch {
+      message.error('模板列表加载失败')
+    }
+  }
+
+  const loadTplPreview = useCallback(
+    async (id: number | null, capital: boolean) => {
+      if (!id) { setTplPreview(null); return }
+      try {
+        setTplPreview(await applyTemplateToLive({
+          template_id: id, dry_run: true, apply_capital: capital
+        }))
+      } catch (err) {
+        setTplPreview(null)
+        message.error((err as { response?: { data?: { detail?: string } } })
+          ?.response?.data?.detail || '注入预览失败')
+      }
+    }, [])
+
+  const onTplApply = async () => {
+    if (!tplId) return
+    setTplApplying(true)
+    try {
+      await applyTemplateToLive({
+        template_id: tplId, dry_run: false, apply_capital: tplCapital
+      })
+      message.success('模板配置已注入实盘，下次盘前流程生效')
+      setTplOpen(false)
+      await refresh()
+    } catch (err) {
+      message.error((err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail || '注入失败')
+    } finally {
+      setTplApplying(false)
+    }
   }
 
   const [syncOpen, setSyncOpen] = useState(false)
@@ -910,10 +963,80 @@ export default function LiveSignals() {
                       0.000001, 0)}
                   </Col>
                 </Row>
-                <Button type="primary" icon={<SaveOutlined />} loading={cfgSaving}
-                  onClick={onSaveCfg} style={{ marginTop: 12 }}>
-                  保存配置
-                </Button>
+                <Space style={{ marginTop: 12 }}>
+                  <Button type="primary" icon={<SaveOutlined />} loading={cfgSaving}
+                    onClick={onSaveCfg}>
+                    保存配置
+                  </Button>
+                  <Button icon={<ThunderboltOutlined />} onClick={openTplModal}>
+                    从回测模板注入
+                  </Button>
+                </Space>
+                <Modal
+                  title="从回测模板注入配置"
+                  open={tplOpen}
+                  onCancel={() => setTplOpen(false)}
+                  footer={[
+                    <Button key="cancel" onClick={() => setTplOpen(false)}>取消</Button>,
+                    <Button key="ok" type="primary" loading={tplApplying}
+                      disabled={!tplId || !tplPreview}
+                      onClick={onTplApply}>
+                      确认注入
+                    </Button>
+                  ]}
+                  width={720}
+                >
+                  <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <Select
+                      style={{ width: '100%' }}
+                      placeholder="选择回测配置模板"
+                      value={tplId ?? undefined}
+                      onChange={(v: number) => {
+                        setTplId(v)
+                        void loadTplPreview(v, tplCapital)
+                      }}
+                      options={tplList.map(t => ({ value: t.id, label: t.name }))}
+                    />
+                    <Checkbox
+                      checked={tplCapital}
+                      onChange={e => {
+                        setTplCapital(e.target.checked)
+                        void loadTplPreview(tplId, e.target.checked)
+                      }}
+                    >
+                      同时覆盖实盘资金（默认不覆盖，实盘资金独立管理）
+                    </Checkbox>
+                    {tplPreview && (
+                      <>
+                        <Table
+                          size="small"
+                          rowKey="key"
+                          pagination={false}
+                          dataSource={tplPreview.updates}
+                          columns={[
+                            { title: '配置项', dataIndex: 'key', width: 180 },
+                            { title: '当前值', dataIndex: 'old',
+                              render: (v: unknown) => JSON.stringify(v) ?? '-' },
+                            { title: '注入值', dataIndex: 'new',
+                              render: (v: unknown) => (
+                                <Typography.Text strong>{JSON.stringify(v)}</Typography.Text>
+                              ) }
+                          ] as ColumnsType<{ key: string; old: unknown; new: unknown }>}
+                        />
+                        {tplPreview.skipped.length > 0 && (
+                          <Alert type="warning" showIcon message="以下项不注入"
+                            description={tplPreview.skipped.map(s => (
+                              <div key={s.key}>
+                                <Typography.Text code>{s.key}</Typography.Text>：{s.reason}
+                              </div>
+                            ))} />
+                        )}
+                        <Alert type="info" showIcon
+                          message="实盘独有配置（自动调度/回撤熔断/AI 简报/建议仓位）不受影响；mom 特征参数将同步到盘前/盘中/盘后特征重算，与回测同一把尺。" />
+                      </>
+                    )}
+                  </Space>
+                </Modal>
               </div>
             ) : null
           },

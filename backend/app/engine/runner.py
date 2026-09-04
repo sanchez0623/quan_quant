@@ -73,14 +73,9 @@ AUTO_STRATEGIES = ("momentum_t", "momentum_slot")
 # 档1参数对齐：这些动量特征键由任务 params 同步覆盖预筛默认值——
 # 调整 mom 参数时预筛（选池）与策略排名用同一把尺，消除两套口径漂移；
 # auto_above_ma / auto_with_accel / auto_rank_key 为预筛专用显式参数，不被覆盖
-_PICK_SYNC_KEYS = (
-    "macd_fast", "macd_slow", "macd_signal",
-    "mom_short", "mom_mid", "mom_long",
-    "w_short", "w_mid", "w_accel",
-    "crash_sigma", "crash_vol_n", "crash_abs_cap",
-    "vol_window", "vol_q_hi", "vol_q_lo",
-    "add_breakout_n",
-)
+# 动量特征参数白名单（档1参数对齐 §3）：引用 momentum_core.PICK_SYNC_KEYS
+# （apply_template 模板注入承接同一键集）
+_PICK_SYNC_KEYS = mc.PICK_SYNC_KEYS
 
 # ---- 引擎层 bar dict 物化白名单（P0-1/P0-1b）----
 # _simulate 物化 bars 时只保留这些列 + 动态规则列；dif/dea/ma/slope/bias/score
