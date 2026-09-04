@@ -516,15 +516,18 @@ def _summarize_withdraw(log: list[dict], wd_base: float) -> dict:
     for e in log:
         a = float(e.get("amount") or 0.0)
         m = e.get("month") or (e.get("date") or "")[:7]
+        t = e.get("type")
+        if t == "shortfall":
+            # 缺口 = 未提取部分（非出金）：只累计缺口额，不计入 months/total，
+            # 否则月度明细会把缺口虚标成"已提取"（bt_ec242f203d83：4~7月缺口的 73438.77 被重复计入 total）
+            shortfall += a
+            continue
         months[m] = months.get(m, 0.0) + a
         total += a
-        t = e.get("type")
         if t == "t_profit":
             t_profit += a
         elif t == "month_topup":
             topup += a
-        elif t == "shortfall":
-            shortfall += a
         elif t == "shortfall_recover":
             recover += a
         elif t == "nav_take_profit":
@@ -1134,6 +1137,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                         w_state["total"] += amt
                         w_state["recover"] += amt  # 追偿单独记账：不属于当月月末补齐
                         w_state["shortfall"] -= amt
+                        w_state["months"][month] = w_state["months"].get(month, 0.0) + amt
                         w_state["log"].append({"month": month, "date": day,
                                                "type": "shortfall_recover", "amount": round(amt, 2)})
 

@@ -234,7 +234,7 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         # ---- 出金（落袋为安） ----
         "withdrawn_total": round(withdrawn_total, 2),
         "t_profit_withdrawn": round(float(w.get("t_profit") or 0.0), 2),
-        "month_topup_withdrawn": round(float(w.get("topup") or 0.0), 2),
+        "month_topup_withdrawn": round(float(w.get("month_topup") or w.get("topup") or 0.0), 2),
         "nav_withdrawn": round(float(w.get("nav_profit") or 0.0), 2),
         "nav_withdraw_times": int(w.get("nav_times") or 0),
         "withdrawal_coverage": round(coverage, 4) if coverage is not None else None,

@@ -202,3 +202,26 @@ def test_nav_take_profit_disabled_no_op(tmp_path):
     assert not (wd.get("log") or []), "默认关闭时不应有任何出金流水"
     m = report.get("metrics") or {}
     assert (m.get("nav_withdraw_times") or 0) == 0
+
+
+def test_summarize_withdraw_shortfall_not_counted():
+    """回归：缺口（shortfall）是未提取部分，不得计入 months/total；
+    追偿（shortfall_recover）是真实出金，计入 months/total。
+    （bt_ec242f203d83：4~7月缺口 73438.77 被重复计入 total，573438.77 应为 500000）"""
+    from app.engine.runner import _summarize_withdraw
+    log = [
+        {"month": "2025-04", "date": "2025-04-30", "type": "t_profit", "amount": 853.24},
+        {"month": "2025-04", "date": "2025-04-30", "type": "shortfall", "amount": 19146.76},
+        {"month": "2025-08", "date": "2025-08-29", "type": "t_profit", "amount": 427.55},
+        {"month": "2025-08", "date": "2025-08-29", "type": "month_topup", "amount": 19572.45},
+        {"month": "2025-08", "date": "2025-08-29", "type": "shortfall_recover", "amount": 73438.77},
+    ]
+    s = _summarize_withdraw(log, 20000.0)
+    # 4 月：缺口 19146.76 不计入 -> months/total 只有实际提取 853.24
+    assert abs(s["months"]["2025-04"] - 853.24) < 1e-6
+    # 8 月：追偿计入当月 -> 20000 + 73438.77
+    assert abs(s["months"]["2025-08"] - (19572.45 + 427.55 + 73438.77)) < 1e-6
+    # total = 真实出金（不含缺口）
+    assert abs(s["total"] - (853.24 + 427.55 + 19572.45 + 73438.77)) < 1e-6
+    assert abs(s["shortfall"] - 19146.76) < 1e-6
+    assert abs(s["recover"] - 73438.77) < 1e-6
