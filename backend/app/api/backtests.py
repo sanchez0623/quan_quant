@@ -146,6 +146,19 @@ def normalize_config(cfg: dict) -> dict:
         if k not in risk and v is not None:
             risk[k] = v
     cfg["risk_config"] = risk
+
+    # ---- 动态选股顶层字段补全（与 BacktestCreateRequest 默认一致）----
+    # 历史模板/异常前端可能缺 auto_rank_key 等键（2026-09 实测：模板落库缺失、
+    # 载入回落 'score'，用户设的排序键静默丢失）。这里统一兜底，保证
+    # 「模板/回测/寻优/实验」读写恒全量；auto_with_accel=None 交给引擎按策略默认。
+    auto_defaults = {
+        "auto_idle_days": 5, "auto_top_x": 30, "auto_above_ma": 20,
+        "auto_with_accel": None, "auto_min_rps": None,
+        "auto_index": [], "auto_boards": [], "auto_rank_key": "score",
+    }
+    for k, v in auto_defaults.items():
+        if cfg.get(k) is None:
+            cfg[k] = v
     return cfg
 
 
