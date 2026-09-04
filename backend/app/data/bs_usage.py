@@ -50,6 +50,43 @@ _IP_CACHE_TTL = 600  # 公网 IP 很少变，缓存 10 分钟
 
 _IPV4_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
+# 官方黑名单账本接口（用户实测：POST {"ip": "..."} -> stats.total / data[].date
+# / releaseDate / yearlyRestrictCount；data 按时间倒序）
+_BLACKLIST_STATS_URL = "https://www.baostock.com/helpdocs/api/wd-blacklist-stats"
+
+
+def _fetch_official_blacklist(ip: str) -> dict | None:
+    """拉取 baostock 官方黑名单账本。返回
+    {"total": 今年限制次数, "latest_date": 最新事件日期(YYYY-MM-DD),
+     "latest_release": 官方释放时间原文}；接口不可达/结构变化返回 None。"""
+    if not ip:
+        return None
+    try:
+        import httpx
+        with httpx.Client(timeout=5, trust_env=False) as client:
+            r = client.post(_BLACKLIST_STATS_URL, json={"ip": ip})
+            if r.status_code != 200:
+                return None
+            resp = r.json()
+        stats = resp.get("stats") or {}
+        data = stats.get("data") or []
+        total = int(stats.get("total") or resp.get("yearlyRestrictCount")
+                    or len(data) or 0)
+        latest = data[0] if data else {}
+        return {"total": total,
+                "latest_date": str(latest.get("date") or "")[:10],
+                "latest_release": str(latest.get("releaseDate") or "")}
+    except Exception:
+        return None
+
+
+def _clean_release(raw: str) -> str | None:
+    """官方 releaseDate（如 2026-09-03 23:10:00.0）-> 可入库/可解析的时间串"""
+    s = str(raw or "").strip().replace("T", " ")
+    if not s:
+        return None
+    return s.split(".")[0]
+
 
 def _extract_ipv4(text: str) -> str:
     """从任意文本中提取合法的 IPv4（兼容纯 IP 与中文包装格式）。"""
@@ -198,12 +235,48 @@ class BsUsageTracker:
             return dict(row) if row else None
 
     def record_blacklist(self, ip: str = "") -> dict:
-        """检测到被限制（错误码 10001011）：今年累计次数+1，冻结时长=次数×6h。
+        """检测到被限制（错误码 10001011）：优先以 baostock 官方账本对账。
 
-        若当前已处于黑名单限制期内（未到释放时间），视为同一次限制的重复探测，
-        不重复累加次数，仅刷新检查时间——否则黑名单持续期间每次健康检查都会虚增次数。"""
+        官方接口 wd-blacklist-stats 是唯一事实源：
+        - 官方最新记录日期 == 本地最近一条检测日 => 同一次限制事件：
+          不累加计数，仅用官方 releaseDate 校准本地释放时间
+          （本地按"次数×6h"估算的释放期会早于/晚于官方，提前判定
+          "已解除"会把限制期内后续被拒误判为新事件而虚增计数）。
+        - 新事件：freeze_count 直接采用官方 yearlyRestrictCount。
+        - 官方接口不可达：回退本地估算（同限制期内重复探测不累加）。
+        每次黑名单事件才调用，频率极低。"""
         now = datetime.now()
         row = self._blacklist_row()
+        official = _fetch_official_blacklist(ip or self.public_ip())
+        if official is not None:
+            latest_local_day = (str(row.get("detected_at") or "")[:10]
+                                if row else "")
+            same_event = bool(official["latest_date"]) and \
+                official["latest_date"] == latest_local_day
+            release = _clean_release(official["latest_release"])
+            with db.conn() as c:
+                if same_event and row:
+                    c.execute(
+                        "UPDATE bs_blacklist SET freeze_count=?, release_at=?, "
+                        "last_check=? WHERE id=?",
+                        (official["total"], release,
+                         now.isoformat(timespec="seconds"), row["id"]))
+                    return {"ip": row.get("ip") or ip,
+                            "freeze_count": official["total"],
+                            "detected_at": row["detected_at"],
+                            "release_at": release}
+                n = official["total"] or (
+                    (int(row["freeze_count"]) + 1) if row else 1)
+                detected = (official["latest_date"]
+                            or now.isoformat(timespec="seconds"))
+                c.execute(
+                    "INSERT INTO bs_blacklist(ip,freeze_count,detected_at,"
+                    "release_at,last_check) VALUES(?,?,?,?,?)",
+                    (ip or "", n, detected, release,
+                     now.isoformat(timespec="seconds")))
+                return {"ip": ip or "", "freeze_count": n,
+                        "detected_at": detected, "release_at": release}
+        # ---- 官方不可达：本地估算兜底 ----
         active = False
         if row and row.get("release_at"):
             try:
@@ -230,13 +303,18 @@ class BsUsageTracker:
                 "release_at": release_at.isoformat(timespec="seconds")}
 
     def mark_released(self) -> None:
-        """登录成功说明当前未被限制：将最近黑名单记录标记为已解除（保留累计次数历史）。"""
+        """登录成功说明当前请求可通：仅刷新最近黑名单记录的检查时间。
+
+        不改写 release_at——服务端 IP 冻结不受客户端单次登录影响，
+        提前抹掉释放时间会把限制期内后续被拒误判为新事件而虚增计数
+        （实测：2026-09-03 20:18 登录成功改写释放期后，21:55 的拒绝
+        被误记为第 3 次限制，官方账本实际仅 2 次）。"""
         now = datetime.now().isoformat(timespec="seconds")
         with db.conn() as c:
             c.execute(
-                "UPDATE bs_blacklist SET release_at=?, last_check=? "
+                "UPDATE bs_blacklist SET last_check=? "
                 "WHERE id=(SELECT MAX(id) FROM bs_blacklist)",
-                (now, now),
+                (now,),
             )
 
     def touch_check(self) -> None:
