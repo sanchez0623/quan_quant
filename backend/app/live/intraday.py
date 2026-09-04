@@ -63,9 +63,10 @@ def _feats_params(cfg: dict) -> dict:
 
 
 def market_features_cached(cfg: dict, data_dir=None) -> mc.MarketFeatures:
-    """全市场日线特征（280 自然日窗口，与盘前 premarket 同口径），按日缓存。"""
+    """全市场日线特征（280 自然日窗口，与盘前 premarket 同口径），按日缓存。
+    key 含 data_dir——不同数据目录（测试隔离）不得串染。"""
     day = datetime.now().strftime("%Y-%m-%d")
-    key = (day, int(cfg["above_ma"]), bool(cfg["with_accel"]))
+    key = (day, int(cfg["above_ma"]), bool(cfg["with_accel"]), str(data_dir))
     if _MF_CACHE.get("key") == key:
         return _MF_CACHE["mf"]
     mf = mc.market_features(
@@ -106,7 +107,8 @@ def _code_features(code: str, p: dict, data_dir=None):
 
 
 def _entry_allowed(mf: mc.MarketFeatures, as_of: str, pool_n: int) -> set:
-    """今日可建仓名单 = as_of 全市场动量分前 pool_n（rank_days T-1 语义，无门槛）"""
+    """榜单（as_of 全市场动量分前 pool_n）——供 stepper 的「入榜/跌出榜单」
+    衰退判定与建仓准入；持仓票的相对强度衰退以此为准。"""
     d = mf.feats.filter((pl.col("day") == as_of) & pl.col("score").is_not_null())
     if not d.height:
         return set()
@@ -218,7 +220,11 @@ def run_intraday(data_dir=None, push: bool = True,
     if as_of not in set(mf.calendar):
         as_of = mf.calendar[-1]
     gate_state = int(pool_state.get("gate_state") or 0)
-    entry_allowed = _entry_allowed(mf, as_of, int(cfg["pool_n"]))
+    # 榜单（stepper 的「入榜/跌出榜单」衰退判定与建仓准入）：全市场动量分前 pool_n
+    rank_set = _entry_allowed(mf, as_of, int(cfg["pool_n"]))
+    # 开仓准入（今日可建仓名单）= 池内座次（池子顺序 = 盘前 rank_key 排序）
+    # 前 pool_n——限定"回测策略模板参数选出的池子范围"，与盘前开仓名单同源。
+    entry_allowed = set(pool_codes[:max(1, int(cfg["pool_n"]))])
 
     name_map: dict[str, str] = {}
     try:
@@ -291,7 +297,7 @@ def run_intraday(data_dir=None, push: bool = True,
                      "day_idx": int(r.get("day_idx") or 0)}
 
         saved = states.get(code) or {}
-        stepper = SlotStepper(p_stepper, {today} if code in entry_allowed else set())
+        stepper = SlotStepper(p_stepper, {today} if code in rank_set else set())
         stepper.restore(saved.get("st") or {})
         last_bar = saved.get("last_bar")
 
@@ -327,7 +333,8 @@ def run_intraday(data_dir=None, push: bool = True,
 
         for bar_ts, sig, close in sigs_code:
             item = _make_signal(sig, code, name_map.get(code, code), bar_ts, close,
-                                cfg, positions, equity, cash, today)
+                                cfg, positions, equity, cash, today,
+                                entry_allowed=entry_allowed)
             if item.get("blocked"):
                 suspended.append({"code": code, "reason": item["blocked"]})
                 continue
@@ -363,7 +370,7 @@ def run_intraday(data_dir=None, push: bool = True,
 
 def _make_signal(sig: dict, code: str, name: str, bar_ts: str, close: float,
                  cfg: dict, positions: dict, equity: float, cash: float,
-                 today: str) -> dict:
+                 today: str, entry_allowed: Optional[set] = None) -> dict:
     """信号 -> 实盘信号字段 + 风控前置（T+1/槽位/预算）。blocked 非空 = 拦截。"""
     stype = _stype_of(sig)
     pos = positions.get(code)
@@ -384,6 +391,11 @@ def _make_signal(sig: dict, code: str, name: str, bar_ts: str, close: float,
         if stype == "开仓":
             if pos:
                 blocked = f"{code} 已有持仓（盘前/此前信号已建仓），开仓信号去重拦截"
+            elif entry_allowed is not None and code not in entry_allowed:
+                # 开仓准入 = 池内座次前 pool_n（模板参数选出的池子范围）；
+                # 持仓票的升级/加仓不受此限
+                blocked = (f"{code} 非今日可建仓名单（池内座次前 "
+                           f"{int(cfg.get('pool_n') or 6)}），候补中——开仓拦截")
             elif len(positions) >= int(cfg.get("max_holdings") or 3):
                 blocked = (f"槽位已满（max_holdings={cfg.get('max_holdings')}），"
                            f"{code} 开仓信号拦截")

@@ -212,6 +212,9 @@ def test_signal_status_validation():
 def test_position_price_snapshot(tmp_path, monkeypatch):
     """盘中轮询/盘后流程落库持仓现价；list_live_positions 带浮盈展示字段"""
     from app.live import intraday, postclose
+    # 最小日线（market_features 需要非空库才不抛）
+    dates = synthetic.trade_dates(60, end_date=_TODAY)
+    store.write_daily(_rows(["600000"], dates), str(tmp_path))
     db.upsert_live_position("600000", "股600000", 10000, 10.0,
                             open_day="2026-09-01")
     # 盘中轮询：qt 报价 mock，分钟线空数据（只走落库路径，不进状态机）

@@ -163,19 +163,15 @@ def run_premarket(data_dir: Optional[str] = None,
                 idle_start = None
                 rebalanced = True
                 messages.append(f"动态重选（基准日 {as_of}）：新池 {picked.height} 只")
-                # 开仓信号只发「今日可建仓名单」（as_of 动量分前 pool_n，与盘中
-                # entry_allowed 同口径），按动量分优先占用槽位（max_holdings）；
-                # 金额对齐 momentum_slot 真实口径（试仓 base_pct_min / 满配
-                # base_pct_max，受单票 40% 上限与现金缓冲约束、逐笔扣减）。
-                # 其余候选仅在池子中候补——盘中退出后由盘中信号补位。
+                # 开仓信号按池子座次（picked 顺序 = 候选域∩门槛后按模板
+                # rank_key 排序）取前 slots 个有效槽位；候选域与排序键均来自
+                # 模板参数（与池子同一把尺）。其余候选候补——盘中退出后由
+                # 冷却/门槛机制与次日盘前名单接续。
+                # （曾用全市场 score 前 pool_n 作准入：与池子两把尺子，
+                #   交叉可能为空 -> 开仓名单 0 只、无信号可回填）
                 _sp = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
                 base_max = float(_sp["base_pct_max"])
                 base_min = float(_sp["base_pct_min"])
-                entry = (mf.feats.filter((pl.col("day") == as_of)
-                          & pl.col("score").is_not_null())
-                         .sort("score", descending=True)
-                         .head(max(1, int(cfg["pool_n"]))))
-                entry_allowed = set(entry["code"].to_list())
                 equity, cash_all = intraday._virtual_equity(
                     cfg, positions, daily_close)
                 slots = int(cfg.get("max_holdings") or 3)
@@ -187,8 +183,6 @@ def run_premarket(data_dir: Optional[str] = None,
                     if used >= slots:
                         break
                     code = r["code"]
-                    if code not in entry_allowed:
-                        continue   # 池内候补：非今日可建仓名单，不发开仓信号
                     ref = daily_close.get(code)
                     cf, _fac, _raw = intraday._code_features(
                         code, p_feats, data_dir)

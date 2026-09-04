@@ -17,8 +17,10 @@ from app.data import bs_usage
 
 @pytest.fixture(autouse=True)
 def _bl_env():
-    """建表 + 每用例后清 bs_blacklist（防污染真实库）"""
+    """建表 + 每用例前后清 bs_blacklist（防前置测试污染/污染后续）"""
     db.init_db()
+    with db.conn() as c:
+        c.execute("DELETE FROM bs_blacklist")
     yield
     with db.conn() as c:
         c.execute("DELETE FROM bs_blacklist")
