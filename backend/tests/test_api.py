@@ -303,6 +303,17 @@ def test_ai_no_key_fails_with_friendly_error(client, token):
     assert "Key 管理" in r.json()["detail"]
 
 
+def test_generate_name_no_key_friendly_error(client, token):
+    """无 LLM key 时 AI 生成回测名称应返回友好错误（不 500）"""
+    r = client.post("/api/backtests/generate-name", headers=H(token), json={
+        "strategy_id": "momentum_t", "params": {"mom_short": 20, "exit_need": 2},
+        "universe": ["600000"], "universe_auto": False,
+        "start_date": "2024-01-01", "end_date": "2026-01-01",
+        "period": "daily", "initial_capital": 1000000})
+    assert r.status_code == 400
+    assert "未配置 LLM API Key" in r.json()["detail"]
+
+
 def test_data_update_no_source_friendly_error(monkeypatch):
     """测试「无可用数据源」时的友好报错。
     仅在无数据源环境运行；若已安装 baostock/akshare/mootdx 则跳过（因测试需模拟无源环境）。"""

@@ -122,6 +122,23 @@ export async function createBacktest(data: BacktestCreateRequest): Promise<TaskC
   return res.data
 }
 
+/** AI 生成回测名称：把当前策略配置发给 LLM，返回建议任务名 */
+export async function generateBacktestName(data: {
+  strategy_id: string
+  params?: Record<string, unknown>
+  risk_config?: Record<string, unknown>
+  universe?: string[]
+  universe_auto?: boolean
+  start_date?: string
+  end_date?: string
+  period?: string
+  initial_capital?: number
+  benchmark?: string
+}): Promise<{ name: string; model?: string }> {
+  const res = await api.post<{ name: string; model?: string }>('/backtests/generate-name', data)
+  return res.data
+}
+
 export async function getBacktests(): Promise<BacktestListItem[]> {
   const res = await api.get<BacktestListItem[]>('/backtests')
   return res.data

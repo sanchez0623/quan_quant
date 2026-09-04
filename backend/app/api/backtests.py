@@ -349,6 +349,79 @@ def remove_template(template_id: int, user: str = Depends(get_current_user)):
     return {"status": "ok"}
 
 
+# ---------------- AI 生成回测名称（AI_NAME） ----------------
+
+# 有辨识度的策略参数 key（供 AI 命名时挑选），覆盖各策略 param_schema
+_NAME_KEY_PARAMS = {
+    # momentum_t / momentum_slot 动量系
+    "mom_short", "mom_mid", "mom_long", "mom_gap_n", "exit_need", "rps_top",
+    "pool_n", "max_adds", "base_pct", "top_n", "add_breakout_n", "with_accel",
+    # 做T机制
+    "t_mode", "t_debt_max_days", "t_max_chase_pct", "reentry_discount",
+    # 双均线 / 网格
+    "fast", "slow", "grid_band", "t_pct", "vol_window",
+}
+
+class GenNameRequest(BaseModel):
+    strategy_id: str
+    params: dict = Field(default_factory=dict)
+    risk_config: dict = Field(default_factory=dict)
+    universe: list[str] = Field(default_factory=list)
+    universe_auto: bool = False
+    start_date: str = ""
+    end_date: str = ""
+    period: str = "daily"
+    initial_capital: float = 0
+    benchmark: str = "000905"
+
+
+@router.post("/generate-name")
+def generate_name(req: GenNameRequest, user: str = Depends(get_current_user)):
+    """用当前策略配置让 AI 生成一个合适的回测任务名（轻量单次调用，不落库）。"""
+    from ..llm import provider
+    if not provider.db_key_entries(user) and not provider.key_pool_mode():
+        raise HTTPException(status_code=400,
+                            detail="未配置 LLM API Key：请到「Key 管理」页添加 API Key（DeepSeek/OpenRouter 等）")
+    strategy = REGISTRY.get(req.strategy_id)
+    sname = getattr(strategy, "name", None) or req.strategy_id
+    risk_keys = ("stop_loss_mode", "stop_loss_pct", "take_profit_pct",
+                 "atr_trail_mult", "adaptive", "max_holdings")
+    summary = {
+        "策略": sname,
+        "周期": req.period,
+        "时间": f"{req.start_date} ~ {req.end_date}",
+        "初始资金": round(req.initial_capital, 0),
+        "动态选股": bool(req.universe_auto),
+        "股票数": "自动生成" if req.universe_auto else len(req.universe or []),
+        "基准": req.benchmark,
+        "关键参数": {k: v for k, v in (req.params or {}).items()
+                    if v is not None and k in _NAME_KEY_PARAMS},
+        "风控": {k: v for k, v in (req.risk_config or {}).items()
+                if k in risk_keys and v is not None},
+    }
+    # 参数全量过长时保留关键参数，其余截断
+    full = json.dumps(req.params or {}, ensure_ascii=False)
+    if len(full) > 400:
+        full = full[:400] + "..."
+    if not summary["关键参数"]:
+        summary["关键参数"] = full
+    prompt = json.dumps(summary, ensure_ascii=False)
+    messages = [
+        {"role": "system", "content": "你是 A 股量化回测任务的命名助手。根据用户给出的策略与关键参数配置，"
+                                      "生成一个简洁、信息量高的中文任务名（6~24 字），要体现策略/周期/资金档等特征。"
+                                      "只输出名称本身，不要任何解释、引号或前后缀。"},
+        {"role": "user", "content": f"配置摘要：{prompt}\n请生成一个合适的回测任务名。"},
+    ]
+    try:
+        res = provider.chat(None, messages, temperature=0.5, db_path=None, username=user)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"AI 生成名称失败：{e}")
+    name = (res.get("content") or "").strip().strip('"').strip("'").replace("\n", " ").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="AI 未返回有效名称，请重试")
+    return {"name": name[:40], "model": res.get("model")}
+
+
 @router.get("/{task_id}/status")
 def backtest_status(task_id: str, _user: str = Depends(get_current_user)):
     task = db.get_task(task_id)

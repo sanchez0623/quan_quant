@@ -25,7 +25,7 @@ import {
   Typography,
   Upload
 } from 'antd'
-import { DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons'
+import { DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, RobotOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import TaskStopButton from '../components/TaskStopButton'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -35,6 +35,7 @@ import {
   deleteBacktest,
   deleteTemplate,
   errDetail,
+  generateBacktestName,
   getBacktests,
   getStrategies,
   getTemplates
@@ -222,6 +223,8 @@ export default function BacktestList() {
   const [diffOpen, setDiffOpen] = useState(false)
   const [diffA, setDiffA] = useState<number | undefined>(undefined)
   const [diffB, setDiffB] = useState<number | undefined>(undefined)
+  // ---- AI 生成任务名称 ----
+  const [naming, setNaming] = useState(false)
   const prefillApplied = useRef(false)
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
@@ -385,6 +388,38 @@ export default function BacktestList() {
   }, [hasActive])
 
   // 股票池远程搜索与批量粘贴逻辑已抽至 StockPicker 组件（方案 §8.3）
+
+  /** 用当前策略配置让 AI 生成任务名称并填入 */
+  const onAiName = async () => {
+    const values = form.getFieldsValue(true) as BacktestFormValues
+    if (!values.strategy_id) {
+      message.warning('请先选择策略，再生成名称')
+      return
+    }
+    setNaming(true)
+    try {
+      const res = await generateBacktestName({
+        strategy_id: values.strategy_id,
+        params: values.params ?? {},
+        risk_config: values.risk_config ?? {},
+        universe: values.universe ?? [],
+        universe_auto: values.universe_auto ?? false,
+        start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
+        end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
+        period: values.period ?? 'daily',
+        initial_capital: values.initial_capital ?? 400000,
+        benchmark: values.benchmark
+      })
+      if (res.name) {
+        form.setFieldsValue({ name: res.name })
+        message.success(`已生成名称${res.model ? `（${res.model}）` : ''}`)
+      }
+    } catch (err) {
+      message.error(errDetail(err, 'AI 生成名称失败'))
+    } finally {
+      setNaming(false)
+    }
+  }
 
   const onStrategyChange = (id: string) => {
     setStrategyId(id)
@@ -754,7 +789,27 @@ export default function BacktestList() {
         >
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
+              <Form.Item
+                name="name"
+                label={
+                  <Space size={4}>
+                    任务名称
+                    <Tooltip title="根据当前策略/周期/资金等配置，用 AI 生成一个合适的任务名称">
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0, fontSize: 12 }}
+                        icon={<RobotOutlined />}
+                        loading={naming}
+                        onClick={onAiName}
+                      >
+                        AI生成
+                      </Button>
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true, message: '请输入任务名称' }]}
+              >
                 <Input placeholder="例如：双均线-浦发银行" />
               </Form.Item>
             </Col>
