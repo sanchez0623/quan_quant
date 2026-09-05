@@ -20,6 +20,12 @@ class RiskConfig:
         self.max_intraday_trades = int(cfg.get("max_intraday_trades") or 4)
         self.max_holdings = int(cfg.get("max_holdings", 0) or 0)  # 最大持仓只数，0=不限
         self.cash_reserve_pct = float(cfg.get("cash_reserve_pct", 1.5) or 0)  # 现金缓冲比例
+        # ---- 组合层：板块集中度上限 ----
+        # 单板块持仓市值（核心仓+做T仓合计）≤ 净值 × max_sector_pct/100。
+        # 0=不启用。仅拦截超限板块的【开仓/加仓】（缩量或拒单），不主动卖出、
+        # 不限制做T还债/纯正向T，避免破坏做T收益结构。板块口径见 sources.derive_board
+        # （main主板/chinext创业板/star科创板/bse北交所）。
+        self.max_sector_pct = float(cfg.get("max_sector_pct", 0) or 0)
         # ---- ATR_TRAILING：止损线 = max(成本项 − k1×ATR, 最高价 − k2×ATR)，只上不下 ----
         # k1：硬止损兜底倍数（相对成本）。k2：移动锁盈倍数（相对持仓期最高价）。
         # k2 < k1 时，价格上涨后移动项会超过成本项并接管，实现「随最高价上移锁盈」。
@@ -143,6 +149,19 @@ class RiskManager:
                         equity * (1 - self.cfg.cash_reserve_pct / 100))
         by_total = max(0.0, cap_total - total_market_value)
         return max(0.0, min(by_stock, by_total, cash))
+
+    def sector_budget(self, equity: float, sector_mv: dict[str, float],
+                      sector: str | None) -> float:
+        """组合层：板块集中度剩余额度（该板块还可买多少）。
+
+        max_sector_pct>0 且 code 能识别板块时生效：返回 板块上限 − 该板块已持仓市值；
+        未启用/无法识别板块返回 +inf（不限制）。由 execute_buy 对开仓/加仓预算取 min。
+        做T还债/纯正向T不调用本方法，保证做T收益结构不受组合层干扰。"""
+        c = self.cfg
+        if c.max_sector_pct <= 0 or not sector:
+            return float("inf")
+        cap = equity * c.max_sector_pct / 100
+        return max(0.0, cap - sector_mv.get(sector, 0.0))
 
     # ---------------- 持仓中检查（返回 (action, reason)） ----------------
 

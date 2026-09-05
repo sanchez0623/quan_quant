@@ -46,6 +46,15 @@ export const RISK_FIELDS: RiskField[] = [
     precision: 1,
     group: '仓位与资金'
   },
+  // ---- 组合层：板块集中度上限（只限开仓/加仓，不主动卖出；做T还债不受限）----
+  {
+    key: 'max_sector_pct',
+    label: '单板块集中度上限（%）',
+    hint: '同一板块（主板/创业板/科创板/北交所）持仓市值占净值上限；0=不启用',
+    step: 5,
+    precision: 0,
+    group: '仓位与资金'
+  },
   // ---- 止损：随 stop_loss_mode 切换 ----
   {
     key: 'stop_loss_mode',
@@ -270,6 +279,7 @@ export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
   max_total_position_pct: 100,
   max_holdings: 3,
   cash_reserve_pct: 1.5,
+  max_sector_pct: 0,
   stop_loss_mode: 'atr_trailing',
   stop_loss_pct: 12,
   atr_period: 14,

@@ -30,6 +30,8 @@ class RiskConfigModel(BaseModel):
     max_intraday_trades: int | None = None  # 未传时自动对齐策略 max_t_times
     max_holdings: int = 0              # 最大持仓只数，0=不限
     cash_reserve_pct: float = 1.5      # 现金缓冲比例（永不进场的资金）
+    # ---- 组合层：板块集中度上限（main/chinext/star/bse，0=不启用；只限开仓/加仓）----
+    max_sector_pct: float = 0.0        # 单板块持仓市值 ≤ 净值 × 该值/100
     # ---- atr_trailing：止损线 = max(成本项−k1×ATR, 最高价−k2×ATR)，只上不下 ----
     atr_trail_mult: float = 6.0        # k2：移动锁盈倍数（5~12 稳健区间，<=3 偏紧）
     atr_cost_base: str = "first"       # 成本基准：first=首笔开仓价｜wavg=加权平均成本

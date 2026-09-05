@@ -941,6 +941,17 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             budget_pct = order.get("budget_pct")
             if budget_pct:
                 budget = min(budget, equity * float(budget_pct) / 100)
+            # 组合层：板块集中度上限（只限开仓/加仓——做T还债/纯正向T是还债与网格，
+            # 不受限，保证做T收益结构不受组合层干扰）
+            if risk_cfg.max_sector_pct > 0:
+                sec = sources.derive_board(code)
+                if sec:
+                    sec_mv = {}
+                    for p in portfolio.positions:
+                        s = sources.derive_board(p.code)
+                        if s:
+                            sec_mv[s] = sec_mv.get(s, 0.0) + p.volume * price_map.get(p.code, p.cost_price)
+                    budget = min(budget, risk_mgr.sector_budget(equity, sec_mv, sec))
             # P2 加仓最小有效量：预算（经单票/总仓/现金三重约束后）不足总资产
             # ADD_MIN_BUDGET_PCT% 时拒绝成交——现金耗尽后缩量到 100 股的垃圾
             # 加仓单既浪费手续费又污染交易统计（信号层同阈值跳过不发信号）
