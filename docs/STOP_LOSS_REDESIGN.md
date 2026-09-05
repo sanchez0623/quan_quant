@@ -169,9 +169,25 @@
 
 ---
 
-## 9. 实测记录（2026-09-04，完整 A/B/D 演进）
+## 9. 实测记录（2026-09-04，完整 A/B/C/D 演进）
 
-方向 A（市场状态三态）/ B（双层止损）/ D（动量状态机）均按本章设计**完整实现并通过 A/B 验证**。结论：**仅 B 有效并已落地为默认参数（开关默认关）；A、D 证伪**。
+方向 A（市场状态三态）/ B（双层止损）/ C（排名轮动）/ D（动量状态机）均按本章设计**完整实现并通过 A/B 验证**。结论：**仅 B 有效并已落地为默认参数（开关默认关）；A、C、D 证伪**。
+
+### 9.0 实验条件（16 组合共用同一基线配置，仅按组合开关差异）
+
+- **策略**：momentum_slot（6 槽位动量轮换 + 网格做T）
+- **周期**：5 分钟（minute5）
+- **区间**：2024-09-03 ~ 2026-09-03（约 2 年）
+- **初始资金**：3,000,000 | **基准**：000905（中证500）
+- **选股**：动态选股 universe_auto=True，池大小 pool_n=6，max_holdings（最大持仓只数）=6（策略层=风控层一致）
+- **动量参数**：mom_short（短周期动量）=10 / mom_mid（中周期动量）=60 / mom_long（长周期动量）=120，exit_need（衰退信号满足数）=2，exit_cooldown（退出冷却）=5
+- **做T**：t_mode=grid（网格），t_debt_max_days（做T债务超时）=3
+- **风控**：stop_loss_mode=atr_trailing（ATR移动止损），k1=6，k2=6，atr_cost_base=first，take_profit_pct=0（本任务止盈关闭），adaptive=trend
+- **BASE 定义**：基线（bt_84f3d9c10301）之上加 exit_confirm_days（二清确认期）=1 + out_top_days（跌出榜单确认日）=1
+- **B 定义**：BASE + trade_tier_on=on（做T双层止损），trade_stop_pct（T仓成本底线）=10，trade_trail_mult（T仓移动倍数）=5
+- **A 定义**：BASE + market_regime_on=on（ADX+MA10/30 三态，默认参数）
+- **C 定义**：BASE + slot_rotation_on=on（排名轮动），slot_stale_days（槽位老化天数）=5
+- **D 定义**：BASE + momentum_fsm_on=on（动量状态机），exit_fade_days=2
 
 ### 9.1 结论总览
 
