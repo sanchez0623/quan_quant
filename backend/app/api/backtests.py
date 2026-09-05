@@ -48,6 +48,8 @@ class RiskConfigModel(BaseModel):
     trade_atr_mult: float = 3.0
     trade_trail_mult: float = 5.0
     trade_stop_pct: float = 10.0
+    # ---- 方案E：市况条件化保护（regime_b_on=on 时双层止损只在趋势市启用）----
+    regime_b_on: bool = False
 
 
 class BacktestRequest(BaseModel):

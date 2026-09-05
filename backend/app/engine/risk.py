@@ -51,6 +51,11 @@ class RiskConfig:
         self.trade_atr_mult = float(cfg.get("trade_atr_mult", 3.0) or 0)      # 交易仓硬止损倍数 k1
         self.trade_trail_mult = float(cfg.get("trade_trail_mult", 5.0) or 0)  # 交易仓移动锁盈倍数 k2
         self.trade_stop_pct = float(cfg.get("trade_stop_pct", 10.0) or 0)     # 交易仓成本底线(%)
+        # ---- 方案E：市况条件化保护 ----
+        # regime_b_on=on 时，双层止损(做T仓独立档)只在「趋势市」启用；
+        # 震荡/下跌市做T仓退回默认档（BASE 行为），规避低波动市 B 档的拖累。
+        # 市况由 runner 逐日按指数判定写入 RiskManager.current_regime（T-1 对齐）。
+        self.regime_b_on = bool(cfg.get("regime_b_on", False))
 
 
 class RiskManager:
@@ -62,6 +67,7 @@ class RiskManager:
         self.broken: bool = False  # 回撤熔断：停止开新仓
         self.trough_equity: float | None = None  # 熔断后的最低净值（用于企稳判定）
         self.stable: bool = False  # 净值企稳：回撤不再扩大（等待策略开仓信号解除熔断）
+        self.current_regime: str = "range"  # 方案E：当前市场状态（trend/range/crash，runner 逐日写入）
 
     # ---------------- 买入前检查 ----------------
 
@@ -145,9 +151,16 @@ class RiskManager:
         """返回 (动作: stop_loss|take_profit, reason) 或 None。
 
         bar 为当前行情字典，供自适应止损读取趋势/波动列；不传则自适应退化为中性倍数 1.0。
-        方案B（双层止损）：交易仓(tag=做T)用独立档，核心仓沿用默认档。"""
+        方案B（双层止损）：交易仓(tag=做T)用独立档，核心仓沿用默认档。
+        方案E（市况条件化）：regime_b_on 开启时，B 档只在 trend 市**激活**（
+        粘滞：trend 出现一次即锁定到平仓，只在非趋势持仓期退回默认档），
+        避免日级市况切换导致做T仓止损档位中途跳变（宽→紧扫损）。"""
         c = self.cfg
         is_trade = c.trade_tier_on and pos.tag == "做T"
+        if c.regime_b_on:
+            if is_trade and self.current_regime == "trend":
+                pos.b_tier = True  # 粘滞激活：trend 出现一次即锁定 B 档
+            is_trade = is_trade and pos.b_tier
         if not is_trade and c.take_profit_pct > 0 and price >= pos.cost_price * (1 + c.take_profit_pct / 100):
             return "take_profit", f"止盈{c.take_profit_pct:g}%"
         if is_trade:

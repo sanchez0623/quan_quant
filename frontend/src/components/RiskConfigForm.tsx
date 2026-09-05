@@ -160,6 +160,19 @@ export const RISK_FIELDS: RiskField[] = [
     group: '止损',
     show_if: { trade_tier_on: [1] }
   },
+  // ---- 方案E：市况条件化保护 ----
+  {
+    key: 'regime_b_on',
+    label: 'B仅趋势市启用',
+    hint: '开启后：双层止损(做T仓独立档)只在趋势市生效，震荡/下跌市做T仓退回默认档（规避低波动市拖累）',
+    type: 'select',
+    group: '止损',
+    show_if: { trade_tier_on: [1] },
+    options: [
+      { value: 1, label: '开（仅趋势市启用B档）' },
+      { value: 0, label: '关（全程启用B档）' }
+    ]
+  },
   // ---- 自适应止损：仅 atr_trailing 生效（k1/k2 按市况缩放）----
   {
     key: 'adaptive',
@@ -278,7 +291,8 @@ export const DEFAULT_RISK_CONFIG: Record<string, string | number> = {
   trade_tier_on: 0,
   trade_stop_pct: 10,
   trade_atr_mult: 3,
-  trade_trail_mult: 5
+  trade_trail_mult: 5,
+  regime_b_on: 0
 }
 
 /** 分组顺序（未列出的组排在末尾） */

@@ -20,6 +20,10 @@ class Position:
     first_price: float = 0.0
     # ATR_TRAILING：当前生效的移动止损线，只上不下（ratchet），避免回调时止损线回落
     trail_stop: float = 0.0
+    # 方案E（市况条件化B）：该仓位是否已激活B档（做T仓独立止损）。
+    # 粘滞语义：trend 市出现一次即置 True 并保持到平仓，避免日级市况切换导致
+    # 止损档位中途跳变（宽→紧扫损）。非做T/未激活恒为 False。
+    b_tier: bool = False
 
     def __post_init__(self) -> None:
         if self.highest_price == 0.0:

@@ -210,11 +210,13 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
         raise RuntimeError(f"回测窗口内无数据（universe={universe}, {start}~{end}, {period}）")
 
     # ---- 信号（start_date 之前为预热期，策略只算指标不推进状态机）----
-    # 方案A：市场状态三态注入（momentum_slot + market_regime_on 时读指数日线计算；
-    # 指数缺失返回 None，策略降级为全程 range 不缩放，行为与现状一致）
+    # 方案A/方案E：市场状态三态注入。A(market_regime_on) 供策略层缩放；
+    # E(risk_config.regime_b_on) 供风控层「双层止损只在趋势市启用」。
+    # 任一开启即计算指数日线 regime（指数缺失返回 None，各自降级为全程 range）。
     market_regime = None
+    _regime_b_on = bool((cfg.get("risk_config") or {}).get("regime_b_on"))
     if (getattr(strategy, "id", None) == "momentum_slot"
-            and str(params.get("market_regime_on") or "off") == "on"):
+            and (str(params.get("market_regime_on") or "off") == "on" or _regime_b_on)):
         market_regime = mc.compute_market_regime(
             data_dir, str(params.get("regime_index") or "000905"),
             int(params.get("regime_ma_short") or 10),
@@ -222,6 +224,10 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
             int(params.get("regime_slope_n") or 3),
             int(params.get("regime_adx_period") or 14),
             float(params.get("regime_adx_th") or 20))
+    # 方案E：日级市况查找表（T-1 对齐，供风控层逐日写入 RiskManager.current_regime）
+    regime_map = {}
+    if market_regime is not None and market_regime.height:
+        regime_map = {r[0]: r[1] for r in market_regime.rows()}
     prepared = (strategy.prepare(data, params, start_date=start, market_regime=market_regime)
                 if market_regime is not None
                 else strategy.prepare(data, params, start_date=start))
@@ -247,7 +253,7 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
         prepared = _add_adaptive_cols(prepared, risk_cfg)
 
     return _simulate(cfg, prepared, params, risk_cfg, data_dir, progress_cb,
-                     init_withdraw=init_withdraw)
+                     init_withdraw=init_withdraw, regime_map=regime_map)
 
 
 # ------------------------------------------------------------------
@@ -644,7 +650,8 @@ def _st_map(codes: list[str], data_dir) -> dict[str, bool]:
 
 def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
               risk_cfg: RiskConfig, data_dir, progress_cb,
-              init_withdraw: Optional[dict] = None) -> dict:
+              init_withdraw: Optional[dict] = None,
+              regime_map: Optional[dict] = None) -> dict:
     broker = Broker(cfg["slippage_pct"], cfg["commission_rate"], cfg["commission_min"],
                     cfg["stamp_tax"], cfg["transfer_fee"],
                     cfg.get("handling_fee", 0.0), cfg.get("regulatory_fee", 0.0),
@@ -1192,6 +1199,9 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         if day != cur_day:  # 新交易日：重置日内状态（做T债务跨日保留直至回补/到期作废）
             cur_day = day
             state["intraday_trades"] = {}
+            # 方案E：当日市况写入风控（T-1 对齐；无市况表/缺失日降级 range）
+            if regime_map:
+                risk_mgr.current_regime = regime_map.get(day, "range")
             # 做T时间止损（L1/L2）：债务超过 t_debt_max_days 交易日未回补 -> 作废转正式减仓
             for code in list(t_state):
                 st = t_state[code]
