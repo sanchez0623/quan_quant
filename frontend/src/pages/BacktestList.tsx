@@ -216,6 +216,7 @@ export default function BacktestList() {
   const [submitting, setSubmitting] = useState(false)
   const [list, setList] = useState<BacktestListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
+  const [searchText, setSearchText] = useState('')
   // ---- 配置模板 ----
   const [templates, setTemplates] = useState<BacktestTemplateItem[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined)
@@ -616,7 +617,23 @@ export default function BacktestList() {
     return all.filter((o) => strategy.periods.includes(o.value))
   }, [strategy])
 
+  // 回测任务搜索：按名称或任务ID模糊过滤
+  const filteredList = useMemo(() => {
+    const kw = searchText.trim().toLowerCase()
+    if (!kw) return list
+    return list.filter(
+      (t) => (t.name || '').toLowerCase().includes(kw) || (t.task_id || '').toLowerCase().includes(kw)
+    )
+  }, [list, searchText])
+
   const columns: ColumnsType<BacktestListItem> = [
+    {
+      title: '任务ID',
+      dataIndex: 'task_id',
+      width: 150,
+      ellipsis: true,
+      render: (v: string) => <Typography.Text code>{v}</Typography.Text>
+    },
     { title: '名称', dataIndex: 'name', ellipsis: true },
     { title: '策略', dataIndex: 'strategy_id', width: 110 },
     {
@@ -1159,10 +1176,21 @@ export default function BacktestList() {
         </Form>
       </Card>
 
-      <Card title="回测任务列表">
+      <Card
+        title="回测任务列表"
+        extra={
+          <Input.Search
+            placeholder="搜索名称 / 任务ID"
+            allowClear
+            style={{ width: 280 }}
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+          />
+        }
+      >
         <Table<BacktestListItem>
           rowKey="task_id"
-          dataSource={list}
+          dataSource={filteredList}
           columns={columns}
           loading={loadingList}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
