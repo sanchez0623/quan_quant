@@ -178,7 +178,6 @@ class LiveConfigBody(BaseModel):
     pool_n: int = 6
     min_rps: Optional[float] = None
     initial_capital: float = 3_000_000.0
-    suggest_pct: float = 0.15
     auto_index: list[str] = Field(default_factory=list)
     auto_boards: list[str] = Field(default_factory=list)
     t_mode: str = "off"
@@ -280,8 +279,7 @@ def _build_template_updates(tpl_cfg: dict, cur: dict,
         skipped.append(("initial_capital",
                         "实盘资金独立管理（勾选「覆盖实盘资金」可注入）"))
 
-    # 实盘独有键永不注入：auto_schedule / dd_breaker_pct / ai_* / suggest_pct /
-    # 飞书配置
+    # 实盘独有键永不注入：auto_schedule / dd_breaker_pct / ai_* / 飞书配置
     rc = tpl_cfg.get("risk_config") or {}
     for src, dst in _TEMPLATE_RISK.items():
         if rc.get(src) is not None:

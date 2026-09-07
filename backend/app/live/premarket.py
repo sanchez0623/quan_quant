@@ -34,7 +34,6 @@ DEFAULT_CFG = {
     "pool_n": 6,             # 榜单容量（跌出榜单判定）
     "min_rps": None,         # 全市场 RPS 分位下限
     "initial_capital": 3_000_000.0,
-    "suggest_pct": 0.15,     # 单票建议金额占虚拟权益比例
     "auto_index": ["zz500"],  # 候选域：指数成分并集
     "auto_boards": [],       # 候选域：板块并集
     "t_mode": "off",         # 做T机制（盘中状态机；M2 起步 off——人工执行延迟吃收益）

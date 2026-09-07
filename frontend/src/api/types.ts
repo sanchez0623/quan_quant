@@ -557,7 +557,6 @@ export interface LiveConfig {
   pool_n: number
   min_rps?: number | null
   initial_capital: number
-  suggest_pct: number
   auto_index: string[]
   auto_boards: string[]
   t_mode: string

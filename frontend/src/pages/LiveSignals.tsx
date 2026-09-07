@@ -882,12 +882,6 @@ export default function LiveSignals() {
                       100000, 10000)}
                   </Col>
                   <Col span={6}>
-                    <Typography.Text type="secondary">单票建议比例（suggest_pct）</Typography.Text>
-                    {numCell(cfg.suggest_pct,
-                      (v) => setCfg({ ...cfg, suggest_pct: v ?? 0.15 }),
-                      0.01, 0.01)}
-                  </Col>
-                  <Col span={6}>
                     <Typography.Text type="secondary">池子大小（top_x）</Typography.Text>
                     {numCell(cfg.top_x, (v) => setCfg({ ...cfg, top_x: v ?? 30 }),
                       1, 1)}
