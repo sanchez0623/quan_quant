@@ -142,12 +142,14 @@ export default function LiveSignals() {
     ks.forEach(loadReport)
   }
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     setLoading(true)
     try {
       const s = await getLiveSummary()
       setSummary(s)
-      setCfg((prev) => prev ?? s.config)
+      // force=true：以服务端值为准重刷配置卡（模板注入后必须如此，
+      // 否则 state 停留注入前旧值，随后保存会把刚注入的模板值静默冲掉）
+      setCfg((prev) => (force ? s.config : (prev ?? s.config)))
     } finally {
       setLoading(false)
     }
@@ -259,7 +261,7 @@ export default function LiveSignals() {
       })
       message.success('模板配置已注入实盘，下次盘前流程生效')
       setTplOpen(false)
-      await refresh()
+      await refresh(true)
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail || '注入失败')
