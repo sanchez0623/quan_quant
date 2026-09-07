@@ -521,7 +521,16 @@ export default function LiveSignals() {
   const numCell = (v: number | null | undefined, onChange: (v: number | null) => void,
                    step: number, min: number) => (
     <InputNumber style={{ width: '100%' }} value={v ?? undefined}
-      step={step} min={min} onChange={(v) => onChange(v)} />
+      step={step} min={min}
+      onChange={(n) => { if (n !== null) onChange(n) }}
+      onBlur={(e) => {
+        // 失焦兜底：antd 受控 InputNumber 手打值在输入法/失焦竞态下可能丢失
+        // onChange，导致受控值弹回默认（上下按钮路径不受影响）——以 DOM 实际
+        // 文本为准补交一次，与 onChange 幂等
+        const n = parseFloat(
+          String((e.target as HTMLInputElement).value).replace(/,/g, ''))
+        if (!Number.isNaN(n)) onChange(n)
+      }} />
   )
 
   return (
