@@ -76,7 +76,8 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
             from .llm import validation as vs
             validation = vs.run_validation_backtest(
                 report.get("config") or {}, result["suggestions"],
-                report.get("metrics") or {}, data_dir=data_dir)
+                report.get("metrics") or {}, data_dir=data_dir,
+                orig_curve=report.get("equity_curve"))
             db.update_progress(task_id, 97, "AI 复核验证结果...", db_path)
             validation["commentary"] = vs.review_commentary(
                 report, validation, profile, db_path=db_path, username=username)

@@ -20,8 +20,8 @@ import { PlayCircleOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import { useNavigate } from 'react-router-dom'
 import {
+  applyAiSuggestions,
   clearAiUsage,
-  createBacktest,
   errDetail,
   getAiAnalyses,
   getAiProfiles,
@@ -257,37 +257,37 @@ export default function AiAnalysis() {
     }
   }
 
-  /** 把 AI 建议合并进原回测配置（直接回测 / 预填表单共用） */
-  const buildMergedConfig = (): BacktestCreateRequest | null => {
-    if (!suggestions || !baseConfig) return null
-    return {
-      ...baseConfig,
-      name: `${baseConfig.name}-AI优化`,
-      params: { ...(baseConfig.params ?? {}), ...(suggestions.params ?? {}) },
-      risk_config: { ...(baseConfig.risk_config ?? {}), ...(suggestions.risk_config ?? {}) }
-    }
-  }
-
-  /** 跳转回测中心预填表单（人工确认后再提交） */
-  const applySuggestions = () => {
-    const merged = buildMergedConfig()
-    if (!merged) return
-    navigate('/backtests', { state: { prefill: merged } })
-  }
-
-  /** 一键应用建议：直接创建下一轮回测任务（后端完整校验兜底），跳过表单确认 */
+  /** 一键应用建议：后端统一合并（merge_suggestions 单一实现）并直接创建回测任务 */
   const applyAndRun = async () => {
-    const merged = buildMergedConfig()
-    if (!merged) return
+    if (!selected) return
     setRunningDirect(true)
     try {
-      const res = await createBacktest(merged)
+      const res = await applyAiSuggestions({
+        analysis_task_id: selected.task_id,
+        mode: 'backtest'
+      })
       message.success('已应用建议并创建下一轮回测')
       navigate(`/backtests/${res.task_id}`)
     } catch (err) {
       message.error(errDetail(err, '应用建议并直接回测失败'))
     } finally {
       setRunningDirect(false)
+    }
+  }
+
+  /** 预填表单确认：后端返回合并后的完整配置，前端只负责填表（合并逻辑单一来源） */
+  const applySuggestions = async () => {
+    if (!selected) return
+    try {
+      const res = await applyAiSuggestions({
+        analysis_task_id: selected.task_id,
+        mode: 'prefill'
+      })
+      if (res.config) {
+        navigate('/backtests', { state: { prefill: res.config } })
+      }
+    } catch (err) {
+      message.error(errDetail(err, '预填表单失败'))
     }
   }
 
@@ -537,20 +537,14 @@ export default function AiAnalysis() {
                             icon={<ThunderboltOutlined />}
                             onClick={applyAndRun}
                             loading={runningDirect}
-                            disabled={!baseConfig}
-                            title={
-                              baseConfig
-                                ? '合并建议并直接创建下一轮回测任务（跳过表单确认，后端完整校验兜底）'
-                                : '正在获取原回测配置...'
-                            }
+                            title="后端合并建议并直接创建下一轮回测任务（merge_suggestions 单一实现 + 完整校验）"
                           >
                             应用并直接回测
                           </Button>
                           <Button
                             size="small"
                             onClick={applySuggestions}
-                            disabled={!baseConfig}
-                            title="跳转回测中心预填表单，人工确认后再提交"
+                            title="后端返回合并后的完整配置，跳转回测中心预填表单，人工确认后再提交"
                           >
                             预填表单确认
                           </Button>

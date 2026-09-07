@@ -69,6 +69,33 @@ _RISK_ENUMS = {
     "atr_cost_base": {"first", "wavg"},
 }
 
+# risk_config 数值字段合理边界（越界 = 口径错误，直接丢弃而非 clamp：
+# 如 LLM 把百分数字段给成 0~1 小数，clamp 到下界仍是错值）
+# 边界取 RiskConfigModel 语义的宽松区间，只防「口径级」错误，不限制正常调参
+_RISK_BOUNDS = {
+    "max_position_pct_per_stock": (1.0, 100.0),
+    "max_total_position_pct": (10.0, 100.0),
+    "stop_loss_pct": (0.5, 50.0),
+    "atr_period": (5, 120),
+    "atr_multiplier": (0.5, 10.0),
+    "take_profit_pct": (3.0, 300.0),
+    "trailing_stop_pct": (0.5, 50.0),
+    "max_drawdown_breaker": (5.0, 90.0),
+    "max_intraday_trades": (0, 20),
+    "max_holdings": (1, 20),
+    "cash_reserve_pct": (0.0, 50.0),
+    "atr_trail_mult": (1.0, 20.0),
+    "adaptive_trend_ma": (5, 250),
+    "adaptive_slope_n": (2, 30),
+    "adaptive_k_loose": (1.0, 6.0),
+    "adaptive_k_tight": (0.1, 1.5),
+    "adaptive_vol_n": (20, 250),
+    "adaptive_vol_hi": (0.5, 1.0),
+    "adaptive_vol_lo": (0.0, 0.5),
+}
+_RISK_INT_FIELDS = {"atr_period", "max_intraday_trades", "max_holdings",
+                    "adaptive_trend_ma", "adaptive_slope_n", "adaptive_vol_n"}
+
 # ---- 数据下钻工具（方案 A）：预算护栏 ----
 TOOL_SECTION = (
     "\n\n## 数据下钻工具（只读取证，按需使用）\n"
@@ -215,8 +242,17 @@ def _sanitize_suggestions(data: dict, report: dict) -> Optional[dict]:
             v = str(v)
             if v not in _RISK_ENUMS[k]:
                 continue
-        elif not isinstance(v, (int, float, bool)):
-            continue  # 白名单内非枚举字段只接受数值/布尔
+        elif isinstance(v, bool):
+            pass  # 布尔字段（atr_trail_floor）直接放行；bool 是 int 子类需先拦截
+        elif isinstance(v, (int, float)):
+            if k in _RISK_BOUNDS:
+                lo, hi = _RISK_BOUNDS[k]
+                if not lo <= float(v) <= hi:
+                    continue  # 越界 = 口径错误（如百分数给了 0~1 小数），丢弃
+                if k in _RISK_INT_FIELDS:
+                    v = int(round(float(v)))
+        else:
+            continue  # 非枚举非数值（dict/str）一律丢弃
         if k in cur_risk and _same(cur_risk[k], v):
             continue
         clean_risk[k] = v

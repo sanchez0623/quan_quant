@@ -405,14 +405,33 @@ available = 对应环境变量已配置。
   与原值相同剔除（幻觉护栏在代码层）。
 
 - `validation`：建议自动验证回测（同区间同 universe 重跑，不建独立任务）的 A/B 对比。
-  `comparison.verdict ∈ 改善/持平/恶化`；`commentary` 为验证结果回喂 LLM 的二轮点评
-  （best-effort，可为 null）；验证回测失败时 `validation = {"error": "...", "verdict": null}`
+  `comparison.verdict ∈ 改善/持平/恶化`；`comparison.conservative=true` 表示建议版
+  平均仓位占比骤降近空仓（<15% 且 < 原版一半），指标「改善」主要来自空仓化，
+  已降级为「持平」（`comparison.avg_position_ratio` 附两边仓位占比）；
+  `commentary` 为验证结果回喂 LLM 的二轮点评（best-effort，可为 null）；
+  验证回测失败时 `validation = {"error": "...", "verdict": null}`
   且 analysis 仍为 success。
+- `suggestions` 数值字段双重护栏：params 按 param\_schema min/max clamp；
+  risk\_config 按合理区间校验（`_RISK_BOUNDS`），**越界直接丢弃**——如把百分数字段
+  给成 0~1 小数属于口径错误，clamp 到边界仍是错值。
 
 - `tool_trace`：AI 下钻工具（query\_trades / get\_code\_profile / get\_market\_context，
   只读取证）的调用记录 `[{name, args}]`；预算护栏（轮次≤6 / 总次数≤10）耗尽强制收尾；
   端点不支持 function calling 时自动降级单轮静态分析（tool\_trace 为空数组），
   分析正文末尾附「🔎 本分析共下钻取证 N 次」尾注。
+
+### POST /api/ai/apply
+
+应用 AI 建议（**后端唯一合并实现** `merge_suggestions`，前端不再自行合并）：
+
+请求：`{"analysis_task_id": "ai_xxx", "mode": "backtest" | "prefill"}`
+
+- `mode=backtest`：建议 → 与原回测 config 合并 → `validate_backtest_config` 完整校验
+  → 直接创建回测任务。响应：`{"mode":"backtest","task_id":"bt_xxx","status":"pending"}`
+- `mode=prefill`：返回合并后的完整配置（BacktestRequest 同构），前端预填表单人工确认。
+  响应：`{"mode":"prefill","config":{...}}`
+
+错误：404 分析不存在/未成功；400 无结构化建议 / 原回测不存在或未成功 / 配置缺失。
 
 ### GET /api/ai/suggestion-stats
 

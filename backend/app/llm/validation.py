@@ -47,9 +47,22 @@ def _better(key: str, orig, new) -> Optional[bool]:
     return new > orig
 
 
-def compare_metrics(orig_metrics: dict, new_metrics: dict) -> dict:
+def _avg_position_ratio(curve) -> Optional[float]:
+    """资金曲线平均仓位占比（过度保守化判据用）"""
+    ratios = [p.get("position_ratio") for p in (curve or [])
+              if isinstance(p, dict) and p.get("position_ratio") is not None]
+    return (sum(ratios) / len(ratios)) if ratios else None
+
+
+def compare_metrics(orig_metrics: dict, new_metrics: dict,
+                    orig_curve: Optional[list] = None,
+                    new_curve: Optional[list] = None) -> dict:
     """关键指标 A/B 对比 + verdict。返回
-    {verdict, rows: [{key,label,orig,new,delta,better}], better:[], worse:[]}。"""
+    {verdict, rows, better, worse, conservative, avg_position_ratio}。
+
+    conservative（过度保守化）：建议版平均仓位占比降至原版一半以下且低于 15%
+    （近空仓）时，即使指标全面变好也判「持平」——少亏来自空仓而非策略改善，
+    这类建议没有价值（A/B 实验 bt_0437 案例）。"""
     orig_metrics = orig_metrics or {}
     new_metrics = new_metrics or {}
     rows = []
@@ -77,9 +90,19 @@ def compare_metrics(orig_metrics: dict, new_metrics: dict) -> dict:
         verdict = "改善"
     else:
         verdict = "持平"
+    # 过度保守化：近空仓化带来的「改善」不算改善
+    o_ratio = _avg_position_ratio(orig_curve)
+    n_ratio = _avg_position_ratio(new_curve)
+    conservative = (o_ratio is not None and n_ratio is not None
+                    and n_ratio < 0.15 and n_ratio < o_ratio * 0.5)
+    if conservative and verdict == "改善":
+        verdict = "持平"
     return {"verdict": verdict, "rows": rows,
             "better": better, "worse": worse,
-            "sig_return_drop": sig_return_drop, "sig_dd_deepen": sig_dd_deepen}
+            "sig_return_drop": sig_return_drop, "sig_dd_deepen": sig_dd_deepen,
+            "conservative": conservative,
+            "avg_position_ratio": {"orig": (round(o_ratio, 4) if o_ratio is not None else None),
+                                   "new": (round(n_ratio, 4) if n_ratio is not None else None)}}
 
 
 def run_validation_backtest(config: dict, suggestions: dict, orig_metrics: dict,
@@ -124,6 +147,11 @@ def review_commentary(orig_report: dict, validation: dict, profile: Optional[str
         from .provider import chat
         m = validation.get("metrics") or {}
         comp = validation.get("comparison") or {}
+        conservative_note = ""
+        if comp.get("conservative"):
+            conservative_note = (
+                "\n注意：建议版平均仓位占比大幅下降（近空仓化），指标变化可能主要"
+                "来自空仓而非策略改善，点评时必须考虑这一因素。\n")
         user_msg = (
             "原始回测关键指标：\n"
             f"{_brief_metrics(m.get('orig'))}\n"
@@ -132,6 +160,7 @@ def review_commentary(orig_report: dict, validation: dict, profile: Optional[str
             "逐项对比与结论：\n"
             f"{comp.get('verdict')}；变好：{comp.get('better')}；变差：{comp.get('worse')}\n"
             f"调整内容：{validation.get('config_diff')}\n"
+            f"{conservative_note}"
             "请给出点评。"
         )
         result = chat(profile, [{"role": "system", "content": REVIEW_SYSTEM_PROMPT},

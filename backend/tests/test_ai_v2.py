@@ -151,6 +151,88 @@ def test_sanitize_same_value_dropped_and_empty_none():
     assert sug == {"params": {"mom_short": 20}, "risk_config": {}}
 
 
+def test_sanitize_risk_bounds():
+    """risk 数值字段越界丢弃（口径错误，如百分数给成 0~1 小数）、int 取整、bool 放行"""
+    rep = _report()
+    sug = _sanitize_suggestions({
+        "params": {},
+        "risk_config": {
+            "max_total_position_pct": 0.8,   # 越界（想表达 80%）→ 丢弃
+            "atr_multiplier": 99.0,          # 越界 → 丢弃
+            "max_holdings": 99,              # int 越界 → 丢弃
+            "atr_period": 14.6,              # 合法区间内小数 → int 取整 15
+            "cash_reserve_pct": 3.0,         # 合法 → 保留
+            "atr_trail_floor": True,         # bool → 保留
+        },
+    }, rep)
+    assert sug is not None
+    risk = sug["risk_config"]
+    assert "max_total_position_pct" not in risk
+    assert "atr_multiplier" not in risk
+    assert "max_holdings" not in risk
+    assert risk["atr_period"] == 15 and isinstance(risk["atr_period"], int)
+    assert risk["cash_reserve_pct"] == 3.0
+    assert risk["atr_trail_floor"] is True
+
+
+def test_compare_metrics_conservative():
+    """近空仓化（仓位占比骤降且<15%）时，「改善」降级为「持平」"""
+    orig = {"total_return": -0.10, "sharpe": -0.8, "calmar": -0.5,
+            "max_drawdown": -0.30, "win_rate": 0.45}
+    better = {"total_return": 0.05, "sharpe": 0.8, "calmar": 0.5,
+              "max_drawdown": -0.10, "win_rate": 0.55}
+    orig_curve = [{"position_ratio": 0.6}] * 10
+    near_flat = [{"position_ratio": 0.05}] * 10
+    c = validation.compare_metrics(orig, better, orig_curve, near_flat)
+    assert c["conservative"] is True and c["verdict"] == "持平"
+    assert c["avg_position_ratio"] == {"orig": 0.6, "new": 0.05}
+    # 仓位未近空仓 → 正常判改善
+    c2 = validation.compare_metrics(orig, better, orig_curve,
+                                    [{"position_ratio": 0.5}] * 10)
+    assert c2["conservative"] is False and c2["verdict"] == "改善"
+    # 无曲线（老数据兼容）→ 不触发保守化判定
+    c3 = validation.compare_metrics(orig, better)
+    assert c3["conservative"] is False and c3["verdict"] == "改善"
+
+
+def test_apply_endpoint(tmp_path, monkeypatch):
+    """/api/ai/apply：后端统一合并 + 创建任务（backtest）/返回配置（prefill）"""
+    from app.api.ai import ApplyBody, apply_suggestions
+    from app.task_manager import manager
+    db_path = str(tmp_path / "meta.db")
+    db.init_db(db_path)
+    # conftest 已把 DATA_DIR 指向临时目录，端点内部用默认库即临时库
+    cfg = {"name": "A", "strategy_id": "momentum_slot", "params": {"pool_n": 6},
+           "risk_config": {}, "universe": ["600000"],
+           "start_date": "2025-01-01", "end_date": "2025-06-30"}
+    db.create_task("bt_ab", "A", "backtest",
+                   payload={"strategy_id": "momentum_slot", "period": "daily",
+                            "config": cfg})
+    db.finish_task("bt_ab", "success")  # 端点要求原回测已成功
+    db.save_analysis("ai_ab", "bt_ab", "p", "m", "success", None, 1, 1.0, None,
+                     suggestions={"params": {"pool_n": 8}, "risk_config": {}})
+    submitted = []
+    monkeypatch.setattr(manager, "submit",
+                        lambda kind, tid, **kw: submitted.append((kind, tid, kw)))
+    # backtest 模式
+    res = apply_suggestions(ApplyBody(analysis_task_id="ai_ab", mode="backtest"),
+                            user="admin")
+    assert res["mode"] == "backtest" and res["task_id"].startswith("bt_")
+    assert len(submitted) == 1 and submitted[0][0] == "backtest"
+    merged_cfg = submitted[0][2]["backtest_config"]
+    assert merged_cfg["params"]["pool_n"] == 8
+    assert merged_cfg["name"].endswith("-AI优化")
+    # prefill 模式
+    res2 = apply_suggestions(ApplyBody(analysis_task_id="ai_ab", mode="prefill"),
+                             user="admin")
+    assert res2["mode"] == "prefill" and res2["config"]["params"]["pool_n"] == 8
+    # 无建议的分析 → 400
+    db.save_analysis("ai_empty", "bt_ab", "p", "m", "success", None, 1, 1.0, None)
+    with pytest.raises(Exception):
+        apply_suggestions(ApplyBody(analysis_task_id="ai_empty", mode="backtest"),
+                          user="admin")
+
+
 def test_extract_suggestions_from_markdown():
     rep = _report()
     content = "## 诊断解读\n有问题。\n```json\n" \

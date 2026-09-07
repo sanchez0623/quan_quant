@@ -266,6 +266,15 @@ export async function getAiSuggestionStats(): Promise<AiSuggestionStats> {
   return res.data
 }
 
+/** 应用 AI 建议（后端统一合并）：backtest=直接创建回测任务；prefill=返回合并配置供表单预填 */
+export async function applyAiSuggestions(data: {
+  analysis_task_id: string
+  mode: 'backtest' | 'prefill'
+}): Promise<{ mode: 'backtest' | 'prefill'; task_id?: string; config?: BacktestCreateRequest }> {
+  const res = await api.post('/ai/apply', data)
+  return res.data
+}
+
 // ---- Key 管理（每用户私有 Key 池） ----
 export async function getKeys(): Promise<KeysResponse> {
   const res = await api.get<KeysResponse>('/keys')

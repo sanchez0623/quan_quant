@@ -558,6 +558,12 @@ def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = No
     return out
 
 
+def get_analysis_by_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
+    """按分析任务 id 取单条 analysis（/api/ai/apply 用）"""
+    rows = [a for a in list_analyses(None, db_path) if a["task_id"] == task_id]
+    return rows[0] if rows else None
+
+
 def ai_verdict_stats(db_path: Optional[str] = None) -> dict:
     """AI 建议验证胜率统计：全部 analyses 的 validation.verdict 计数。"""
     with conn(db_path) as c:
