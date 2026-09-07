@@ -94,6 +94,60 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
                    db_path=db_path)
 
 
+def ai_refine_task(task_id: str, refine_from: str, profile: str, db_path: str,
+                   reports_dir: str, username: Optional[str] = None,
+                   data_dir: Optional[str] = None,
+                   param_importance: Optional[dict] = None) -> None:
+    """方案 B Phase 2 二轮修正：原分析建议 + 实测验证结果 → LLM 修正建议
+    → 自动再验证 → 落库为新 analysis（refined_from 指向原分析）。
+
+    单步限制：refined_from 链最多一层（修正产物不可再修正）。"""
+    from .llm import validation as vs
+    from .llm.diagnostics import diagnose
+    db.update_progress(task_id, 5, "读取原分析与验证结果...", db_path)
+    analysis = db.get_analysis_by_task(refine_from, db_path)
+    if analysis is None or analysis["status"] != "success":
+        raise RuntimeError(f"原分析不存在或未成功: {refine_from}")
+    if analysis.get("refined_from"):
+        raise RuntimeError("该分析已是修正产物，不支持二次修正（单步限制）")
+    if not analysis.get("suggestions"):
+        raise RuntimeError("原分析没有结构化建议，无需修正")
+    if not analysis.get("validation") or analysis["validation"].get("error"):
+        raise RuntimeError("原分析缺少有效的验证结果，无法修正")
+    backtest_id = analysis["backtest_id"]
+    report_path = Path(reports_dir) / f"{backtest_id}.json"
+    if not report_path.exists():
+        raise RuntimeError(f"回测报告不存在: {backtest_id}")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    db.update_progress(task_id, 20, "正在调用 LLM 修正建议（基于实测数据）...", db_path)
+    findings = diagnose(report, param_importance)
+    result = vs.refine_suggestions(report, analysis, profile, db_path=db_path,
+                                   username=username, findings=findings)
+    db.update_progress(task_id, 60, "解析修正建议...", db_path)
+    validation: Optional[dict] = None
+    if result.get("suggestions"):
+        db.update_progress(task_id, 70, "运行修正建议验证回测（同区间）...", db_path)
+        try:
+            validation = vs.run_validation_backtest(
+                report.get("config") or {}, result["suggestions"],
+                report.get("metrics") or {}, data_dir=data_dir,
+                orig_curve=report.get("equity_curve"))
+            db.update_progress(task_id, 92, "AI 复核修正验证结果...", db_path)
+            validation["commentary"] = vs.review_commentary(
+                report, validation, profile, db_path=db_path, username=username)
+        except Exception as e:  # noqa: BLE001
+            validation = {"error": f"{e}", "verdict": None}
+    db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
+                     result["content"], result["tokens"], result["elapsed"], None,
+                     suggestions=result.get("suggestions"), diagnostics=findings,
+                     validation=validation, refined_from=refine_from, db_path=db_path)
+    db.finish_task(task_id, "success",
+                   payload={"backtest_id": backtest_id, "profile": result["profile"],
+                            "refined_from": refine_from,
+                            "verdict": (validation or {}).get("verdict")},
+                   db_path=db_path)
+
+
 def data_demo_task(task_id: str, stocks: Optional[list], days: int,
                    db_path: str, data_dir: str) -> None:
     from .data import synthetic
@@ -209,6 +263,7 @@ _TASK_FUNCS = {
     "backtest": backtest_task,
     "optimize": optimize_task,
     "ai": ai_analyze_task,
+    "ai_refine": ai_refine_task,
     "data_demo": data_demo_task,
     "data_update": data_update_task,
     "live_premarket": live_premarket_task,

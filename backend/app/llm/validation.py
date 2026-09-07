@@ -13,6 +13,7 @@
 analysis 仍为 success（AI 不为回测失败背锅），validation.error 记录原因。
 """
 import copy
+import json
 from typing import Optional
 
 # 参与对比的关键指标（max_drawdown 越接近 0 越好，单独处理）
@@ -178,3 +179,68 @@ def _brief_metrics(m: Optional[dict]) -> str:
             "win_rate", "profit_loss_ratio", "total_trades", "t_pnl")
     return json.dumps({k: m[k] for k in keys if m.get(k) is not None},
                       ensure_ascii=False)
+
+
+# ================= 方案 B Phase 2：二轮修正（refine） =================
+
+REFINE_SYSTEM_PROMPT = (
+    "你是量化策略分析师。你此前对一份回测报告给出了参数优化建议（原建议），"
+    "系统已用原建议在同一区间重跑回测并给出 A/B 实测结论。现在请基于实测数据"
+    "输出**修正后的建议**。规则：\n"
+    "1. 先输出简短的 markdown 修正说明（## 修正说明）：原建议哪些保留、哪些"
+    "调整、哪些收回，每条必须引用实测数字（verdict/变好变差项/仓位占比）；\n"
+    "2. 若原建议实测「改善」：保留主方向，只做小幅微调（修正量不超过原调整幅度的"
+    "一半），不要大幅推翻已验证有效的方向；\n"
+    "3. 若实测「恶化/持平」：分析原因并给出修正方向；若认为所有调整都应放弃，"
+    '输出 {"params": {}, "risk_config": {}}（如实收回也是有效结论）；\n'
+    "4. 注意 conservative 标记：若提示近空仓化，说明「改善」来自空仓而非策略改善，"
+    "应收回导致仓位骤降的建议（如大幅砍 max_position_pct_per_stock/"
+    "max_total_position_pct/base_pct_max）；\n"
+    "5. 修正值必须落在参数表 min/max 与 risk 合理区间内（越界会被系统丢弃）；\n"
+    "6. 最后必须以一个 ```json 代码块作为全文结尾，格式严格为：\n"
+    '{"params": {"参数名": 新值, ...}, "risk_config": {"字段名": 新值, ...}}\n'
+    "params 键只能取自「策略参数表」中已有的参数名；risk_config 键只能取自："
+    "max_position_pct_per_stock, max_total_position_pct, stop_loss_mode, stop_loss_pct, "
+    "atr_period, atr_multiplier, take_profit_pct, trailing_stop_pct, "
+    "max_drawdown_breaker, max_intraday_trades, max_holdings, cash_reserve_pct, "
+    "atr_trail_mult, atr_cost_base, atr_trail_floor, adaptive, adaptive_trend_ma, "
+    "adaptive_slope_n, adaptive_k_loose, adaptive_k_tight, adaptive_vol_n, "
+    "adaptive_vol_hi, adaptive_vol_lo；其中 stop_loss_mode 可取 fixed/atr/trailing/"
+    "atr_trailing，adaptive 可取 off/trend/vol，atr_cost_base 可取 first/wavg。"
+)
+
+
+def refine_suggestions(orig_report: dict, analysis: dict,
+                       profile: Optional[str] = None,
+                       db_path: Optional[str] = None,
+                       username: Optional[str] = None,
+                       findings: Optional[list] = None) -> dict:
+    """二轮修正：原建议 + 实测验证结果 → LLM 输出修正建议（同套 sanitize 护栏）。
+
+    analysis 为原分析记录（需含 suggestions 与 validation）；findings 为规则引擎
+    诊断（调用方现算传入）。返回 {content, suggestions, model, tokens, elapsed, profile}。"""
+    from .analyzer import _extract_suggestions, _param_schema_brief
+    from .provider import chat
+    val = analysis.get("validation") or {}
+    comp = val.get("comparison") or {}
+    parts = {
+        "原建议": analysis.get("suggestions") or {},
+        "实测调整内容": val.get("config_diff"),
+        "实测结论": {"verdict": comp.get("verdict"),
+                   "变好": comp.get("better"), "变差": comp.get("worse"),
+                   "保守化标记": comp.get("conservative"),
+                   "仓位占比": comp.get("avg_position_ratio")},
+        "原回测指标": val.get("metrics", {}).get("orig"),
+        "建议版回测指标": val.get("metrics", {}).get("new"),
+        "原二轮点评(若有)": val.get("commentary"),
+        "策略参数表": _param_schema_brief(orig_report),
+    }
+    if findings:
+        parts["规则引擎findings"] = findings
+    user_msg = ("请基于以下实测数据修正你此前的建议（JSON）：\n"
+                + json.dumps(parts, ensure_ascii=False, default=str))
+    result = chat(profile, [{"role": "system", "content": REFINE_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_msg}],
+                  temperature=0.3, db_path=db_path, username=username)
+    content, suggestions = _extract_suggestions(result["content"], orig_report)
+    return {**result, "content": content, "suggestions": suggestions}

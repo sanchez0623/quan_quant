@@ -275,6 +275,17 @@ export async function applyAiSuggestions(data: {
   return res.data
 }
 
+/** 方案 B Phase 2 二轮修正：基于实测验证结果让 LLM 修正建议（修正建议自动再验证） */
+export async function refineAiAnalysis(
+  taskId: string,
+  profile?: string
+): Promise<TaskCreateResponse> {
+  const res = await api.post<TaskCreateResponse>(`/ai/analyses/${taskId}/refine`, {
+    profile: profile && profile !== 'auto' ? profile : undefined
+  })
+  return res.data
+}
+
 // ---- Key 管理（每用户私有 Key 池） ----
 export async function getKeys(): Promise<KeysResponse> {
   const res = await api.get<KeysResponse>('/keys')

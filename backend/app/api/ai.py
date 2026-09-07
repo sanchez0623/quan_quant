@@ -130,3 +130,40 @@ def apply_suggestions(body: ApplyBody, user: str = Depends(get_current_user)):
                             "config": merged})
     manager.submit("backtest", task_id, backtest_config=merged)
     return {"mode": "backtest", "task_id": task_id, "status": "pending"}
+
+
+class RefineBody(BaseModel):
+    profile: Optional[str] = None  # auto(默认) | 服务商名 | key_id（数字字符串）
+
+
+@router.post("/analyses/{task_id}/refine")
+def refine_analysis(task_id: str, body: RefineBody,
+                    user: str = Depends(get_current_user)):
+    """方案 B Phase 2 二轮修正：基于原分析的实测验证结果让 LLM 修正建议，
+    修正建议自动再验证，落库为新 analysis（refined_from 指向原分析）。
+    单步限制：修正产物不可再修正。"""
+    analysis = db.get_analysis_by_task(task_id)
+    if analysis is None or analysis["status"] != "success":
+        raise HTTPException(status_code=404, detail="分析不存在或未成功")
+    if analysis.get("refined_from"):
+        raise HTTPException(status_code=400,
+                            detail="该分析已是修正产物，不支持二次修正（单步限制）")
+    if not analysis.get("suggestions"):
+        raise HTTPException(status_code=400, detail="原分析没有结构化建议，无需修正")
+    if not analysis.get("validation") or analysis["validation"].get("error"):
+        raise HTTPException(status_code=400, detail="原分析缺少有效的验证结果，无法修正")
+    # 发起人未配置任何可用 key 且系统级兜底也为空 → 提前友好报错
+    if not provider.db_key_entries(user) and not provider.key_pool_mode():
+        available = [p["name"] for p in provider.profiles_info(user)["profiles"]
+                     if p["available"]]
+        if not available:
+            raise HTTPException(
+                status_code=400,
+                detail="未配置 LLM API Key：请到「Key 管理」页添加你的 API Key")
+    new_task_id = "ai_" + uuid.uuid4().hex[:12]
+    db.create_task(new_task_id, f"AI修正:{task_id}", "ai_refine",
+                   payload={"refine_from": task_id, "profile": body.profile,
+                            "username": user})
+    manager.submit("ai_refine", new_task_id, refine_from=task_id,
+                   profile=body.profile, username=user)
+    return {"task_id": new_task_id, "status": "pending"}

@@ -3,6 +3,7 @@
 
 LLM 全部 monkeypatch（app.llm.provider.chat），不打真实网络。
 """
+import json
 import sys
 from pathlib import Path
 
@@ -543,3 +544,97 @@ def test_agentic_loop_budget_cap(monkeypatch):
     assert "结论。" in out["content"]  # 轮次耗尽后强制无工具收尾生效
     assert out["suggestions"] is None  # 空建议块净化为 None（符合约定）
     assert calls["n"] == 5  # 4 轮下钻(3+3+3+1) + 1 次强制收尾
+
+
+# ---------------- 方案 B Phase 2：二轮修正（refine） ----------------
+
+def test_refine_suggestions_mock(monkeypatch):
+    rep = _report()
+    analysis = {
+        "suggestions": {"params": {"pool_n": 10}, "risk_config": {}},
+        "validation": {
+            "config_diff": {"params.pool_n": {"old": 6, "new": 10}},
+            "metrics": {"orig": rep["metrics"], "new": rep["metrics"]},
+            "comparison": {"verdict": "恶化", "better": [], "worse": ["total_return"],
+                           "conservative": False},
+            "commentary": "建议恶化",
+        },
+    }
+    md = "## 修正说明\n收回。\n```json\n" \
+         '{"params": {}, "risk_config": {}}\n```'
+    captured = {}
+
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None, **kw):
+        captured["user"] = messages[-1]["content"]
+        return {"content": md, "model": "m", "tokens": 10, "elapsed": 0.1, "profile": "p"}
+
+    monkeypatch.setattr("app.llm.provider.chat", fake_chat)
+    out = validation.refine_suggestions(rep, analysis,
+                                        findings=[{"code": "DEEP_DD"}])
+    # 二轮 prompt 必须包含原建议与实测结论
+    assert "pool_n" in captured["user"] and "恶化" in captured["user"]
+    # 收回 → 空建议净化为 None
+    assert out["suggestions"] is None
+
+
+def test_ai_refine_task_end_to_end(tmp_path, monkeypatch):
+    """refine 全链路：校验 → LLM 修正 → 再验证 → 落库 refined_from"""
+    import app.task_manager as tm
+    db_path = str(tmp_path / "meta.db")
+    db.init_db(db_path)
+    reports_dir = str(tmp_path / "reports")
+    Path(reports_dir).mkdir()
+    rep = _report()
+    (Path(reports_dir) / "bt_r.json").write_text(json.dumps(rep), encoding="utf-8")
+    db.create_task("bt_r", "A", "backtest", payload={"strategy_id": "momentum_slot"},
+                   db_path=db_path)
+    db.finish_task("bt_r", "success", db_path=db_path)
+    db.save_analysis("ai_orig", "bt_r", "p", "m", "success", None, 1, 1.0, None,
+                     suggestions={"params": {"pool_n": 10}, "risk_config": {}},
+                     validation={"config_diff": {},
+                                 "metrics": {"orig": {}, "new": {}},
+                                 "comparison": {"verdict": "恶化", "better": [],
+                                                "worse": ["total_return"]}},
+                     db_path=db_path)
+    md = "修正。\n```json\n{\"params\": {\"pool_n\": 8}, \"risk_config\": {}}\n```"
+    monkeypatch.setattr("app.llm.provider.chat",
+                        lambda *a, **k: {"content": md, "model": "m", "tokens": 5,
+                                         "elapsed": 0.1, "profile": "p",
+                                         "tool_calls": []})
+    monkeypatch.setattr(
+        validation, "run_validation_backtest",
+        lambda *a, **k: {"config_diff": {}, "metrics": {"orig": {}, "new": {}},
+                         "comparison": {"verdict": "改善",
+                                        "better": ["total_return"], "worse": []}})
+    monkeypatch.setattr(validation, "review_commentary", lambda *a, **k: "ok")
+    tm.ai_refine_task("ai_new", "ai_orig", "p", db_path, reports_dir, username=None)
+    rows = db.list_analyses("bt_r", db_path)
+    new = next(a for a in rows if a["task_id"] == "ai_new")
+    assert new["refined_from"] == "ai_orig"
+    assert new["suggestions"]["params"]["pool_n"] == 8
+    assert new["validation"]["comparison"]["verdict"] == "改善"
+
+
+def test_ai_refine_task_guards(tmp_path):
+    """单步限制 / 无有效验证结果拒绝"""
+    import app.task_manager as tm
+    db_path = str(tmp_path / "meta.db")
+    db.init_db(db_path)
+    reports_dir = str(tmp_path / "reports")
+    Path(reports_dir).mkdir()
+    (Path(reports_dir) / "bt_g.json").write_text(json.dumps(_report()), encoding="utf-8")
+    db.create_task("bt_g", "A", "backtest", db_path=db_path)
+    db.finish_task("bt_g", "success", db_path=db_path)
+    # 无验证结果 → 拒绝
+    db.save_analysis("ai_nov", "bt_g", "p", "m", "success", None, 1, 1.0, None,
+                     suggestions={"params": {"pool_n": 8}, "risk_config": {}},
+                     db_path=db_path)
+    with pytest.raises(RuntimeError, match="验证结果"):
+        tm.ai_refine_task("ai_x", "ai_nov", "p", db_path, reports_dir)
+    # 已是修正产物 → 单步限制拒绝
+    db.save_analysis("ai_ref", "bt_g", "p", "m", "success", None, 1, 1.0, None,
+                     suggestions={"params": {"pool_n": 8}, "risk_config": {}},
+                     validation={"comparison": {"verdict": "改善"}},
+                     refined_from="ai_orig2", db_path=db_path)
+    with pytest.raises(RuntimeError, match="单步"):
+        tm.ai_refine_task("ai_y", "ai_ref", "p", db_path, reports_dir)

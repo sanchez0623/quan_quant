@@ -249,6 +249,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   pool_gate?: boolean
   /** gate 触发阈值（健康度占比），恢复线=×2 内置 */
   pool_gate_enter_th?: number
+  /** 大盘趋势闸门：中证500收盘<MA20连续2日抑制开仓/加仓（恢复缓冲带内置，退出与做T照常） */
+  index_gate?: boolean
   start_date: string
   end_date: string
   period: Period
@@ -1108,6 +1110,8 @@ export interface AiAnalysisItem {
   suggestions?: AiSuggestions | null
   diagnostics?: AiFinding[] | null
   validation?: AiValidation | null
+  /** 二轮修正来源分析 task_id（Phase 2：refine 产物标注） */
+  refined_from?: string | null
 }
 
 /** AI 建议验证胜率统计 */

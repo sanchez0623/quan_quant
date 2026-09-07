@@ -50,9 +50,10 @@ CREATE TABLE IF NOT EXISTS ai_analyses(
   tokens_used INTEGER,
   elapsed REAL,
   error TEXT,
+  refined_from TEXT,                 -- 二轮修正来源分析 task_id（Phase 2）
   created_at TEXT
 );
--- 诊断/验证列（轻量迁移补齐，见 _migrate）：diagnostics=规则引擎findings JSON，
+-- 诊断/验证/修正来源列（轻量迁移补齐，见 _migrate）：diagnostics=规则引擎findings JSON，
 -- validation=建议验证回测 A/B 对比 JSON
 CREATE TABLE IF NOT EXISTS llm_usage(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,6 +238,8 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE ai_analyses ADD COLUMN diagnostics TEXT")  # 规则引擎findings JSON
     if "validation" not in cols:
         c.execute("ALTER TABLE ai_analyses ADD COLUMN validation TEXT")   # 建议验证A/B对比 JSON
+    if "refined_from" not in cols:
+        c.execute("ALTER TABLE ai_analyses ADD COLUMN refined_from TEXT")  # 二轮修正来源分析 task_id
     ecols = {r[1] for r in c.execute("PRAGMA table_info(experiments)")}
     if "matrix" not in ecols:
         c.execute("ALTER TABLE experiments ADD COLUMN matrix TEXT DEFAULT 'clock'")
@@ -512,31 +515,31 @@ def save_analysis(task_id: str, backtest_id: str, profile: str, model: str, stat
                   error: Optional[str], suggestions: Optional[dict] = None,
                   diagnostics: Optional[list] = None,
                   validation: Optional[dict] = None,
+                  refined_from: Optional[str] = None,
                   db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
             "INSERT INTO ai_analyses(task_id,backtest_id,profile,model,status,content,"
-            "tokens_used,elapsed,error,suggestions,diagnostics,validation,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "tokens_used,elapsed,error,suggestions,diagnostics,validation,refined_from,"
+            "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, backtest_id, profile, model, status, content, tokens_used, elapsed,
              error, json.dumps(suggestions, ensure_ascii=False) if suggestions else None,
              json.dumps(diagnostics, ensure_ascii=False) if diagnostics else None,
              json.dumps(validation, ensure_ascii=False) if validation else None,
-             _now()))
+             refined_from, _now()))
 
 
 def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = None) -> list[dict]:
+    _cols = ("task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
+             "error,suggestions,diagnostics,validation,refined_from,created_at")
     with conn(db_path) as c:
         if backtest_id:
             rows = c.execute(
-                "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,suggestions,diagnostics,validation,created_at FROM ai_analyses "
+                f"SELECT {_cols} FROM ai_analyses "
                 "WHERE backtest_id=? ORDER BY id DESC", (backtest_id,)).fetchall()
         else:
             rows = c.execute(
-                "SELECT task_id,backtest_id,profile,model,status,content,tokens_used,elapsed,"
-                "error,suggestions,diagnostics,validation,created_at FROM ai_analyses "
-                "ORDER BY id DESC").fetchall()
+                f"SELECT {_cols} FROM ai_analyses ORDER BY id DESC").fetchall()
     out = []
     for r in rows:
         try:
@@ -554,7 +557,7 @@ def list_analyses(backtest_id: Optional[str] = None, db_path: Optional[str] = No
         out.append({"task_id": r[0], "backtest_id": r[1], "profile": r[2], "model": r[3],
                     "status": r[4], "content": r[5], "tokens_used": r[6], "elapsed": r[7],
                     "error": r[8], "suggestions": suggestions, "diagnostics": diag,
-                    "validation": validation, "created_at": r[12]})
+                    "validation": validation, "refined_from": r[12], "created_at": r[13]})
     return out
 
 

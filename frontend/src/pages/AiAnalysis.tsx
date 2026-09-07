@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -16,7 +16,11 @@ import {
   Tag,
   Typography
 } from 'antd'
-import { PlayCircleOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import {
+  ExperimentOutlined,
+  PlayCircleOutlined,
+  ThunderboltOutlined
+} from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -28,6 +32,7 @@ import {
   getAiSuggestionStats,
   getBacktestReport,
   getBacktests,
+  refineAiAnalysis,
   startAiAnalyze
 } from '../api/client'
 import type {
@@ -115,6 +120,7 @@ export default function AiAnalysis() {
   const [runningDirect, setRunningDirect] = useState(false)
   const [baseConfig, setBaseConfig] = useState<BacktestCreateRequest | null>(null)
   const [stats, setStats] = useState<AiSuggestionStats | null>(null)
+  const pendingSelectRef = useRef<string | null>(null)
 
   const loadStats = useCallback(async () => {
     try {
@@ -208,7 +214,27 @@ export default function AiAnalysis() {
     if (backtestId) loadAnalyses(backtestId)
     loadProfiles()
     loadStats()
+    if (pendingSelectRef.current) {
+      const tid = pendingSelectRef.current
+      pendingSelectRef.current = null
+      setSelectedAnalysisId(tid)
+    }
   })
+
+  const startRefine = async () => {
+    if (!selected) return
+    try {
+      const res = await refineAiAnalysis(
+        selected.task_id,
+        profile === 'auto' ? undefined : profile
+      )
+      message.info('修正任务已提交（LLM 修正 → 自动再验证）')
+      pendingSelectRef.current = res.task_id
+      setCurrentTaskId(res.task_id)
+    } catch (err) {
+      message.error(errDetail(err, '提交修正任务失败'))
+    }
+  }
 
   const startAnalyze = async () => {
     if (!backtestId) {
@@ -479,7 +505,9 @@ export default function AiAnalysis() {
                 style={{ width: 320 }}
                 options={analyses.map((a) => ({
                   value: a.task_id,
-                  label: `${a.created_at?.slice(0, 19)?.replace('T', ' ') ?? ''} · ${a.profile}`
+                  label: `${a.refined_from ? '[修正] ' : ''}${
+                    a.created_at?.slice(0, 19)?.replace('T', ' ') ?? ''
+                  } · ${a.profile}`
                 }))}
               />
             ) : null
@@ -548,6 +576,19 @@ export default function AiAnalysis() {
                           >
                             预填表单确认
                           </Button>
+                          {selected &&
+                            !selected.refined_from &&
+                            selected.validation?.comparison?.verdict && (
+                              <Button
+                                size="small"
+                                icon={<ExperimentOutlined />}
+                                loading={runningDirect}
+                                onClick={startRefine}
+                                title="Phase 2 二轮修正：把实测验证结果喂回 LLM 产出修正建议，并自动再验证"
+                              >
+                                基于实测修正
+                              </Button>
+                            )}
                         </Space>
                       }
                     >
