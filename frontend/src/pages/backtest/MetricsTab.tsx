@@ -137,6 +137,29 @@ export default function MetricsTab({ report }: Props) {
       : [])
   ]
 
+  // ---- 收益归因（选股依赖度）：底仓方向收益 vs 做T波动变现 ----
+  const attrCards: Array<{ title: string; value: string; color?: string }> = [
+    {
+      title: '调整后总盈亏',
+      value: m.adj_pnl != null ? fmtMoney(m.adj_pnl) : '-',
+      color: m.adj_pnl != null ? pnlColor(m.adj_pnl) : undefined
+    },
+    {
+      title: '做T收益（波动变现，毛价差）',
+      value: m.t_pnl_share != null
+        ? `${fmtMoney(m.t_pnl)}｜占 ${fmtPct(m.t_pnl_share)}`
+        : fmtMoney(m.t_pnl),
+      color: pnlColor(m.t_pnl)
+    },
+    {
+      title: '底仓收益（方向/选股，残差）',
+      value: m.position_pnl != null
+        ? `${fmtMoney(m.position_pnl)}${m.position_pnl_share != null ? `｜占 ${fmtPct(m.position_pnl_share)}` : ''}`
+        : '-',
+      color: m.position_pnl != null ? pnlColor(m.position_pnl) : undefined
+    }
+  ]
+
   const breakdownCards: Array<{ title: string; value: string; color?: string }> = [
     { title: 'T交易数', value: String(m.t_trade_count ?? 0) },
     { title: 'T胜率', value: fmtPct(m.t_win_rate) },
@@ -234,6 +257,25 @@ export default function MetricsTab({ report }: Props) {
           </Col>
         ))}
       </Row>
+
+      <Card
+        size="small"
+        title="收益归因（选股依赖度）"
+        style={{ marginTop: 16 }}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            做T为配对毛价差（未扣费，保守）；底仓=总盈亏−做T（承担全部费用），占比越高越依赖选股
+          </Typography.Text>
+        }
+      >
+        <Row gutter={[12, 12]}>
+          {attrCards.map((c) => (
+            <Col span={8} key={c.title}>
+              <Statistic title={c.title} value={c.value} valueStyle={{ fontSize: 18, color: c.color }} />
+            </Col>
+          ))}
+        </Row>
+      </Card>
 
       <Card size="small" title="做T与加减仓贡献分解" style={{ marginTop: 16 }}>
         <Row gutter={[12, 12]}>

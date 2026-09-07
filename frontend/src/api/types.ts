@@ -339,6 +339,15 @@ export interface Metrics {
   t_pnl_closed?: number | null
   /** 做T盈亏比（平均盈利/|平均亏损|） */
   t_payoff?: number | null
+  // ---- 收益归因（选股依赖度；旧报告无这些字段） ----
+  /** 调整口径总盈亏（出金还原+期末未平仓浮盈亏，已扣全部费用） */
+  adj_pnl?: number
+  /** 底仓方向收益 = adj_pnl − t_pnl（残差口径，承担全部费用）——占比越高越依赖选股 */
+  position_pnl?: number
+  /** 做T收益占总盈亏比（t_pnl/adj_pnl），总盈亏≈0 时为 null */
+  t_pnl_share?: number | null
+  /** 底仓收益占总盈亏比 */
+  position_pnl_share?: number | null
   open_pnl: number
   add_pnl: number
   reduce_pnl: number

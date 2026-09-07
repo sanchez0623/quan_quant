@@ -218,6 +218,7 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
     "win_rate": 0.55, "profit_loss_ratio": 1.8, "total_trades": 120,
     "total_pnl": 234000, "avg_hold_days": 3.2,
     "t_trade_count": 40, "t_win_rate": 0.5, "t_pnl": -5000,
+    "adj_pnl": 234000, "position_pnl": 239000, "t_pnl_share": -0.02, "position_pnl_share": 1.02,
     "open_pnl": 100000, "add_pnl": 50000, "reduce_pnl": 30000, "stop_loss_pnl": -80000,
     "commission_total": 12000, "start_equity": 1000000, "end_equity": 1234000
   },

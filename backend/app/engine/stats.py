@@ -196,6 +196,15 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
     total_pnl = sum(t["pnl"] for t in closes)
     avg_hold = _safe_div(sum(hold_days), len(hold_days)) if hold_days else 0.0
 
+    # ---- 收益归因（选股依赖度度量）----
+    # adj_pnl：调整口径总盈亏（出金还原+期末未平仓浮盈亏，已扣全部费用）
+    # t_pnl：做T配对毛价差（未扣费——费用由底仓侧承担，做T贡献为保守估计）
+    # position_pnl = adj_pnl - t_pnl：底仓方向收益（残差口径，恒等成立），
+    # 是"收益率与选股相关性"的直接度量：占比越高越依赖选股
+    adj_pnl = adj_end - start_equity
+    position_pnl = adj_pnl - t_pnl
+    t_share = (t_pnl / adj_pnl) if abs(adj_pnl) > 1 else None
+
     # ---- 出金指标 ----
     months = w.get("months") or {}
     shortfall_total = float(w.get("shortfall") or 0.0)
@@ -224,6 +233,11 @@ def build_metrics(trade_log: list[dict], equity_curve: list[dict],
         "t_pnl": round(t_pnl, 2),
         "t_pnl_closed": round(t_pnl_closed, 2) if t_pnl_closed is not None else None,
         "t_payoff": round(t_payoff, 4) if t_payoff is not None else None,
+        # ---- 收益归因（选股依赖度） ----
+        "adj_pnl": round(adj_pnl, 2),
+        "position_pnl": round(position_pnl, 2),
+        "t_pnl_share": round(t_share, 4) if t_share is not None else None,
+        "position_pnl_share": round(1 - t_share, 4) if t_share is not None else None,
         "open_pnl": round(open_pnl, 2),
         "add_pnl": round(add_pnl, 2),
         "reduce_pnl": round(reduce_pnl, 2),
