@@ -230,6 +230,7 @@ export default function BacktestList() {
   const [diffB, setDiffB] = useState<number | undefined>(undefined)
   // ---- AI 生成任务名称 ----
   const [naming, setNaming] = useState(false)
+  const [tplNaming, setTplNaming] = useState(false)  // 存为模板弹窗的 AI 命名
   const prefillApplied = useRef(false)
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
@@ -583,6 +584,38 @@ export default function BacktestList() {
       fetchList()
     } catch (err) {
       message.error(errDetail(err, '删除失败'))
+    }
+  }
+
+  /** 存为模板弹窗：用模板配置（与回测请求同构）让 AI 生成模板名 */
+  const onAiTplName = async () => {
+    const cfg = saveSource?.config
+    if (!cfg?.strategy_id) {
+      message.warning('模板配置缺少策略，无法生成名称')
+      return
+    }
+    setTplNaming(true)
+    try {
+      const res = await generateBacktestName({
+        strategy_id: cfg.strategy_id,
+        params: cfg.params ?? {},
+        risk_config: (cfg.risk_config ?? {}) as Record<string, unknown>,
+        universe: cfg.universe ?? [],
+        universe_auto: cfg.universe_auto ?? false,
+        start_date: cfg.start_date ?? '',
+        end_date: cfg.end_date ?? '',
+        period: cfg.period ?? 'daily',
+        initial_capital: cfg.initial_capital,
+        benchmark: cfg.benchmark
+      })
+      if (res.name) {
+        setTemplateName(res.name)
+        message.success(`已生成名称${res.model ? `（${res.model}）` : ''}`)
+      }
+    } catch (err) {
+      message.error(errDetail(err, 'AI 生成名称失败'))
+    } finally {
+      setTplNaming(false)
     }
   }
 
@@ -1209,14 +1242,21 @@ export default function BacktestList() {
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           模板保存后可在「新建回测」右上角快速载入，无需重复配置。
         </Typography.Paragraph>
-        <Input
-          placeholder="模板名称，例如：双均线-浦发-标准配置"
-          value={templateName}
-          onChange={(e) => setTemplateName(e.target.value)}
-          maxLength={50}
-          onPressEnter={onSaveTemplate}
-          autoFocus
-        />
+        <Space.Compact style={{ width: '100%' }}>
+          <Input
+            placeholder="模板名称，例如：双均线-浦发-标准配置（或点右侧 AI生成）"
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            maxLength={50}
+            onPressEnter={onSaveTemplate}
+            autoFocus
+          />
+          <Tooltip title="根据模板的策略/周期/资金等配置，用 AI 生成一个合适的模板名">
+            <Button icon={<RobotOutlined />} loading={tplNaming} onClick={onAiTplName}>
+              AI生成
+            </Button>
+          </Tooltip>
+        </Space.Compact>
       </Modal>
 
       <Modal
