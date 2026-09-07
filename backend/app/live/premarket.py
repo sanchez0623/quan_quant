@@ -39,6 +39,8 @@ DEFAULT_CFG = {
     "auto_boards": [],       # 候选域：板块并集
     "t_mode": "off",         # 做T机制（盘中状态机；M2 起步 off——人工执行延迟吃收益）
     "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
+    "max_pos_pct": 40.0,     # 单票市值上限（%权益，与回测 risk_config.max_position_pct_per_stock 同尺）
+    "cash_reserve_pct": 1.5,  # 现金缓冲（%权益，与回测 risk_config.cash_reserve_pct 同尺）
     "auto_schedule": True,   # 每日自动调度（盘前 08:25 / 盘后 15:25 交易日自动提交）
     "dd_breaker_pct": 30.0,  # 回撤熔断阈值（%）：虚拟权益较峰值回撤达阈值强制停开仓
     "ai_briefing": True,     # 盘前流程后 AI 生成盘前简报（推飞书；无可用 LLM Key 自动跳过）
@@ -169,12 +171,16 @@ def run_premarket(data_dir: Optional[str] = None,
                 # （曾用全市场 score 前 pool_n 作准入：与池子两把尺子，
                 #   交叉可能为空 -> 开仓名单 0 只、无信号可回填）
                 _sp = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
-                base_max = float(_sp["base_pct_max"])
-                base_min = float(_sp["base_pct_min"])
+                # 试仓/满配占比：cfg 优先（模板注入的 params 全量键在此承接），
+                # schema 默认兜底——与回测同一把尺
+                base_max = float(cfg.get("base_pct_max") or _sp["base_pct_max"])
+                base_min = float(cfg.get("base_pct_min") or _sp["base_pct_min"])
                 equity, cash_all = intraday._virtual_equity(
                     cfg, positions, daily_close)
                 slots = int(cfg.get("max_holdings") or 3)
-                cash = cash_all * (1 - intraday.CASH_RESERVE_PCT / 100)
+                cash_reserve = float(cfg.get("cash_reserve_pct")
+                                     or intraday.CASH_RESERVE_PCT)
+                cash = cash_all * (1 - cash_reserve / 100)
                 used = 0
                 p_feats = intraday.cfg_pick_params(cfg)
                 for r in picked.to_dicts():
@@ -191,8 +197,9 @@ def run_premarket(data_dir: Optional[str] = None,
                         continue
                     slope_up = (frow.to_dicts()[0].get("slope") or 0) > 0
                     budget_pct = base_max if slope_up else base_min
+                    max_pos = float(cfg.get("max_pos_pct") or 40.0)
                     amount = min(equity * budget_pct / 100,
-                                 equity * intraday.MAX_POS_PCT / 100, cash)
+                                 equity * max_pos / 100, cash)
                     amount = round(amount, 0)
                     if amount < ref * 100:
                         continue   # 不足一手：跳过且不占槽位
@@ -215,9 +222,9 @@ def run_premarket(data_dir: Optional[str] = None,
                     used += 1
                 messages.append(
                     f"开仓名单 {used} 只（槽位 {slots}，单票≤"
-                    f"{intraday.MAX_POS_PCT:.0f}%权益；试仓 {base_min:.0f}%/"
-                    f"满配 {base_max:.0f}%，受单票上限收敛）——其余候选候补，"
-                    f"盘中退出后补位")
+                    f"{float(cfg.get('max_pos_pct') or intraday.MAX_POS_PCT):.0f}%权益；"
+                    f"试仓 {base_min:.0f}%/满配 {base_max:.0f}%，受单票上限收敛）"
+                    f"——其余候选候补，盘中退出后补位")
         else:
             messages.append(f"空仓第 {idle_days} 日（重选阈值 "
                             f"{cfg['auto_idle_days']}）——继续等待")

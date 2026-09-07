@@ -562,6 +562,10 @@ export interface LiveConfig {
   auto_boards: string[]
   t_mode: string
   max_holdings: number
+  /** 单票市值上限（%权益，与回测 risk_config.max_position_pct_per_stock 同尺） */
+  max_pos_pct?: number | null
+  /** 现金缓冲（%权益，与回测 risk_config.cash_reserve_pct 同尺） */
+  cash_reserve_pct?: number | null
   auto_schedule?: boolean
   dd_breaker_pct?: number
   fee_commission_rate: number

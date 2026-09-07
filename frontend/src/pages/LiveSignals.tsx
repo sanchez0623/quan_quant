@@ -920,6 +920,16 @@ export default function LiveSignals() {
                     {numCell(cfg.max_holdings ?? 3,
                       (v) => setCfg({ ...cfg, max_holdings: v ?? 3 }), 1, 1)}
                   </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">单票上限%（max_pos_pct）</Typography.Text>
+                    {numCell(cfg.max_pos_pct ?? 40,
+                      (v) => setCfg({ ...cfg, max_pos_pct: v ?? 40 }), 1, 1)}
+                  </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">现金缓冲%（cash_reserve_pct）</Typography.Text>
+                    {numCell(cfg.cash_reserve_pct ?? 1.5,
+                      (v) => setCfg({ ...cfg, cash_reserve_pct: v ?? 1.5 }), 0.5, 0)}
+                  </Col>
                 </Row>
                 <Typography.Text type="secondary" style={{
                   display: 'block', marginTop: 12, fontSize: 12

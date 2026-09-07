@@ -242,7 +242,8 @@ def test_position_price_snapshot(tmp_path, monkeypatch):
 
 def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):
     """模板注入：dry_run 预览不落库 / apply 写入 sig_config / mom 键承接
-    cfg_pick_params / 资金默认跳过 / max_holdings 双处取严"""
+    cfg_pick_params / 资金默认跳过 / max_holdings 双处取严 /
+    params 全量键与 risk_config（单票上限/现金缓冲）全量同步"""
     from app.api import live as live_api
     from app.live import intraday as li
     saved_cfg = db.get_live_config()
@@ -250,8 +251,11 @@ def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):
         tpl_cfg = {
             "strategy_id": "momentum_slot",
             "params": {"max_holdings": 5, "pool_n": 6, "exit_need": 2,
-                       "enter_th": 0.2, "t_mode": "grid", "macd_fast": 10},
-            "risk_config": {"max_holdings": 4},
+                       "enter_th": 0.2, "t_mode": "grid", "macd_fast": 10,
+                       "base_pct_max": 60, "base_pct_min": 15},
+            "risk_config": {"max_holdings": 4,
+                            "max_position_pct_per_stock": 35,
+                            "cash_reserve_pct": 2.0},
             "auto_idle_days": 3, "auto_top_x": 20, "auto_above_ma": 60,
             "auto_with_accel": False, "auto_min_rps": 70.0,
             "auto_rank_key": "mom_gap",
@@ -276,6 +280,11 @@ def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):
         assert upd["t_mode"] == "grid"
         assert upd["macd_fast"] == 10, "mom 特征键进 sig_config"
         assert upd["fee_commission_rate"] == 0.0003
+        assert upd["base_pct_max"] == 60 and upd["base_pct_min"] == 15, \
+            "params 全量键直接进 sig_config（资金占比组，不再挑选）"
+        assert upd["max_pos_pct"] == 35.0, \
+            "risk_config.max_position_pct_per_stock -> max_pos_pct"
+        assert upd["cash_reserve_pct"] == 2.0, "risk_config 现金缓冲同步"
         assert "initial_capital" not in upd and "initial_capital" in skip
 
         res = live_api.apply_template(live_api.ApplyTemplateBody(
@@ -284,8 +293,12 @@ def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):
         cfg = db.get_live_config()
         assert cfg["top_x"] == 20 and cfg["max_holdings"] == 4
         assert cfg["macd_fast"] == 10 and cfg["initial_capital"] == 3_000_000
+        assert cfg["max_pos_pct"] == 35.0 and cfg["cash_reserve_pct"] == 2.0
         p = li.cfg_pick_params(cfg)
         assert p["macd_fast"] == 10, "特征重算承接模板 mom 键（与回测同尺）"
+        sp = li._stepper_params(cfg)
+        assert sp["base_pct_max"] == 60 and sp["base_pct_min"] == 15, \
+            "stepper 按 schema 键全量承接 cfg（与回测 prepare 同模式）"
 
         res2 = live_api.apply_template(live_api.ApplyTemplateBody(
             template_id=tid, dry_run=False, apply_capital=True), user="tester")

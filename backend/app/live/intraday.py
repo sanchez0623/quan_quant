@@ -32,7 +32,8 @@ from ..engine.runner import _shift_back
 from ..engine.strategies.momentum_slot import MomentumSlotStrategy, SlotStepper
 from . import feishu, quotes
 
-# 单票市值上限（占虚拟权益 %）——对齐 engine/risk.py 默认
+# 单票市值上限/现金缓冲默认值（占虚拟权益 %）——对齐 engine/risk.py 默认，
+# 实际取 cfg.max_pos_pct / cfg.cash_reserve_pct（模板注入/配置卡可覆盖）
 MAX_POS_PCT = 40.0
 CASH_RESERVE_PCT = 1.5     # 现金缓冲（%），对齐 risk.py 默认
 CIRCUIT_BREAK_MIN = 10     # 断流熔断：全源失败持续分钟数
@@ -47,13 +48,11 @@ def _live_cfg() -> dict:
 
 
 def _stepper_params(cfg: dict) -> dict:
-    """SlotStepper 参数：momentum_slot 参数表默认值 + 实盘可配置项覆盖。"""
+    """SlotStepper 参数：momentum_slot 参数表默认值 + 实盘配置按 schema 键
+    全量承接（模板注入写入的 params 全量键在此消费——与回测 prepare 同模式：
+    默认打底、覆盖不筛键；类型规范化由 SlotStepper 消费端 float()/int() 完成）。"""
     p = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
-    p.update({
-        "t_mode": str(cfg.get("t_mode") or "off"),          # 做T机制（M2 起步 off）
-        "exit_need": int(cfg.get("exit_need") or 2),        # 衰退信号满足数
-        "pool_n": int(cfg.get("pool_n") or 6),              # 榜单容量
-    })
+    p.update({k: v for k, v in cfg.items() if k in p and v is not None})
     return p
 
 
@@ -420,8 +419,10 @@ def _make_signal(sig: dict, code: str, name: str, bar_ts: str, close: float,
             budget_pct = float(sig.get("budget_pct") or 0)
             amount = equity * budget_pct / 100
             mv_code = (pos["volume"] * close) if pos else 0.0
-            amount = min(amount, cash * (1 - CASH_RESERVE_PCT / 100),
-                         max(0.0, equity * MAX_POS_PCT / 100 - mv_code))
+            max_pos = float(cfg.get("max_pos_pct") or MAX_POS_PCT)
+            cash_reserve = float(cfg.get("cash_reserve_pct") or CASH_RESERVE_PCT)
+            amount = min(amount, cash * (1 - cash_reserve / 100),
+                         max(0.0, equity * max_pos / 100 - mv_code))
             amount = round(amount, 0)
             if amount < close * 100:
                 blocked = (f"{code} 预算不足一手（预算 {amount:.0f} 元 < "

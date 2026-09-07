@@ -183,6 +183,8 @@ class LiveConfigBody(BaseModel):
     auto_boards: list[str] = Field(default_factory=list)
     t_mode: str = "off"
     max_holdings: int = 3
+    max_pos_pct: Optional[float] = None        # 单票市值上限（%权益，None=用默认40）
+    cash_reserve_pct: Optional[float] = None   # 现金缓冲（%权益，None=用默认1.5）
     auto_schedule: bool = True
     dd_breaker_pct: float = 30.0
     ai_briefing: bool = True     # 盘前流程后 AI 生成盘前简报（无可用 LLM Key 自动跳过）
@@ -215,14 +217,8 @@ _TEMPLATE_SCALARS = {
     "auto_boards": "auto_boards",
     "pool_gate_enter_th": "enter_th",   # params.enter_th 优先，缺失时兜底
 }
-# 模板 params 内的标量 -> 实盘键（momentum_slot/momentum_t 通用）
-_PARAMS_SCALARS = {
-    "max_holdings": "max_holdings",
-    "pool_n": "pool_n",
-    "exit_need": "exit_need",
-    "enter_th": "enter_th",
-    "t_mode": "t_mode",
-}
+# 模板 params 内的标量 -> 实盘键（已废弃挑选式映射：params 全量键直接写进
+# sig_config，见 _build_template_updates——模板注入即全量同步）
 # 模板费率 -> 实盘费率（BacktestRequest 顶层与实盘 fee_* 同义不同名）
 _TEMPLATE_FEES = {
     "commission_rate": "fee_commission_rate",
@@ -231,6 +227,11 @@ _TEMPLATE_FEES = {
     "transfer_fee": "fee_transfer_fee",
     "handling_fee": "fee_handling_fee",
     "regulatory_fee": "fee_regulatory_fee",
+}
+# 模板 risk_config -> 实盘键（回测风控与实盘引擎同尺）
+_TEMPLATE_RISK = {
+    "max_position_pct_per_stock": "max_pos_pct",
+    "cash_reserve_pct": "cash_reserve_pct",
 }
 
 
@@ -257,11 +258,13 @@ def _build_template_updates(tpl_cfg: dict, cur: dict,
             skipped.append((src, "模板跟随策略默认，实盘保留现值"))
             continue
         updates[dst] = v
-    for src, dst in _PARAMS_SCALARS.items():
-        if src in params and params[src] is not None:
-            updates[dst] = params[src]
-    if params.get("enter_th") is not None:
-        updates["enter_th"] = params["enter_th"]   # params 优先于 pool_gate 兜底
+    # params 全量键：按原键直接写进 sig_config（实盘消费端 _stepper_params /
+    # premarket base_pct 按 momentum_slot schema 键全量承接）——
+    # 模板注入即全量同步，退出组/做T组/资金占比组不再挑选；
+    # 放在 _TEMPLATE_SCALARS 之后：params.enter_th 覆盖 pool_gate 兜底
+    for k, v in params.items():
+        if v is not None:
+            updates[k] = v
     if apply_fees:
         for src, dst in _TEMPLATE_FEES.items():
             if tpl_cfg.get(src) is not None:
@@ -277,10 +280,14 @@ def _build_template_updates(tpl_cfg: dict, cur: dict,
         skipped.append(("initial_capital",
                         "实盘资金独立管理（勾选「覆盖实盘资金」可注入）"))
 
-    # 实盘独有键永不注入：auto_schedule / dd_breaker_pct / ai_briefing /
-    # ai_commentary / suggest_pct / 飞书配置
+    # 实盘独有键永不注入：auto_schedule / dd_breaker_pct / ai_* / suggest_pct /
+    # 飞书配置
+    rc = tpl_cfg.get("risk_config") or {}
+    for src, dst in _TEMPLATE_RISK.items():
+        if rc.get(src) is not None:
+            updates[dst] = float(rc[src])   # 单票上限/现金缓冲：与回测风控同尺
     max_h = updates.get("max_holdings")
-    rc_max = ((tpl_cfg.get("risk_config") or {}).get("max_holdings"))
+    rc_max = rc.get("max_holdings")
     if max_h is not None and rc_max is not None and rc_max != max_h:
         updates["max_holdings"] = min(int(max_h), int(rc_max))  # 双处取严
     return updates, skipped
