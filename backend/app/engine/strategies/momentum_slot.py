@@ -275,7 +275,8 @@ class MomentumSlotStrategy(Strategy):
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
                 start_date: str | None = None,
-                market_regime: pl.DataFrame | None = None) -> dict[str, pl.DataFrame]:
+                market_regime: pl.DataFrame | None = None,
+                index_gate: pl.DataFrame | None = None) -> dict[str, pl.DataFrame]:
         p = {k["key"]: k["default"] for k in self.param_schema}
         p.update({k: v for k, v in (params or {}).items() if v is not None})
 
@@ -316,6 +317,13 @@ class MomentumSlotStrategy(Strategy):
                     pl.col("pool_gate").fill_null(False))
             else:
                 df = df.with_columns(pl.lit(False).alias("pool_gate"))
+            # 大盘趋势闸门（INDEX_GATE）：runner 注入 (day, index_gate) 表（已 T-1 对齐）；
+            # 关闭或指数缺失时全 False，行为与旧版一致。与 pool_gate 取或，任一触发即停开仓
+            if index_gate is not None and index_gate.height:
+                df = df.join(index_gate, on="day", how="left").with_columns(
+                    pl.col("index_gate").fill_null(False))
+            else:
+                df = df.with_columns(pl.lit(False).alias("index_gate"))
             cols = self._walk(df, p, top_days.get(code, set()), start_date, regime_map)
             df = df.with_columns(cols)
             out[code] = df.drop("day")
@@ -361,22 +369,25 @@ class MomentumSlotStrategy(Strategy):
         reduces: list[float | None] = [None] * n
 
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
-                "dif", "dea", "ma_fast", "slope", "score", "day_idx", "pool_gate"]
-        # pool_gate 由 prepare 注入（POOL_GATE）；直调 _walk 的旧路径兜底补列
+                "dif", "dea", "ma_fast", "slope", "score", "day_idx", "pool_gate", "index_gate"]
+        # pool_gate/index_gate 由 prepare 注入（POOL_GATE / INDEX_GATE）；直调 _walk 的旧路径兜底补列
         if "pool_gate" not in df.columns:
             df = df.with_columns(pl.lit(False).alias("pool_gate"))
+        if "index_gate" not in df.columns:
+            df = df.with_columns(pl.lit(False).alias("index_gate"))
         dts = df["date"].to_list()
         is_eod = [i == n - 1 or dts[i][:10] != dts[i + 1][:10] for i in range(n)]
         st = SlotStepper(p, top_days, regime_map=regime_map)
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
-             dif, dea, ma_fast, slope, score, day_idx, pool_gate) = row
+             dif, dea, ma_fast, slope, score, day_idx, pool_gate, index_gate) = row
             if start_date and date[:10] < start_date:
                 continue
+            # 双 gate 合一后传给 step（step 签名不变：实盘 SlotStepper 调用零影响）
             sig = st.step(date, close, atr_pct, bias, vol_pos, breakout,
                           dif, dea, ma_fast, slope, score, day_idx,
-                          bool(pool_gate), is_eod[i])
+                          bool(pool_gate or index_gate), is_eod[i])
             if sig is not None:
                 signals[i] = sig["signal"]
                 tags[i] = sig["tag"]

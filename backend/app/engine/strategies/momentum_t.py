@@ -188,7 +188,8 @@ class MomentumTStrategy(Strategy):
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
-                start_date: str | None = None) -> dict[str, pl.DataFrame]:
+                start_date: str | None = None,
+                index_gate: pl.DataFrame | None = None) -> dict[str, pl.DataFrame]:
         p = {k["key"]: k["default"] for k in self.param_schema}
         p.update({k: v for k, v in (params or {}).items() if v is not None})
 
@@ -225,6 +226,13 @@ class MomentumTStrategy(Strategy):
                     pl.col("pool_gate").fill_null(False))
             else:
                 df = df.with_columns(pl.lit(False).alias("pool_gate"))
+            # 大盘趋势闸门（INDEX_GATE）：runner 注入 (day, index_gate) 表（已 T-1 对齐）；
+            # 关闭或指数缺失时全 False，行为与旧版一致。与 pool_gate 取或，任一触发即停开仓
+            if index_gate is not None and index_gate.height:
+                df = df.join(index_gate, on="day", how="left").with_columns(
+                    pl.col("index_gate").fill_null(False))
+            else:
+                df = df.with_columns(pl.lit(False).alias("index_gate"))
             cols = self._walk(df, p, top_days.get(code, set()), start_date)
             df = df.with_columns(cols)
             out[code] = df.drop("day")
@@ -282,10 +290,12 @@ class MomentumTStrategy(Strategy):
         reduce_cd = int(p["reduce_cooldown"])
 
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
-                "dif", "dea", "ma_slow", "slope", "day_idx", "pool_gate"]
-        # pool_gate 由 prepare 注入（POOL_GATE）；直调 _walk 的旧路径兜底补列
+                "dif", "dea", "ma_slow", "slope", "day_idx", "pool_gate", "index_gate"]
+        # pool_gate/index_gate 由 prepare 注入（POOL_GATE / INDEX_GATE）；直调 _walk 的旧路径兜底补列
         if "pool_gate" not in df.columns:
             df = df.with_columns(pl.lit(False).alias("pool_gate"))
+        if "index_gate" not in df.columns:
+            df = df.with_columns(pl.lit(False).alias("index_gate"))
         # trend_clock=daily：趋势信号只在当日最后一根bar评估（is_eod），次日开盘成交；
         # 做T网格不受门控，仍盘中逐bar运行（阈值用T-1 ATR/vol_pos，无泄漏）。
         trend_clock = str(p.get("trend_clock") or "intraday")
@@ -305,7 +315,9 @@ class MomentumTStrategy(Strategy):
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
-             dif, dea, ma_slow, slope, day_idx, pool_gate) = row
+             dif, dea, ma_slow, slope, day_idx, pool_gate, index_gate) = row
+            # 双 gate 合一：池级开关（POOL_GATE）或大盘闸门（INDEX_GATE）任一触发即停开仓
+            gated = pool_gate or index_gate
             day = date[:10]
             if start_date and day < start_date:
                 continue  # 预热期：不推进状态机
@@ -337,8 +349,8 @@ class MomentumTStrategy(Strategy):
 
             if not opened:
                 # ---- 2) 建仓：初步确认试仓 / 三重确认满配 ----
-                # 池级开关（pool_gate）：环境不适配时抑制建仓（POOL_GATE）
-                if macd_ok and above and day in top_days and trend_ok and not pool_gate:
+                # 池级开关/大盘闸门：环境不适配时抑制建仓（POOL_GATE / INDEX_GATE）
+                if macd_ok and above and day in top_days and trend_ok and not gated:
                     if confirmed:
                         budgets[i] = base_max
                         reasons[i] = "三重确认（金叉+站上慢线+斜率向上），满配建仓"
@@ -354,7 +366,7 @@ class MomentumTStrategy(Strategy):
                 continue
 
             # ---- 3) 试仓升级：确认升级后补到满配 ----
-            if not full and confirmed and trend_ok and not pool_gate:
+            if not full and confirmed and trend_ok and not gated:
                 signals[i] = 1
                 tags[i] = "加仓"
                 budgets[i] = max(0.0, base_max - base_min)
@@ -369,7 +381,7 @@ class MomentumTStrategy(Strategy):
             # 不消耗加仓次数与冷却期（防低 base_max 下金字塔衰减为无意义小单）
             if (full and breakout and adds_done < max_adds
                     and (day_idx - last_add_idx) >= add_cd and trend_ok
-                    and not pool_gate
+                    and not gated
                     and prev_high is not None and close > prev_high):
                 budget = base_max * (add_scale ** (adds_done + 1))
                 if budget >= mc.ADD_MIN_BUDGET_PCT:

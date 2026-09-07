@@ -447,6 +447,61 @@ def compute_market_regime(data_dir: Optional[str] = None, index_key: str = "0009
     return df
 
 
+# ------------------------------------------------------------------
+# 大盘趋势闸门（INDEX_GATE）
+# ------------------------------------------------------------------
+
+# 判定源固定中证500（贴近动量池中小盘）；MA 周期 20、确认天数 2（防抖动）、
+# 恢复缓冲带 1%（滞回）均内置不开放为参数（避免新增过拟合旋钮，同 POOL_GATE）
+INDEX_GATE_INDEX = "000905"
+INDEX_GATE_MA = 20
+INDEX_GATE_CONFIRM_DAYS = 2
+INDEX_GATE_BUFFER = 0.01
+
+
+def compute_index_gate(data_dir: Optional[str] = None,
+                       index_key: str = INDEX_GATE_INDEX) -> Optional[pl.DataFrame]:
+    """大盘趋势闸门（日级，T-1 对齐）。
+
+    判定：指数收盘 < MA20 连续 2 日 -> 停开仓；收盘 >= MA20×(1+缓冲带)
+    连续 2 日 -> 恢复（滞回，防均线附近反复穿越抖动）；中间地带保持现状。
+    返回列 (day, index_gate)，输出已 T-1 对齐（当日 bar 只能看见上一完整
+    交易日收盘状态，无后视镜），首日视为不抑制；供策略 prepare 内 join
+    （与 pool_gate 取或：任一触发即停开仓/加仓，退出与做T照常）。
+    指数日线缺失返回 None，调用方降级为不抑制（同 benchmark 缺失静默降级）。"""
+    df = store.read_index_daily([index_key], data_dir)
+    if df is None or df.height == 0:
+        return None
+    df = df.sort("date")
+    df = add_ma(df, INDEX_GATE_MA, "close", "ma_gate")
+    df = df.with_columns([
+        pl.col("date").str.slice(0, 10).alias("day"),
+        (pl.col("close") < pl.col("ma_gate")).alias("below"),
+        (pl.col("close") >= pl.col("ma_gate") * (1 + INDEX_GATE_BUFFER)).alias("recov"),
+    ])
+    # 状态机（同 _pool_gate_map 形态）：below/recov 在 MA 预热期为 null，视为 False
+    gates: list[bool] = []
+    on = False
+    low = 0
+    high = 0
+    for _day, below, recov in df.select(["day", "below", "recov"]).iter_rows():
+        if on:
+            high = high + 1 if recov else 0
+            if high >= INDEX_GATE_CONFIRM_DAYS:
+                on = False
+        else:
+            low = low + 1 if below else 0
+            if low >= INDEX_GATE_CONFIRM_DAYS:
+                on = True
+        gates.append(on)
+    # T-1 对齐：当日 bar 只见前一日收盘状态；首日无前日 -> 不抑制
+    days = df["day"].to_list()
+    return pl.DataFrame({
+        "day": days,
+        "index_gate": [gates[i - 1] if i > 0 else False for i in range(len(gates))],
+    })
+
+
 def select_top(mf: MarketFeatures, as_of_day: str, top_x: int = 30,
                min_rps: Optional[float] = None,
                domain: Optional[set] = None,

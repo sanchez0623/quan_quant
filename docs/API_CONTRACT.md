@@ -178,6 +178,18 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 
 - 指数数据缺失（未拉取/区间不覆盖）时**静默降级**：不写 benchmark、不加指标，回测不受影响。
 
+### 大盘趋势闸门（INDEX\_GATE，仅 momentum\_t/momentum\_slot）
+
+- 顶层字段 `index_gate: bool = false`：中证500（000905）收盘 < MA20 **连续 2 日** → 抑制开新仓/加仓（试仓升级、金字塔加仓、正向T一并抑制）；持仓退出（止损/止盈/清仓/衰退退出）与反向做T照常；
+
+- 恢复：收盘 ≥ MA20×(1+1%) **连续 2 日**（滞回缓冲带内置防抖）；中间地带保持现状；MA 周期/确认天数/缓冲带均内置不开放为参数（避免新增过拟合旋钮）；
+
+- **T-1 对齐（无后视镜）**：D 日收盘确认的状态，D+1 日 bar 才可见；触发日当日成交（来自前一日信号）合法；
+
+- 与池级趋势开关（`pool_gate`）正交叠加：任一触发即停开仓（更严格者生效）；
+
+- 指数日线缺失（未拉取 index\_daily）时**静默降级为不抑制**（同 benchmark 缺失口径）；非动量策略开启 → 校验 400。
+
 ### GET /api/backtests
 
 响应：`[{"task_id","name","status(pending|running|success|failed)","created_at","strategy_id","period","config(完整回测配置,供存为模板)","error}]`（倒序）

@@ -228,9 +228,18 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
     regime_map = {}
     if market_regime is not None and market_regime.height:
         regime_map = {r[0]: r[1] for r in market_regime.rows()}
-    prepared = (strategy.prepare(data, params, start_date=start, market_regime=market_regime)
-                if market_regime is not None
-                else strategy.prepare(data, params, start_date=start))
+    # ---- 大盘趋势闸门（INDEX_GATE）：中证500 收盘<MA20 连续2日触发停开仓/加仓，
+    # 滞回恢复；与 pool_gate 取或（更严格者生效），退出与做T照常。
+    # 指数日线缺失 -> None -> 不抑制（同 benchmark 缺失静默降级，T-1 对齐防未来函数）
+    index_gate_df = None
+    if cfg.get("index_gate") and strategy_id in ("momentum_t", "momentum_slot"):
+        index_gate_df = mc.compute_index_gate(data_dir)
+    prepare_kw: dict = {}
+    if market_regime is not None:
+        prepare_kw["market_regime"] = market_regime
+    if index_gate_df is not None:
+        prepare_kw["index_gate"] = index_gate_df
+    prepared = strategy.prepare(data, params, start_date=start, **prepare_kw)
 
     # risk_config 未显式设置止损而策略参数给了 stop_loss_pct -> 覆盖
     risk_cfg_dict = dict(cfg.get("risk_config") or {})

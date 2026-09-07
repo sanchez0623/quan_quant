@@ -78,6 +78,8 @@ class BacktestRequest(BaseModel):
     # ---- 池级趋势开关（POOL_GATE，仅 momentum_t/momentum_slot）----
     pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
     pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
+    # ---- 大盘趋势闸门（INDEX_GATE，仅 momentum_t/momentum_slot）----
+    index_gate: bool = False          # 中证500收盘<MA20连续2日时抑制开仓/加仓（恢复缓冲带内置）
     start_date: str
     end_date: str
     end_date_today: bool = False
@@ -172,6 +174,8 @@ def normalize_config(cfg: dict) -> dict:
         "monthly_withdraw_base": 0.0, "t_profit_withdraw_pct": 10.0, "min_t_amount": 20000.0,
         # 池级趋势开关
         "pool_gate": False, "pool_gate_enter_th": 0.15,
+        # 大盘趋势闸门
+        "index_gate": False,
         # 基准 / 剔除ST
         "benchmark": "000905", "exclude_st": True,
     }
@@ -239,6 +243,11 @@ def validate_backtest_config(cfg: dict) -> dict:
                                or not 0 < float(th) < 0.5):
             raise HTTPException(status_code=400,
                                 detail="pool_gate_enter_th 需为 0~0.5 之间的小数（默认 0.15）")
+    # ---- 大盘趋势闸门校验（INDEX_GATE）----
+    if cfg.get("index_gate"):
+        if cfg.get("strategy_id") not in ("momentum_t", "momentum_slot"):
+            raise HTTPException(status_code=400,
+                                detail="大盘趋势闸门仅支持 momentum_t / momentum_slot")
     if not auto_mode and not universe:
         raise HTTPException(status_code=400, detail="universe 不能为空")
     cfg = dict(cfg)
