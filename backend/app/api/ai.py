@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import db
+from .. import config, db
 from ..auth import get_current_user
 from ..llm import provider
 from ..task_manager import manager
@@ -56,9 +56,67 @@ def create_analysis(req: AnalyzeRequest, user: str = Depends(get_current_user)):
                             "username": user})
     # 若存在同策略的寻优结果，附加参数重要性
     param_importance = _latest_param_importance(bt.get("payload", {}).get("strategy_id"))
+    # 若存在该回测的敏感度扫描结果（Phase 3），自动附加实测表
+    sensitivity = _latest_sensitivity(req.backtest_id)
     manager.submit("ai", task_id, backtest_id=req.backtest_id,
-                   profile=req.profile, param_importance=param_importance, username=user)
+                   profile=req.profile, param_importance=param_importance,
+                   username=user, sensitivity=sensitivity)
     return {"task_id": task_id, "status": "pending"}
+
+
+def _latest_sensitivity(backtest_id: str):
+    """该回测最近一次成功的敏感度扫描结果（Phase 3，无则 None）"""
+    from ..llm.sensitivity import load_latest_sensitivity
+    try:
+        return load_latest_sensitivity(backtest_id, str(config.REPORTS_DIR))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class SensitivityBody(BaseModel):
+    backtest_id: str
+    params: Optional[list[str]] = None  # 缺省自动选（param_importance top / schema 前序）
+
+
+@router.post("/sensitivity")
+def run_sensitivity(body: SensitivityBody, user: str = Depends(get_current_user)):
+    """方案 B Phase 3 敏感度扫描：关键参数 ±20% 网格各跑一次回测 → 实测表。
+    成本护栏：参数 ≤4、每参数 ≤5 值、总回测 ≤20。结果在后续 AI 分析时自动附加。"""
+    bt = db.get_task(body.backtest_id)
+    if bt is None or bt["status"] != "success":
+        raise HTTPException(status_code=400, detail="回测任务不存在或未成功")
+    keys = [str(k) for k in (body.params or []) if k]
+    if len(keys) > 4:
+        raise HTTPException(status_code=400,
+                            detail="扫描参数过多（≤4 个），请用 param_importance 优先级裁剪")
+    if not keys:
+        # 自动选参：寻优重要性 → 报告内寻优摘要 → schema 前序
+        keys = _auto_scan_params(body.backtest_id)
+        if not keys:
+            raise HTTPException(status_code=400, detail="未能自动确定扫描参数，请显式指定 params")
+    new_task_id = "sen_" + uuid.uuid4().hex[:12]
+    db.create_task(new_task_id, f"敏感度扫描:{body.backtest_id}", "ai_sensitivity",
+                   payload={"backtest_id": body.backtest_id, "params": keys})
+    manager.submit("ai_sensitivity", new_task_id, backtest_id=body.backtest_id,
+                   params=keys)
+    return {"task_id": new_task_id, "status": "pending", "params": keys}
+
+
+def _auto_scan_params(backtest_id: str) -> list[str]:
+    """自动选参：任务 payload/寻优报告的 param_importance top3 → 失败返回空"""
+    from ..llm.sensitivity import auto_pick_params
+    bt = db.get_task(backtest_id)
+    report_path = (bt.get("payload") or {}).get("report_path") if bt else None
+    if not report_path or not Path(report_path).exists():
+        return []
+    try:
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not report.get("_param_importance"):
+        report["_param_importance"] = _latest_param_importance(
+            (report.get("config") or {}).get("strategy_id")) or {}
+    return auto_pick_params(report, limit=3)
 
 
 def _latest_param_importance(strategy_id: Optional[str]) -> Optional[dict]:

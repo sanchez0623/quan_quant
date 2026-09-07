@@ -436,7 +436,9 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
                      username: Optional[str] = None,
                      findings: Optional[list[dict]] = None,
                      data_dir: Optional[str] = None,
-                     key_db_path: Optional[str] = None) -> dict:
+                     key_db_path: Optional[str] = None,
+                     memories: Optional[list] = None,
+                     sensitivity: Optional[dict] = None) -> dict:
     """返回 {content, model, tokens, elapsed, profile, suggestions, diagnostics,
     tool_trace}；未配置任何可用 key 抛 LLMError。findings 缺省时用规则引擎现算。
 
@@ -458,6 +460,12 @@ def analyze_backtest(report: dict, profile: Optional[str] = None,
     }
     if param_importance:
         parts["参数重要性(来自寻优)"] = param_importance
+    if sensitivity:
+        parts["敏感度扫描(实测)"] = sensitivity
+    if memories:
+        parts["历史实验记忆(同策略,供参考避免重复踩坑)"] = [
+            {"text": m.get("text"), "created_at": m.get("created_at")}
+            for m in memories]
     schema = _param_schema_brief(report)
     if schema:
         parts["策略参数表"] = schema

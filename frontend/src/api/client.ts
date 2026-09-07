@@ -275,6 +275,15 @@ export async function applyAiSuggestions(data: {
   return res.data
 }
 
+/** 方案 B Phase 3 敏感度扫描：关键参数 ±20% 网格实测（结果自动附加到后续 AI 分析） */
+export async function startSensitivityScan(data: {
+  backtest_id: string
+  params?: string[]
+}): Promise<{ task_id: string; status: string; params: string[] }> {
+  const res = await api.post('/ai/sensitivity', data)
+  return res.data
+}
+
 /** 方案 B Phase 2 二轮修正：基于实测验证结果让 LLM 修正建议（修正建议自动再验证） */
 export async function refineAiAnalysis(
   taskId: string,

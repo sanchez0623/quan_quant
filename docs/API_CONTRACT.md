@@ -445,6 +445,34 @@ available = 对应环境变量已配置。
 
 错误：404 分析不存在/未成功；400 无结构化建议 / 原回测不存在或未成功 / 配置缺失。
 
+### POST /api/ai/analyses/{task_id}/refine
+
+方案 B Phase 2 二轮修正：基于原分析的实测验证结果让 LLM 修正建议
+（修正建议自动再验证），落库为**新 analysis**（`refined_from` 指向原分析）。
+
+请求：`{"profile": "auto | 服务商名 | key_id"}`（可选）
+响应：`{"task_id": "ai_xxx", "status": "pending"}`
+限制：原分析需有结构化建议与有效验证结果；**修正产物不可再修正（单步限制）**；
+`GET /api/ai/analyses` 返回体新增 `refined_from` 字段。
+
+### POST /api/ai/sensitivity
+
+方案 B Phase 3 敏感度扫描：关键参数 ±20% 网格（当前/-20%/+20%）各跑一次回测
+→ 实测敏感度表（含稳定性摘要：收益极差 >15% 判「敏感」）。结果在后续对该回测
+发起 AI 分析时**自动附加**到 prompt（替代 LLM 对参数敏感性的猜测）。
+
+请求：`{"backtest_id": "bt_xxx", "params": ["mom_short", ...]}`（params 缺省自动选：
+寻优 param_importance top3 → schema 前序数值参数）
+响应：`{"task_id": "sen_xxx", "status": "pending", "params": [...]}`
+成本护栏：参数 ≤4、总回测 ≤20。
+
+### 实验记忆库（Phase 3，无独立端点）
+
+每次 AI 分析/修正成功后自动写入结论摘要（`ai_memory` 表）；后续分析自动召回
+同策略历史结论注入 prompt。召回策略：配置 `EMBEDDING_API_KEY`（可选
+`EMBEDDING_BASE_URL`/`EMBEDDING_MODEL`，默认硅基流动 bge-large-zh-v1.5）时
+向量余弦 top-k，否则降级为同策略最近 3 条。
+
 ### GET /api/ai/suggestion-stats
 
 AI 建议验证胜率统计（全部分析的 validation.verdict 计数）：

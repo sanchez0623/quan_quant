@@ -56,17 +56,29 @@ def optimize_task(task_id: str, backtest_config: dict, groups: list, objective: 
 
 def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
                     reports_dir: str, param_importance: Optional[dict] = None,
-                    username: Optional[str] = None, data_dir: Optional[str] = None) -> None:
+                    username: Optional[str] = None, data_dir: Optional[str] = None,
+                    sensitivity: Optional[dict] = None) -> None:
+    from .llm import memory
     from .llm.analyzer import analyze_backtest
     db.update_progress(task_id, 5, "读取回测报告...", db_path)
     report_path = Path(reports_dir) / f"{backtest_id}.json"
     if not report_path.exists():
         raise RuntimeError(f"回测报告不存在: {backtest_id}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    strategy_id = (report.get("config") or {}).get("strategy_id")
+    # ---- 实验记忆召回（方案 B Phase 3b）：同策略历史结论注入 ----
+    memories: list = []
+    try:
+        memories = memory.recall(strategy_id, json.dumps(
+            (report.get("metrics") or {}).get("total_return"), ensure_ascii=False),
+            limit=3, db_path=db_path, exclude_task_id=task_id)
+    except Exception:  # noqa: BLE001  记忆是增强项
+        memories = []
     db.update_progress(task_id, 20, "正在调用 LLM 生成分析（深度思考可能需数十秒）...", db_path)
     result = analyze_backtest(report, profile, db_path=db_path,
-                               param_importance=param_importance, username=username,
-                               data_dir=data_dir)
+                              param_importance=param_importance, username=username,
+                              data_dir=data_dir, memories=memories,
+                              sensitivity=sensitivity)
     db.update_progress(task_id, 90, "解析结构化建议...", db_path)
     # ---- 建议自动验证闭环（方案 B4）：同区间重跑建议配置并 A/B 对比 ----
     validation: Optional[dict] = None
@@ -88,6 +100,15 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
                      suggestions=result.get("suggestions"),
                      diagnostics=result.get("diagnostics"), validation=validation,
                      db_path=db_path)
+    # ---- 实验记忆写回（方案 B Phase 3b）----
+    try:
+        memory.init_memory_db(db_path)
+        memory.record_memory(
+            task_id, backtest_id, strategy_id,
+            memory.build_memory_text(report, result.get("suggestions"), validation),
+            db_path=db_path)
+    except Exception:  # noqa: BLE001  记忆是增强项
+        pass
     db.finish_task(task_id, "success",
                    payload={"backtest_id": backtest_id, "profile": result["profile"],
                             "verdict": (validation or {}).get("verdict")},
@@ -145,6 +166,32 @@ def ai_refine_task(task_id: str, refine_from: str, profile: str, db_path: str,
                    payload={"backtest_id": backtest_id, "profile": result["profile"],
                             "refined_from": refine_from,
                             "verdict": (validation or {}).get("verdict")},
+                   db_path=db_path)
+
+
+def ai_sensitivity_task(task_id: str, backtest_id: str, params: Optional[list],
+                        db_path: str, reports_dir: str, data_dir: str) -> None:
+    """方案 B Phase 3 敏感度扫描：关键参数 ±20% 网格各跑一次回测 → 实测敏感度表。
+    结果存 reports/{task_id}.json，后续 AI 分析自动附加（喂 prompt 替代猜测）。"""
+    from .llm import sensitivity
+    db.update_progress(task_id, 5, "读取回测报告...", db_path)
+    report_path = Path(reports_dir) / f"{backtest_id}.json"
+    if not report_path.exists():
+        raise RuntimeError(f"回测报告不存在: {backtest_id}")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    keys = [str(k) for k in (params or []) if k]
+    db.update_progress(task_id, 10, f"扫描 {len(keys)} 个参数的 ±20% 网格...", db_path)
+    result = sensitivity.scan_params(
+        report, keys, data_dir=data_dir,
+        progress_cb=lambda p_, m: db.update_progress(task_id, 10 + p_ * 85, m, db_path))
+    path = Path(reports_dir) / f"{task_id}.json"
+    path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    db.save_report(task_id, str(path), db_path)
+    db.finish_task(task_id, "success",
+                   payload={"backtest_id": backtest_id, "report_path": str(path),
+                            "params": keys,
+                            "n_backtests": result.get("n_backtests"),
+                            "stability": result.get("stability")},
                    db_path=db_path)
 
 
@@ -264,6 +311,7 @@ _TASK_FUNCS = {
     "optimize": optimize_task,
     "ai": ai_analyze_task,
     "ai_refine": ai_refine_task,
+    "ai_sensitivity": ai_sensitivity_task,
     "data_demo": data_demo_task,
     "data_update": data_update_task,
     "live_premarket": live_premarket_task,

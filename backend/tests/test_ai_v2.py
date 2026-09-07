@@ -638,3 +638,92 @@ def test_ai_refine_task_guards(tmp_path):
                      refined_from="ai_orig2", db_path=db_path)
     with pytest.raises(RuntimeError, match="单步"):
         tm.ai_refine_task("ai_y", "ai_ref", "p", db_path, reports_dir)
+
+
+# ---------------- 方案 B Phase 3：敏感度扫描 + 实验记忆库 ----------------
+
+def test_sensitivity_grid_and_pick():
+    from app.llm import sensitivity
+    rep = _report()
+    # int 参数：±20% 取整并 clamp 到 schema
+    vals, reason = sensitivity._grid_values(rep, "mom_short")  # 当前 10，区间 5~40
+    assert reason is None and vals == [8, 12]
+    # categorical → 跳过
+    vals2, reason2 = sensitivity._grid_values(rep, "t_mode")
+    assert reason2 and vals2 == []
+    # 自动选参：importance 优先，缺省按 schema 前序（跳过 categorical/frozen）
+    picked = sensitivity.auto_pick_params(rep, limit=2)
+    assert picked == ["max_t_times", "pool_n"]
+
+
+def test_sensitivity_scan_synthetic(tmp_path, monkeypatch):
+    """monkeypatch 回测，验证扫描表与稳定性摘要（不真跑引擎）"""
+    from app.llm import sensitivity
+    rep = _report()
+    calls = {"n": 0}
+
+    def fake_run(cfg, data_dir=None, progress_cb=None):
+        calls["n"] += 1
+        mom = cfg["params"]["mom_short"]
+        return {"metrics": {"total_return": 0.1 * mom / 10.0, "max_drawdown": -0.2,
+                            "sharpe": 1.0, "calmar": 0.5, "win_rate": 0.5,
+                            "profit_loss_ratio": 1.2, "total_trades": 10}}
+
+    monkeypatch.setattr("app.engine.runner.run_backtest", fake_run)
+    out = sensitivity.scan_params(rep, ["mom_short"], data_dir="x")
+    assert calls["n"] == 2 and len(out["rows"]) == 2
+    rets = sorted(r["total_return"] for r in out["rows"])
+    assert rets == [pytest.approx(0.08), pytest.approx(0.12)]  # ±20% 实测收益
+    assert out["stability"]["mom_short"]["判定"] == "不敏感"  # 极差 0.04 < 0.15
+
+
+def test_memory_roundtrip(tmp_path, monkeypatch):
+    from app.llm import memory
+    db_path = str(tmp_path / "meta.db")
+    db.init_db(db_path)
+    monkeypatch.setenv("EMBEDDING_API_KEY", "")  # 强制降级为文本召回
+    memory.record_memory("ai_1", "bt_1", "momentum_slot",
+                         "建议 pool_n=10 实测恶化", db_path=db_path)
+    memory.record_memory("ai_2", "bt_2", "momentum_slot",
+                         "建议止损放宽 实测改善", db_path=db_path)
+    memory.record_memory("ai_3", "bt_3", "ma_cross", "其他策略", db_path=db_path)
+    out = memory.recall("momentum_slot", None, limit=3, db_path=db_path)
+    assert len(out) == 2
+    texts = {m["text"] for m in out}
+    assert texts == {"建议 pool_n=10 实测恶化", "建议止损放宽 实测改善"}
+    # exclude 自身
+    out2 = memory.recall("momentum_slot", None, limit=3, db_path=db_path,
+                         exclude_task_id="ai_1")
+    assert all(m["analysis_task_id"] != "ai_1" for m in out2)
+
+
+def test_build_memory_text():
+    from app.llm import memory
+    rep = _report()
+    text = memory.build_memory_text(
+        rep, {"params": {"pool_n": 8}, "risk_config": {}},
+        {"comparison": {"verdict": "改善", "better": ["total_return"],
+                        "conservative": False}})
+    assert "momentum_slot" in text and "pool_n" in text and "改善" in text
+
+
+def test_analyze_injects_memory_and_sensitivity(monkeypatch):
+    import app.llm.analyzer as analyzer
+    rep = _report()
+    md = "结论。\n```json\n{\"params\": {}, \"risk_config\": {}}\n```"
+    captured = {}
+
+    def fake_chat(profile, messages, temperature=0.3, db_path=None, username=None,
+                  tools=None, key_db_path=None):
+        captured["user"] = messages[-1]["content"]
+        return {"content": md, "model": "m", "tokens": 1, "elapsed": 0.1,
+                "profile": "p", "tool_calls": []}
+
+    monkeypatch.setattr(analyzer, "chat", fake_chat)
+    out = analyzer.analyze_backtest(
+        rep, memories=[{"text": "上次建议实测恶化", "created_at": "2026-09-04"}],
+        sensitivity={"baseline": {}, "rows": [{"param": "mom_short", "value": 8,
+                                              "total_return": 0.08}]})
+    assert "上次建议实测恶化" in captured["user"]
+    assert "敏感度扫描" in captured["user"] and "mom_short" in captured["user"]
+    assert out["suggestions"] is None

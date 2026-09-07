@@ -33,6 +33,7 @@ import {
   getBacktestReport,
   getBacktests,
   refineAiAnalysis,
+  startSensitivityScan,
   startAiAnalyze
 } from '../api/client'
 import type {
@@ -118,6 +119,7 @@ export default function AiAnalysis() {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
   const [loadingAnalyses, setLoadingAnalyses] = useState(false)
   const [runningDirect, setRunningDirect] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [baseConfig, setBaseConfig] = useState<BacktestCreateRequest | null>(null)
   const [stats, setStats] = useState<AiSuggestionStats | null>(null)
   const pendingSelectRef = useRef<string | null>(null)
@@ -233,6 +235,21 @@ export default function AiAnalysis() {
       setCurrentTaskId(res.task_id)
     } catch (err) {
       message.error(errDetail(err, '提交修正任务失败'))
+    }
+  }
+
+  /** Phase 3 敏感度扫描：±20% 网格实测（完成后自动附加到后续 AI 分析） */
+  const startScan = async () => {
+    if (!backtestId) return
+    setScanning(true)
+    try {
+      const res = await startSensitivityScan({ backtest_id: backtestId })
+      message.info(`敏感度扫描已提交（参数：${res.params.join('、')}，完成后分析自动附带实测表）`)
+      setCurrentTaskId(res.task_id)
+    } catch (err) {
+      message.error(errDetail(err, '提交敏感度扫描失败'))
+    } finally {
+      setScanning(false)
     }
   }
 
@@ -407,6 +424,16 @@ export default function AiAnalysis() {
                 onClick={startAnalyze}
               >
                 开始分析
+              </Button>
+              <Button
+                icon={<ExperimentOutlined />}
+                block
+                loading={scanning}
+                disabled={!backtestId || !!currentTaskId}
+                onClick={startScan}
+                title="Phase 3：对关键参数跑 ±20% 网格回测（最多 4 参数×2 值），实测表自动附加到后续分析"
+              >
+                敏感度扫描（±20% 网格实测）
               </Button>
               {currentTaskId && (
                 <div>
