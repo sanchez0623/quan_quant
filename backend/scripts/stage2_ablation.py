@@ -32,18 +32,18 @@ from stage0_anchors import END_DEFAULT, SEED_DEFAULT, START_DEFAULT, _cfg, _fmt,
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-# 与 stage1_oat.py 勘误 v3 口径一致：静态池 = snap_date <= 回测起点的最近快照
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows_asof.jsonl"
+# 与 stage1_oat.py 勘误 v4 口径一致：起点 2021-07-15（预热自然完成）
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_v4.jsonl"
 
-# 保留名单（阶段 1 v3 报告 stage1_oat_20260908_185017.md 切分预览，21 项）
+# 保留名单（阶段 1 v4 报告 stage1_oat_20260908_230404.md 切分预览，21 项）
 KEEP = {
-    ("params", "crash_abs_cap"), ("params", "add_cooldown"), ("params", "exit_need"),
-    ("params", "atr_stop_k"), ("params", "ma_fast"), ("params", "crash_sigma"),
-    ("params", "max_adds"), ("params", "macd_fast"), ("risk", "stop_loss_mode"),
-    ("params", "w_accel"), ("params", "macd_signal"), ("params", "crash_vol_n"),
-    ("params", "out_top_days"), ("params", "pool_n"), ("params", "w_mid"),
-    ("params", "add_breakout_n"), ("risk", "atr_trail_mult"), ("params", "mom_mid"),
-    ("params", "w_short"), ("risk", "take_profit_pct"), ("risk", "atr_multiplier"),
+    ("params", "pool_n"), ("params", "crash_abs_cap"), ("params", "macd_fast"),
+    ("params", "mom_short"), ("params", "ma_fast"), ("params", "macd_signal"),
+    ("params", "out_top_days"), ("params", "add_cooldown"), ("params", "exit_need"),
+    ("params", "w_accel"), ("params", "w_short"), ("params", "macd_slow"),
+    ("params", "crash_vol_n"), ("params", "max_holdings"), ("params", "atr_stop_k"),
+    ("params", "exit_confirm_days"), ("params", "add_scale"), ("risk", "stop_loss_mode"),
+    ("risk", "adaptive"), ("params", "max_adds"), ("params", "base_pct_max"),
 }
 
 # 消融裁决开关：pool_gate（阶段0 收益口径 +18pt vs OAT 超额口径 -0.53 的矛盾）

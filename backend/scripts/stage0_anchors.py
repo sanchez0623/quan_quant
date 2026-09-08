@@ -32,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.data import store  # noqa: E402
 from app.engine import runner  # noqa: E402
 
-START_DEFAULT = "2021-01-04"   # 数据批量起点（历史快照成分的日线从此日起连续覆盖）
+START_DEFAULT = "2021-07-15"   # 起点前 ~124 交易日预热（mom_long=120 就绪），
+                               # 数据批量起点 2021-01-04 提供热身；快照自动取 2021-06-14
 END_DEFAULT = "2026-09-07"
 BENCHMARK = "000905"
 SEED_DEFAULT = 20260908

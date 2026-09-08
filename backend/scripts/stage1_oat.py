@@ -34,9 +34,9 @@ from stage0_anchors import END_DEFAULT, START_DEFAULT, _cfg, _zz500_universe  # 
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-# 勘误 v3（2026-09-08）：静态池口径 = snap_date <= 回测起点的最近快照
-# （2021-01-04 起点 → 2020-12-28 快照，332 只差异），与 v2（2023-03-27 快照）隔离
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows_asof.jsonl"
+# 勘误 v4（2026-09-08）：回测起点 2021-07-15（起点前 124 交易日预热自然完成），
+# 快照 2021-06-14；与 v3（起点 2021-01-04、预热断供）结果隔离
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_v4.jsonl"
 
 # 切窗目标参数（与方案 §6 一致：三件套在普查即生效）
 N_WINDOWS = 5
