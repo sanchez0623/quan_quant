@@ -32,18 +32,18 @@ from stage0_anchors import END_DEFAULT, SEED_DEFAULT, START_DEFAULT, _cfg, _fmt,
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-# 与 stage1_oat.py 的勘误口径一致：历史快照成分 + 2021-01-04 起区间
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows_hist.jsonl"
+# 与 stage1_oat.py 勘误 v3 口径一致：静态池 = snap_date <= 回测起点的最近快照
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_asof.jsonl"
 
-# 保留名单（阶段 1 勘误口径报告 stage1_oat_20260908_173520.md 切分预览，21 项）
+# 保留名单（阶段 1 v3 报告 stage1_oat_20260908_185017.md 切分预览，21 项）
 KEEP = {
-    ("params", "mom_short"), ("params", "mom_long"), ("params", "pool_n"),
-    ("params", "mom_mid"), ("params", "out_top_days"), ("params", "crash_vol_n"),
-    ("params", "atr_stop_k"), ("params", "ma_fast"), ("params", "add_cooldown"),
-    ("params", "w_short"), ("params", "w_accel"), ("params", "crash_sigma"),
-    ("params", "w_mid"), ("params", "add_breakout_n"), ("params", "exit_confirm_days"),
-    ("params", "max_adds"), ("params", "crash_abs_cap"), ("params", "macd_slow"),
-    ("params", "macd_signal"), ("params", "macd_fast"), ("params", "exit_need"),
+    ("params", "crash_abs_cap"), ("params", "add_cooldown"), ("params", "exit_need"),
+    ("params", "atr_stop_k"), ("params", "ma_fast"), ("params", "crash_sigma"),
+    ("params", "max_adds"), ("params", "macd_fast"), ("risk", "stop_loss_mode"),
+    ("params", "w_accel"), ("params", "macd_signal"), ("params", "crash_vol_n"),
+    ("params", "out_top_days"), ("params", "pool_n"), ("params", "w_mid"),
+    ("params", "add_breakout_n"), ("risk", "atr_trail_mult"), ("params", "mom_mid"),
+    ("params", "w_short"), ("risk", "take_profit_pct"), ("risk", "atr_multiplier"),
 }
 
 # 消融裁决开关：pool_gate（阶段0 收益口径 +18pt vs OAT 超额口径 -0.53 的矛盾）
@@ -114,7 +114,7 @@ def _run(tag: str, cfg: dict, rows: list[dict]) -> dict:
 
 def main():
     t0 = time.time()
-    uni_all = _zz500_universe()
+    uni_all = _zz500_universe(as_of=START_DEFAULT)
     rng = random.Random(SEED_DEFAULT)
     uni_300 = sorted(rng.sample(uni_all, 300))
     print(f"zz500 {len(uni_all)} 只｜区间 {START_DEFAULT}~{END_DEFAULT}"

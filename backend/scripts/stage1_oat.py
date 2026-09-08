@@ -34,9 +34,9 @@ from stage0_anchors import END_DEFAULT, START_DEFAULT, _cfg, _zz500_universe  # 
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-# 勘误（2026-09-08）：成分域改用 2023-03-27 历史快照 + 区间扩至 2021-01-04 起，
-# 与旧口径（当前快照 + 2023-03-27 起）的普查结果隔离
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows_hist.jsonl"
+# 勘误 v3（2026-09-08）：静态池口径 = snap_date <= 回测起点的最近快照
+# （2021-01-04 起点 → 2020-12-28 快照，332 只差异），与 v2（2023-03-27 快照）隔离
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_asof.jsonl"
 
 # 切窗目标参数（与方案 §6 一致：三件套在普查即生效）
 N_WINDOWS = 5
@@ -189,7 +189,7 @@ def main():
                 continue
         print(f"续跑：已有 {len(done)} 条结果", flush=True)
 
-    uni_all = _zz500_universe()
+    uni_all = _zz500_universe(as_of=args.start)
     base_cfg = _cfg("stage1_oat_base", uni_all, start=args.start,
                     end=args.end, capital=args.capital)
 
