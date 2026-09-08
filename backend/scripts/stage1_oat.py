@@ -34,7 +34,9 @@ from stage0_anchors import END_DEFAULT, START_DEFAULT, _cfg, _zz500_universe  # 
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows.jsonl"
+# 勘误（2026-09-08）：成分域改用 2023-03-27 历史快照 + 区间扩至 2021-01-04 起，
+# 与旧口径（当前快照 + 2023-03-27 起）的普查结果隔离
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_hist.jsonl"
 
 # 切窗目标参数（与方案 §6 一致：三件套在普查即生效）
 N_WINDOWS = 5

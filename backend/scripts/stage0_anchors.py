@@ -32,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.data import store  # noqa: E402
 from app.engine import runner  # noqa: E402
 
-START_DEFAULT = "2023-03-27"
+START_DEFAULT = "2021-01-04"   # 2023-03-27 历史快照成分的日线批量起点
 END_DEFAULT = "2026-09-07"
+SNAPSHOT_DATE = "2023-03-27"   # 无后视镜成分快照：候选域 = 回测起点当天真实成分
 BENCHMARK = "000905"
 SEED_DEFAULT = 20260908
 
@@ -51,11 +52,31 @@ METRIC_KEYS = ["total_return", "annual_return", "benchmark_return", "excess_retu
                "max_drawdown", "sharpe", "calmar", "win_rate"]
 
 
-def _zz500_universe() -> list[str]:
+def _zz500_universe(snapshot_date: str = SNAPSHOT_DATE) -> list[str]:
+    """候选域 = 指定日期的 zz500 历史成分快照（无后视镜）。
+
+    勘误（2026-09-08）：此前用当前成分快照回测历史区间，混入 239 只
+    2023-03-27 后调入的股票（含 28 只当时未上市的次新），存在成分前视偏差；
+    现改用 snap_date <= 回测起点的最近历史快照。"""
     idx = store.read_index_constituents(None)
     if idx is None or idx.height == 0:
         raise RuntimeError("指数成分数据未就绪")
-    codes = sorted(set(idx.filter(pl.col("index_key") == "zz500")["code"].to_list()))
+    if snapshot_date:
+        hist_path = Path(store.DATA_DIR) / "index_constituents_history.parquet" \
+            if hasattr(store, "DATA_DIR") else None
+        hist = pl.read_parquet(hist_path) if hist_path and hist_path.exists() \
+            else pl.read_parquet(Path(__file__).resolve().parents[2] / "data" /
+                                 "index_constituents_history.parquet")
+        hz = hist.filter((pl.col("index_key") == "zz500") &
+                         (pl.col("snap_date") <= snapshot_date))
+        if hz.height == 0:
+            raise RuntimeError(f"历史成分无 <= {snapshot_date} 的快照")
+        snap = hz["snap_date"].max()
+        codes = sorted(set(hz.filter(pl.col("snap_date") == snap)["code"].to_list()))
+        print(f"成分域：zz500 历史快照 {snap}（{len(codes)} 只，无后视镜）", flush=True)
+    else:
+        codes = sorted(set(idx.filter(pl.col("index_key") == "zz500")["code"].to_list()))
+        print(f"成分域：zz500 当前快照（{len(codes)} 只）", flush=True)
     if len(codes) < 400:
         raise RuntimeError(f"zz500 成分过少（{len(codes)}），数据可疑")
     return codes
@@ -185,7 +206,7 @@ def main():
     args = ap.parse_args()
 
     t0 = time.time()
-    start, end = ("2023-04-01", "2023-06-30") if args.smoke else (args.start, args.end)
+    start, end = ("2021-02-01", "2021-04-30") if args.smoke else (args.start, args.end)
     uni_all = _zz500_universe()
     rng = random.Random(args.seed)
     uni_300 = sorted(rng.sample(uni_all, 300))

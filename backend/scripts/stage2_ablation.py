@@ -32,7 +32,8 @@ from stage0_anchors import END_DEFAULT, SEED_DEFAULT, START_DEFAULT, _cfg, _fmt,
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-ROWS_JSONL = OUT_DIR / "stage1_oat_rows.jsonl"
+# 与 stage1_oat.py 的勘误口径一致：历史快照成分 + 2021-01-04 起区间
+ROWS_JSONL = OUT_DIR / "stage1_oat_rows_hist.jsonl"
 
 # 保留名单（阶段 1 报告切分预览，21 项）
 KEEP = {
