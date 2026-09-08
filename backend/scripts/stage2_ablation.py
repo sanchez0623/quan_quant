@@ -35,19 +35,19 @@ OUT_DIR = Path(__file__).parent / "out"
 # 与 stage1_oat.py 的勘误口径一致：历史快照成分 + 2021-01-04 起区间
 ROWS_JSONL = OUT_DIR / "stage1_oat_rows_hist.jsonl"
 
-# 保留名单（阶段 1 报告切分预览，21 项）
+# 保留名单（阶段 1 勘误口径报告 stage1_oat_20260908_173520.md 切分预览，21 项）
 KEEP = {
-    ("params", "macd_slow"), ("params", "mom_short"), ("params", "exit_cooldown"),
-    ("params", "w_mid"), ("params", "macd_signal"), ("params", "crash_vol_n"),
-    ("params", "w_short"), ("params", "mom_long"), ("params", "add_scale"),
-    ("params", "slope_n"), ("params", "mom_mid"), ("params", "base_pct_max"),
-    ("params", "macd_fast"), ("params", "w_accel"), ("params", "crash_abs_cap"),
-    ("params", "add_cooldown"), ("params", "max_holdings"), ("params", "atr_stop_k"),
-    ("risk", "max_drawdown_breaker"), ("risk", "atr_multiplier"),
-    ("risk", "take_profit_pct"),
+    ("params", "mom_short"), ("params", "mom_long"), ("params", "pool_n"),
+    ("params", "mom_mid"), ("params", "out_top_days"), ("params", "crash_vol_n"),
+    ("params", "atr_stop_k"), ("params", "ma_fast"), ("params", "add_cooldown"),
+    ("params", "w_short"), ("params", "w_accel"), ("params", "crash_sigma"),
+    ("params", "w_mid"), ("params", "add_breakout_n"), ("params", "exit_confirm_days"),
+    ("params", "max_adds"), ("params", "crash_abs_cap"), ("params", "macd_slow"),
+    ("params", "macd_signal"), ("params", "macd_fast"), ("params", "exit_need"),
 }
 
-POOL_N_KEY = ("params", "pool_n")
+# 消融裁决开关：pool_gate（阶段0 收益口径 +18pt vs OAT 超额口径 -0.53 的矛盾）
+GATE_KEY = ("top", "pool_gate")
 
 METRIC_KEYS = ["total_return", "annual_return", "benchmark_return", "excess_return",
                "max_drawdown", "sharpe", "calmar", "win_rate"]
@@ -121,14 +121,14 @@ def main():
           f"｜随机300 seed={SEED_DEFAULT}", flush=True)
 
     full_ov, half_ov = _load_best_overrides()
-    half_pn_ov = dict(half_ov)
-    half_pn_ov[POOL_N_KEY] = 14
+    half_gate_ov = dict(half_ov)
+    half_gate_ov[GATE_KEY] = True
 
     base_cfg = _cfg("stage2_base", uni_all)
 
     rows: list[dict] = []
 
-    print("[1/4] 全区间：B / FULL / HALF / HALF_PN ...", flush=True)
+    print("[1/4] 全区间：B / FULL / HALF / HALF_GATE ...", flush=True)
     base_rep = runner.run_backtest(base_cfg)
     split = _split_date(base_rep.get("equity_curve") or [])
     m = base_rep.get("metrics", {}) or {}
@@ -138,27 +138,27 @@ def main():
     print(f"  [B-full] 收益 {_fmt(brow['total_return'])}｜OOS 切分日 = {split}", flush=True)
 
     for tag, ov in (("FULL-full", full_ov), ("HALF-full", half_ov),
-                    ("HALF_PN-full", half_pn_ov)):
+                    ("HALF_GATE-full", half_gate_ov)):
         cfg = _apply_overrides(base_cfg, ov)
         cfg["name"] = f"stage2_{tag.lower()}"
         _run(tag, cfg, rows)
 
-    print(f"[2/4] OOS 段（{split} ~ {END_DEFAULT}）：B / FULL / HALF / HALF_PN ...", flush=True)
+    print(f"[2/4] OOS 段（{split} ~ {END_DEFAULT}）：B / FULL / HALF / HALF_GATE ...", flush=True)
     for tag, ov in (("B-oos", {}), ("FULL-oos", full_ov), ("HALF-oos", half_ov),
-                    ("HALF_PN-oos", half_pn_ov)):
+                    ("HALF_GATE-oos", half_gate_ov)):
         cfg = _cfg(f"stage2_{tag.lower()}", uni_all, start=split, end=END_DEFAULT)
         cfg = _apply_overrides(cfg, ov)
         _run(tag, cfg, rows)
 
-    print("[3/4] 跨池（随机300）：FULL / HALF / HALF_PN ...", flush=True)
+    print("[3/4] 跨池（随机300）：FULL / HALF / HALF_GATE ...", flush=True)
     for tag, ov in (("FULL-pool300", full_ov), ("HALF-pool300", half_ov),
-                    ("HALF_PN-pool300", half_pn_ov)):
+                    ("HALF_GATE-pool300", half_gate_ov)):
         cfg = _cfg(f"stage2_{tag.lower()}", uni_300)
         cfg = _apply_overrides(cfg, ov)
         _run(tag, cfg, rows)
 
-    print("[4/4] 跨池 OOS（随机300）：HALF / HALF_PN ...", flush=True)
-    for tag, ov in (("HALF-pool300-oos", half_ov), ("HALF_PN-pool300-oos", half_pn_ov)):
+    print("[4/4] 跨池 OOS（随机300）：HALF / HALF_GATE ...", flush=True)
+    for tag, ov in (("HALF-pool300-oos", half_ov), ("HALF_GATE-pool300-oos", half_gate_ov)):
         cfg = _cfg(f"stage2_{tag.lower()}", uni_300, start=split, end=END_DEFAULT)
         cfg = _apply_overrides(cfg, ov)
         _run(tag, cfg, rows)
@@ -211,9 +211,10 @@ def _report(rows: list[dict], split: str, full_ov: dict, half_ov: dict) -> None:
     lines.append(f"- **砍半通过性**：HALF vs FULL 超额差 = 全区间 {d('HALF-full','FULL-full')}，"
                  f"OOS {d('HALF-oos','FULL-oos')}，跨池 {d('HALF-pool300','FULL-pool300')}"
                  f"（≥ -5pt 即不显著劣化 → 通过）")
-    lines.append(f"- **pool_n 尖峰裁决**：HALF_PN vs HALF 超额差 = 全区间 "
-                 f"{d('HALF_PN-full','HALF-full')}，OOS {d('HALF_PN-oos','HALF-oos')}"
-                 f"（OOS ≥ +5pt → pool_n 该回收，报用户拍板）")
+    lines.append(f"- **pool_gate 裁决**：HALF_GATE vs HALF 超额差 = 全区间 "
+                 f"{d('HALF_GATE-full','HALF-full')}，OOS {d('HALF_GATE-oos','HALF-oos')}"
+                 f"，跨池OOS {d('HALF_GATE-pool300-oos','HALF-pool300-oos')}"
+                 f"（OOS ≥ +5pt → gate 该开；看回撤与收益两口径权衡）")
     lines.append(f"- **历史教训检验**：FULL vs B 超额差 = 全区间 {d('FULL-full','B-full')}，"
                  f"OOS {d('FULL-oos','B-oos')}"
                  f"（单参数最优叠加能否赢基座）")
