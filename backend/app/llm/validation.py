@@ -107,9 +107,11 @@ def compare_metrics(orig_metrics: dict, new_metrics: dict,
 
 
 def run_validation_backtest(config: dict, suggestions: dict, orig_metrics: dict,
-                            data_dir: Optional[str] = None) -> dict:
+                            data_dir: Optional[str] = None,
+                            orig_curve: Optional[list] = None) -> dict:
     """同区间用建议配置重跑一次回测并对比（进程内，不建任务）。
-    orig_metrics 为原回测 metrics（对比基准）；回测失败抛异常由调用方兜底。"""
+    orig_metrics 为原回测 metrics（对比基准）；orig_curve 为原权益曲线
+    （用于仓位占比对比与保守化降级判定）；回测失败抛异常由调用方兜底。"""
     from ..engine import datafeed, runner
     cfg = merge_suggestions(config, suggestions)
     cfg.pop("task_id", None)
@@ -123,7 +125,9 @@ def run_validation_backtest(config: dict, suggestions: dict, orig_metrics: dict,
         report = runner.run_backtest(cfg, data_dir=data_dir)
     finally:
         datafeed.clear_cache()  # 防验证回测数据驻留常驻 worker 内存
-    comparison = compare_metrics(orig_metrics, report.get("metrics"))
+    comparison = compare_metrics(orig_metrics, report.get("metrics"),
+                                 orig_curve=orig_curve,
+                                 new_curve=report.get("equity_curve"))
     return {"config_diff": diff,
             "metrics": {"orig": orig_metrics, "new": report.get("metrics")},
             "comparison": comparison}

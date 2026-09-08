@@ -727,3 +727,33 @@ def test_analyze_injects_memory_and_sensitivity(monkeypatch):
     assert "上次建议实测恶化" in captured["user"]
     assert "敏感度扫描" in captured["user"] and "mom_short" in captured["user"]
     assert out["suggestions"] is None
+
+
+def test_run_validation_backtest_real_chain(monkeypatch):
+    """真实调用 run_validation_backtest（mock 引擎层）：防签名/曲线传递回归。
+    曾因签名缺 orig_curve 导致线上验证回测全部失败（被 try/except 吞为
+    「验证回测未完成」），且被端到端测试的 mock 遮蔽——此测试直连真实函数。"""
+    sug = {"params": {"pool_n": 8}, "risk_config": {}}
+
+    def fake_run(cfg, data_dir=None, progress_cb=None):
+        # 建议版(pool_n=8)指标全面变好但仓位近空仓 → 触发保守化降级
+        curve = [{"date": f"d{i}", "adjusted_equity": 1.0,
+                  "position_ratio": 0.05} for i in range(3)]
+        m = {"total_return": 0.3, "max_drawdown": -0.1,
+             "sharpe": 1.0, "win_rate": 0.6, "total_trades": 5}
+        return {"metrics": m, "equity_curve": curve}
+
+    monkeypatch.setattr("app.engine.runner.run_backtest", fake_run)
+    orig_metrics = {"total_return": 0.2, "max_drawdown": -0.3, "sharpe": 0.8,
+                    "win_rate": 0.5, "total_trades": 4}
+    orig_curve = [{"date": f"d{i}", "adjusted_equity": 1.0,
+                   "position_ratio": 0.9} for i in range(3)]
+    out = validation.run_validation_backtest(
+        {"strategy_id": "momentum_slot", "params": {"pool_n": 6},
+         "risk_config": {}}, sug, orig_metrics, orig_curve=orig_curve)
+    comp = out["comparison"]
+    # 仓位占比进了对比表（建议版近空仓 0.05 vs 原版 0.9）
+    assert comp["avg_position_ratio"]["orig"] == pytest.approx(0.9)
+    assert comp["avg_position_ratio"]["new"] == pytest.approx(0.05)
+    # 指标全面变好 + 近空仓化 → 降级为持平而非改善
+    assert comp["conservative"] is True and comp["verdict"] == "持平"
