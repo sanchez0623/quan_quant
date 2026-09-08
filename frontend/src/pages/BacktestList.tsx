@@ -697,7 +697,7 @@ export default function BacktestList() {
     },
     {
       title: '操作',
-      width: 260,
+      width: 330,
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => navigate(`/backtests/${record.task_id}`)}>
@@ -714,6 +714,18 @@ export default function BacktestList() {
             >
               存为模板
             </Button>
+          )}
+          {record.config && (
+            <Tooltip title="下载完整参数配置 JSON（可在新建页导入）">
+              <Button
+                type="link"
+                size="small"
+                onClick={() => onExportConfig(record.config as BacktestCreateRequest,
+                                             record.name || 'backtest_config')}
+              >
+                导出配置
+              </Button>
+            </Tooltip>
           )}
           {record.status === 'failed' && record.error && (
             <Tooltip title={record.error}>
