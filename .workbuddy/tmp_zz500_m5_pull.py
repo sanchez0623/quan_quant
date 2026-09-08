@@ -19,6 +19,9 @@ DONE_F = WORK / "zz500_m5_done.txt"
 FAIL_F = WORK / "zz500_m5_failed.jsonl"
 
 done = set(DONE_F.read_text(encoding="utf-8").split()) if DONE_F.exists() else set()
+plan = json.loads((WORK / "zz500_m5_need.json").read_text(encoding="utf-8"))
+# 凡当前仍有缺口的码一律不算完成（防"拉取不完整却被标 done"导致永久漏补）
+done -= set(plan)
 codes = [c for c in sorted(plan) if c not in done]
 n_segs = sum(len(plan[c]) for c in codes)
 print(f"待拉 {len(codes)} 码 / {n_segs} 段", flush=True)

@@ -21,7 +21,8 @@ seg = hist.filter((pl.col("index_key") == "zz500") & (pl.col("snap_date") >= STA
 codes = sorted(seg["code"].unique().to_list())
 
 daily = store.read_daily(codes, str(ROOT / "data"))
-day_map = (daily.filter((pl.col("date") >= START) & (pl.col("date") <= END))
+day_map = (daily.filter((pl.col("date") >= START) & (pl.col("date") <= END)
+                        & pl.col("volume").is_not_null() & (pl.col("volume") > 0))
            .group_by("code").agg(pl.col("date").sort().alias("dates"))
            .to_dicts())
 day_map = {r["code"]: r["dates"] for r in day_map}
