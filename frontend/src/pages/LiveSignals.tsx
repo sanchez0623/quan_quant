@@ -1166,21 +1166,46 @@ export default function LiveSignals() {
           <Typography.Text>成交价：</Typography.Text>
           <InputNumber
             min={0.001} step={0.001} style={{ width: '100%' }}
-            value={fillPrice} onChange={(v) => setFillPrice(v)}
-            placeholder="实际成交价" />
+            value={fillPrice}
+            onChange={(v) => {
+              setFillPrice(v)
+              // 买入类信号：成交价变动 -> 股数按「建议金额÷成交价」自动重算
+              // （100股取整，保证资金约等于建议金额、不超总预算）；
+              // 重算后仍可手改，以实际成交为准
+              const isBuy = !!fillTarget && ['开仓', '加仓'].includes(fillTarget.stype)
+              if (isBuy && v && fillTarget?.suggest_amount) {
+                const vol = Math.floor(fillTarget.suggest_amount / v / 100) * 100
+                setFillVolume(vol >= 100 ? vol : null)
+              }
+            }}
+            placeholder="实际成交价（买入类改动后股数自动按建议金额重算）" />
           <Typography.Text>数量（股）：</Typography.Text>
           <InputNumber
             min={100} step={100} style={{ width: '100%' }}
             value={fillVolume} onChange={(v) => setFillVolume(v)}
             placeholder="实际成交数量" />
+          {fillTarget && ['开仓', '加仓'].includes(fillTarget.stype)
+            && fillPrice != null && fillVolume != null && (
+            <Typography.Text
+              type={fillPrice * fillVolume > (fillTarget.suggest_amount ?? Infinity)
+                ? 'warning' : 'secondary'}
+              style={{ fontSize: 12 }}>
+              预计金额 {fmtMoney(fillPrice * fillVolume)}｜建议金额 {fillTarget.suggest_amount != null
+                ? fmtMoney(fillTarget.suggest_amount) : '-'}
+              {fillTarget.suggest_amount != null
+                && fillPrice * fillVolume > fillTarget.suggest_amount
+                ? '｜超出预算（价格高于参考价），请确认是否按实际成交回填' : '｜预算内'}
+            </Typography.Text>
+          )}
           <Typography.Text>手续费（元）：</Typography.Text>
           <InputNumber
             min={0} step={1} style={{ width: '100%' }}
             value={fillFee ?? undefined} onChange={(v) => setFillFee(v)}
             placeholder="留空 = 按交易成本费率自动计算" />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            参考股数已预填：买入=建议金额÷参考价（100股取整）；卖出=按当前虚拟持仓
-            （清仓/止损=全部，减仓/做T=按比例）。请以实际成交为准修改。
+            参考股数预填：买入=建议金额÷参考价（100股取整）；卖出=按当前虚拟持仓
+            （清仓/止损=全部，减仓/做T=按比例）。买入类修改成交价后，股数自动按
+            「建议金额÷成交价」重算（不超预算），仍可手改——请以实际成交为准。
             手续费留空时按配置费率自动计算（佣金+印花税+经手/证管/过户），
             买入费用摊入持仓成本价（与券商摊薄成本同口径）。
           </Typography.Text>
