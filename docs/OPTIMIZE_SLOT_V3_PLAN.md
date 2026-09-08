@@ -124,6 +124,16 @@ RESEARCH 档案记录的现象（两轮寻优 OOS 全崩 -53.7%/-41.4%、参数�
 
 ### 5.2 阶段 1：OAT 敏感性普查（覆盖全部冻结参数）
 
+**阶段 1 实测结果（2026-09-08，`backend/scripts/out/stage1_oat_20260908_165239.md`，脚本 `backend/scripts/stage1_oat.py`，151 组合 / 42 参数，score = 5 窗超额 mean − 0.5×std − dd_floor 罚）**：
+
+- **敏感性 Top**：macd_slow（MACD慢线，I=2.00，缩短到 10 大幅减亏）、mom_short（I=1.67，30 优）、exit_cooldown（I=1.11）、w_mid（I=1.09）、macd_signal（I=1.06）；正改善方向集中在"更高短权重（w_short 0.5，+0.33）、更大候选池（pool_n 14，+0.32）、更快退出确认（out_top_days 3）"——日线形态下"更分散 + 更快"；
+- **L2 负优化证据**：w_short 被 L2 从默认 0.5 改到 0.3，日线上回到 0.5 反而 +0.33——历史中性原则的价值直接体现；
+- **零敏感 5 项**：decay_window / decay_pct（I=0，疑似日线 no-op）、pool_gate_enter_th（gate=off 时 no-op，预期）、market_regime_on（on 与 off 完全同分 → **日线回测下市场状态组整体无效**）、adaptive（模式参数需开关，no-op）；
+- **尖峰 6 项**：momentum_fsm_on（on 大负 -0.73）、pool_n（14 显著优但 isol=0.51，规则 v1 边界案例，交阶段 2 消融裁决）、pool_gate（on 负，与 BT-D2 一致）、ma_fast、base_pct_min、slot_rotation_on（on 负）；
+- **切分预览**：保留 21 项（进阶段 3）vs 砍掉 21 项（冻结默认/保守档，含 6 尖峰 + 5 零敏感）。
+
+方法（原设计保留如下）：
+
 - 对 L-日线层 ~40 项候选做**单参数扫描（OAT）**：其它参数固定 BT-D1，单参数走 5 档网格 → 每参数 4 次回测，共 ~160 次。
 - 每参数产出两个度量：
   - **I(p) 敏感度幅度**：5 档 score 极差（主度量）；
