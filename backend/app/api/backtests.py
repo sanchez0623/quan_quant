@@ -168,6 +168,8 @@ def normalize_config(cfg: dict) -> dict:
         "auto_idle_days": 5, "auto_top_x": 30, "auto_above_ma": 20,
         "auto_with_accel": None, "auto_min_rps": None,
         "auto_index": [], "auto_boards": [], "auto_rank_key": "score",
+        # 枯竭换血：日终持仓低于该值（gate off 时）当天收盘后重选；0=关闭
+        "pool_refill_min": 2,
         # 总资金止盈提取
         "nav_take_profit_pct": 0.0, "nav_take_profit_withdraw_pct": 0.0,
         # 月度出金
@@ -202,6 +204,9 @@ def validate_backtest_config(cfg: dict) -> dict:
         idle_n = cfg.get("auto_idle_days")
         if idle_n is not None and (not isinstance(idle_n, int) or idle_n < 1 or idle_n > 60):
             raise HTTPException(status_code=400, detail="auto_idle_days 需为 1~60 的整数")
+        refill = cfg.get("pool_refill_min")
+        if refill is not None and (not isinstance(refill, int) or refill < 0 or refill > 50):
+            raise HTTPException(status_code=400, detail="pool_refill_min 需为 0~50 的整数（0=关闭枯竭换血）")
         top_x = cfg.get("auto_top_x")
         if top_x is not None and (not isinstance(top_x, int) or top_x < 1 or top_x > 500):
             raise HTTPException(status_code=400, detail="auto_top_x 需为 1~500 的整数")

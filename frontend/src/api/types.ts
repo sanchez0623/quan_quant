@@ -243,6 +243,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_boards?: string[]
   /** 重选排序键：score=累计强度 / accel=加速度 / fresh=金叉新鲜度 / mom_gap=短中差值 */
   auto_rank_key?: string
+  /** 枯竭换血线：日终持仓低于该值（闸门未拦截时）当天收盘后换池重选；0=关闭 */
+  pool_refill_min?: number
   /** 基准指数：000905=中证500 / 000300=沪深300（报告净值图叠加 + 超额指标） */
   benchmark?: string
   /** 池级趋势开关：池内动量健康度过低时抑制开仓/加仓 */
@@ -563,6 +565,8 @@ export interface LiveConfig {
   rank_key: string
   top_x: number
   auto_idle_days: number
+  /** 枯竭换血线：日终持仓低于该值（闸门未拦截时）盘后换池重选；0=关闭 */
+  pool_refill_min?: number
   exit_need: number
   enter_th: number
   pool_n: number

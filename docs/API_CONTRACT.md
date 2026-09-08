@@ -14,7 +14,7 @@ Base URL: `http://localhost:8000`，前端开发时代理 `/api` 与 `/ws` 到�
 | `POST /api/live/fills`               | 成交回填 `{signal_id?, code, side(buy/sell), fill_price, fill_volume, fee?, note?}` → 联动虚拟持仓 + 关联信号置已成交                                                                                                                                 |
 | `GET /api/live/positions`            | 虚拟持仓                                                                                                                                                                                                                                |
 | `POST /api/live/positions/sync`      | 对账校准 `{positions:[{code,name,volume,cost_price}]}`（以券商为准重建）                                                                                                                                                                         |
-| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/suggest\_pct/候选域/t\_mode/max\_holdings/max\_pos\_pct（单票上限%权益，默认40，与回测 risk\_config.max\_position\_pct\_per\_stock 同尺）/cash\_reserve\_pct（现金缓冲%，默认1.5）...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                             |
+| `GET/POST /api/live/config`          | 盘前流程参数（above\_ma/rank\_key/top\_x/exit\_need/enter\_th/initial\_capital/auto\_idle\_days（空仓重选天数）/pool\_refill\_min（枯竭换血线：持仓低于该值且闸门未拦截时盘后换池重选，默认 2，0=关闭）/候选域/t\_mode/max\_holdings/max\_pos\_pct（单票上限%权益，默认40，与回测 risk\_config.max\_position\_pct\_per\_stock 同尺）/cash\_reserve\_pct（现金缓冲%，默认1.5）...；AI 开关：ai\_briefing=盘前AI简报、ai\_commentary=盘后AI点评，默认开，无可用 LLM Key 自动跳过）                                             |
 | `POST /api/live/apply_template`      | **回测模板 → 实盘配置全量注入**：`{template_id, dry_run=true, apply_capital=false, apply_fees=true}` → 预览/写入。映射：auto\_\* 组（idle\_days/top\_x/above\_ma/with\_accel/min\_rps/rank\_key/候选域）+ **params 全量键**（按原键直接进 sig\_config：max\_holdings 双处取严/pool\_n/exit\_need/enter\_th/t\_mode/base\_pct\_\*、退出组/做T组等全部策略参数；实盘消费端 `_stepper_params` 按 momentum\_slot schema 键全量承接、premarket base\_pct 读 cfg——与回测 prepare 同模式）+ mom 特征键（PICK\_SYNC\_KEYS 16 键进 sig\_config，`intraday.cfg_pick_params` 特征重算承接）+ 费率 + risk\_config（max\_position\_pct\_per\_stock→max\_pos\_pct、cash\_reserve\_pct）。**不注入**：initial\_capital（默认，勾选覆盖）、auto\_schedule/dd\_breaker\_pct/ai\_开关 等实盘独有键。dry\_run 返回 `{updates[{key,old,new}], skipped[{key,reason}], applied}` |
 | `GET /api/live/summary`              | 概览（池子/gate/持仓/信号/回填/feishu\_configured/config）                                                                                                                                                                                      |
 | `POST /api/live/reset`               | 清空信号机数据 `{keep_config}`（信号/回填/持仓/池子/盘中状态机快照/KV）                                                                                                                                                                                     |
@@ -126,6 +126,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "universe_meta": null,
   "universe_auto": false,
   "auto_idle_days": 5,
+  "pool_refill_min": 2,
   "auto_top_x": 30,
   "auto_above_ma": 20,
   "auto_with_accel": null,
@@ -165,6 +166,8 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 - `universe_auto=true` 时 `universe` 必须留空（校验 400）：每段池子由动量趋势预筛自动生成——基准日=严格早于段首的最近交易日（无后视镜 T-1）；
 
 - **滚动重选**：全空仓持续 `auto_idle_days` 个交易日 → 以触发日收盘为基准重筛，旧池退役、新池次日接管；全市场（候选域内）无票过门槛 → 空仓现金推进，绝不硬买；
+
+- **枯竭换血**（`pool_refill_min`，默认 2，0=关闭）：建仓宽限期（段首 `auto_idle_days` 日，容纳新池 T+1 成交）后，日终持仓仍低于换血线 → 当天收盘后换池重选，已持仓不动（只换新开仓候选域，槽位按 `max_holdings-已持仓` 分配、名单排除持仓票）；闸门停开仓日（pool_gate/index_gate）冻结：不累计空仓、不换血（停开仓下重选是无用功）；
 
 - 候选域：`auto_index`（指数成分**并集**，sz50/hs300/zz500/csi800）∩ `auto_boards`（板块并集 main/chinext/star/bse），均空=全市场剔ST/退市；域内无票则初始池报错、中途无票则空池等待（不回退全市场）；
 

@@ -117,6 +117,7 @@ interface BacktestFormValues {
   // ---- 动态选股（universe_auto）：分段滚动重选 ----
   universe_auto?: boolean
   auto_idle_days?: number
+  pool_refill_min?: number
   auto_top_x?: number
   auto_above_ma?: number
   auto_with_accel?: boolean
@@ -289,6 +290,7 @@ export default function BacktestList() {
       universe_meta: universeMeta ?? null,
       universe_auto: values.universe_auto ?? false,
       auto_idle_days: values.auto_idle_days ?? 5,
+      pool_refill_min: values.pool_refill_min ?? 2,
       auto_top_x: values.auto_top_x ?? 30,
       auto_above_ma: values.auto_above_ma ?? 20,
       auto_with_accel: values.auto_with_accel ?? (values.strategy_id === 'momentum_slot'),
@@ -339,6 +341,7 @@ export default function BacktestList() {
         exclude_st: cfg.exclude_st ?? true,
         universe_auto: cfg.universe_auto ?? false,
         auto_idle_days: cfg.auto_idle_days ?? 5,
+        ...(cfg.pool_refill_min != null ? { pool_refill_min: cfg.pool_refill_min } : {}),
         auto_top_x: cfg.auto_top_x ?? 30,
         auto_above_ma: cfg.auto_above_ma ?? 20,
         auto_with_accel: cfg.auto_with_accel ?? (cfg.strategy_id === 'momentum_slot'),
@@ -834,6 +837,7 @@ export default function BacktestList() {
             exclude_st: true,
             universe_auto: false,
             auto_idle_days: 5,
+            pool_refill_min: 2,
             auto_top_x: 30,
             auto_above_ma: 20,
             auto_with_accel: false,
@@ -932,6 +936,14 @@ export default function BacktestList() {
                     <Form.Item name="auto_idle_days" noStyle>
                       <InputNumber size="small" min={1} max={60} />
                     </Form.Item>
+                  </Space>
+                  <Space size={4}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>枯竭换血线（持仓少于）：</Typography.Text>
+                    <Tooltip title="日终持仓低于该值（闸门未拦截时）当天收盘后换池重选；已持仓不动。0=关闭">
+                      <Form.Item name="pool_refill_min" noStyle>
+                        <InputNumber size="small" min={0} max={50} />
+                      </Form.Item>
+                    </Tooltip>
                   </Space>
                   <Space size={4}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>池子大小：</Typography.Text>

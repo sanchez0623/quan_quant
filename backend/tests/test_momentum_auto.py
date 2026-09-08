@@ -20,11 +20,12 @@ from app.api.backtests import validate_backtest_config
 from app.data import store, synthetic
 from app.data.updater import _month_ends
 from app.engine import momentum_core as mc
-from app.engine.runner import _auto_domain, run_backtest
+from app.engine.runner import _auto_domain, _find_refresh_point, run_backtest
 
 N_DAYS = 330
 SEG_START = 200          # 回测开始（交易日序号）
 UP = 0.003               # 趋势日收益（5日约1.5%，低于崩溃保护阈值≈2.24%）
+UP2 = 0.0015             # 温和趋势（换血测试的 B 组：动量分低于 UP 组、崩后反超）
 DOWN = -0.006
 FLAT = 0.0
 NOISE = 0.0005
@@ -176,6 +177,80 @@ def test_auto_all_bear_keeps_cash(tmp_path):
     tail = [e["equity"] for e in report["equity_curve"] if e["date"] > trig]
     assert tail, "触发日之后应有净值点"
     assert all(abs(v - tail[0]) < 1e-6 for v in tail), "空池段净值应恒定"
+
+
+# ---------------- 枯竭换血 + gate 冻结（重选触发改造） ----------------
+
+def _snaps(spec):
+    """spec: [(date, 持仓数), ...] -> position_snapshots 形状"""
+    return [{"date": d, "positions": [{"code": f"C{i}"} for i in range(n)]}
+            for d, n in spec]
+
+
+def test_find_refresh_point_refill_and_gate_freeze():
+    """重选触发三语义：枯竭换血（建仓宽限期后仍低于换血线 -> 当天换血）/
+    gate 停开仓日冻结（不累计空仓、不换血）/ 空仓满 idle_n 保留；
+    末日触发返回 None。"""
+    rep = lambda snaps: {"position_snapshots": _snaps(snaps)}
+    # 1) 枯竭触发：段首宽限 idle_n 日（新池成交窗口）后仍持仓 1 只 -> 换血
+    day, reason = _find_refresh_point(
+        rep([("2024-01-01", 3), ("2024-01-02", 3), ("2024-01-03", 1),
+             ("2024-01-04", 1), ("2024-01-05", 1)]), 3, 2)
+    assert day == "2024-01-04" and "枯竭" in reason
+    # 1b) 段中掉到换血线下：宽限期已过 -> 当天即触发
+    day, reason = _find_refresh_point(
+        rep([("2024-01-01", 3), ("2024-01-02", 3), ("2024-01-03", 3),
+             ("2024-01-04", 3), ("2024-01-05", 3), ("2024-01-08", 1),
+             ("2024-01-09", 1)]), 3, 2)
+    assert day == "2024-01-08" and "枯竭" in reason
+    # 2) gate 冻结：枯竭日闸门停开仓 -> 不换血；持仓回升后无触发
+    snaps = [("2024-01-01", 3), ("2024-01-02", 1), ("2024-01-03", 1),
+             ("2024-01-04", 3), ("2024-01-05", 3)]
+    gd = {"2024-01-02": True, "2024-01-03": True}
+    assert _find_refresh_point(rep(snaps), 3, 2, gd) is None
+    # 3) 空仓快速重选保留：refill_min=0 时空仓满 idle_n 触发
+    day, reason = _find_refresh_point(
+        rep([("2024-01-01", 3), ("2024-01-02", 0), ("2024-01-03", 0),
+             ("2024-01-04", 0), ("2024-01-05", 0)]), 3, 0)
+    assert day == "2024-01-04" and "空仓" in reason
+    # 4) gate on 时空仓不累计：闸门 2 天 + off 1 天 -> 未达 3 日
+    snaps = [("2024-01-01", 3), ("2024-01-02", 0), ("2024-01-03", 0),
+             ("2024-01-04", 0)]
+    gd = {"2024-01-02": True, "2024-01-03": True}
+    assert _find_refresh_point(rep(snaps), 3, 0, gd) is None
+    # 5) 触发日为段内最后一天 -> 返回 None（重选无意义）
+    assert _find_refresh_point(
+        rep([("2024-01-01", 3), ("2024-01-02", 3), ("2024-01-03", 1)]), 3, 2) is None
+
+
+def test_auto_refill_triggers_before_idle(tmp_path):
+    """枯竭换血端到端（momentum_slot）：池内票崩清仓掉到换血线下当天即重选
+    （不等 idle_n），新池接管建仓；段续跑现金连续。"""
+    dates = _write_market(tmp_path, {
+        "600000": [(0, 210, UP), (210, N_DAYS, -0.02)],   # A组：强涨后急崩
+        "600036": [(0, 210, UP), (210, N_DAYS, -0.02)],
+        "000001": [(0, 210, UP2), (210, N_DAYS, UP)],     # B组：前段温和垫数据，
+        "000002": [(0, 210, UP2), (210, N_DAYS, UP)],     # A组崩后动量分反超接位
+    })
+    cfg = _auto_cfg(dates[SEG_START], dates[N_DAYS - 1])
+    cfg.update({
+        "strategy_id": "momentum_slot",
+        "auto_above_ma": 20, "auto_with_accel": True,
+    })
+    cfg["pool_refill_min"] = 2
+    report = run_backtest(cfg, data_dir=str(tmp_path))
+    segs = report["auto_segments"]
+    assert len(segs) >= 2
+    reason = segs[0].get("trigger_reason") or ""
+    assert ("枯竭" in reason or "空仓" in reason), \
+        f"应按新触发机制重选，实际 {reason}"
+    # 第一次换血当天 A 组长动量分尚未崩完（指标滞后），可能重选回旧池——
+    # 连续枯竭换血会自我修正：几天后分数反转，B 组接位
+    b_seg = next((s for s in segs
+                  if set(s["universe"]) == {"000001", "000002"}), None)
+    assert b_seg is not None, "连续换血后应换入 B 组"
+    seg_b_trades = [t for t in report["trade_log"] if t.get("seg") == b_seg["seg"]]
+    assert any(t["type"] == "开仓" for t in seg_b_trades), "换血后应有补位建仓"
 
 
 # ---------------- 候选域（auto_index / auto_boards） ----------------

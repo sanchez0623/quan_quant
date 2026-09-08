@@ -891,6 +891,11 @@ export default function LiveSignals() {
                     {numCell(cfg.auto_idle_days,
                       (v) => setCfg({ ...cfg, auto_idle_days: v ?? 5 }), 1, 1)}
                   </Col>
+                  <Col span={6}>
+                    <Typography.Text type="secondary">枯竭换血线（pool_refill_min）</Typography.Text>
+                    {numCell(cfg.pool_refill_min ?? 2,
+                      (v) => setCfg({ ...cfg, pool_refill_min: v ?? 2 }), 1, 0)}
+                  </Col>
                 </Row>
                 <Row gutter={12} style={{ marginTop: 8 }}>
                   <Col span={6}>

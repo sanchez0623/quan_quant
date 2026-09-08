@@ -29,6 +29,7 @@ DEFAULT_CFG = {
                              # 与选股器"动量趋势"页的排序键同口径，可在配置卡改）
     "top_x": 30,             # 每次预筛取前 x 只
     "auto_idle_days": 5,     # 全空仓持续 N 个交易日 -> 重选
+    "pool_refill_min": 2,    # 枯竭换血线：持仓低于该值（gate off 时）当天盘后重选；0=关闭
     "exit_need": 2,          # 衰退信号满足数（预警阈值）
     "enter_th": 0.15,        # 池级 gate 触发阈值（恢复线=×2 内置）
     "pool_n": 6,             # 榜单容量（跌出榜单判定）
@@ -136,99 +137,113 @@ def run_premarket(data_dir: Optional[str] = None,
     picked_codes = set(picked["code"].to_list()) if picked.height else set()
     by_code = {r["code"]: r for r in picked.to_dicts()}
 
-    # ---- 3) 空仓重选判定 ----
+    # ---- 3) 池子换血判定（gate 冻结 + 枯竭换血 + 空仓快速重选） ----
     messages: list[str] = []
     signals: list[dict] = []
     idle_days = 0
     idle_start = pool_state.get("idle_start")
-    if not pos_codes:
+    refill_min = int(cfg.get("pool_refill_min") or 2)
+    gate_on = bool(gate_state)
+    if gate_on and not pos_codes:
+        idle_start = as_of   # 闸门期冻结：空仓计数不累计（停开仓下重选是空转）
+    if not pos_codes and not gate_on:
         if idle_start is None:
             idle_start = as_of
         idle_days = len([d for d in mf.calendar
                          if (idle_start or as_of) <= d <= as_of])
+    # 换血触发：枯竭（持仓低于换血线，gate off 时当天盘后换）优先于空仓满 N 日
+    need_refill = (not pool_codes
+                   or (refill_min > 0 and len(pos_codes) < refill_min)
+                   or (not pos_codes and idle_days >= int(cfg["auto_idle_days"])))
     rebalanced = False
     new_pool = pool
-    if not pos_codes:
-        if gate_state:
-            messages.append(f"池级开关：停开仓中（健康度 {health}，"
-                            f"恢复线 {enter_th * 2:.2f}）——今日不建仓")
-        elif idle_days >= int(cfg["auto_idle_days"]) or not pool_codes:
-            if picked.height == 0:
-                messages.append(f"候选域内无票过门槛（基准日 {as_of}）——空仓等待")
-                idle_start = idle_start or as_of
-            else:
-                new_pool = [{"code": r["code"],
-                             "name": name_map.get(r["code"], r["code"])}
-                            for r in picked.to_dicts()]
-                idle_start = None
-                rebalanced = True
-                messages.append(f"动态重选（基准日 {as_of}）：新池 {picked.height} 只")
-                # 开仓信号按池子座次（picked 顺序 = 候选域∩门槛后按模板
-                # rank_key 排序）取前 slots 个有效槽位；候选域与排序键均来自
-                # 模板参数（与池子同一把尺）。其余候选候补——盘中退出后由
-                # 冷却/门槛机制与次日盘前名单接续。
-                # （曾用全市场 score 前 pool_n 作准入：与池子两把尺子，
-                #   交叉可能为空 -> 开仓名单 0 只、无信号可回填）
-                _sp = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
-                # 试仓/满配占比：cfg 优先（模板注入的 params 全量键在此承接），
-                # schema 默认兜底——与回测同一把尺
-                base_max = float(cfg.get("base_pct_max") or _sp["base_pct_max"])
-                base_min = float(cfg.get("base_pct_min") or _sp["base_pct_min"])
-                equity, cash_all = intraday._virtual_equity(
-                    cfg, positions, daily_close)
-                slots = int(cfg.get("max_holdings") or 3)
-                cash_reserve = float(cfg.get("cash_reserve_pct")
-                                     or intraday.CASH_RESERVE_PCT)
-                cash = cash_all * (1 - cash_reserve / 100)
-                used = 0
-                p_feats = intraday.cfg_pick_params(cfg)
-                for r in picked.to_dicts():
-                    if used >= slots:
-                        break
-                    code = r["code"]
-                    ref = daily_close.get(code)
-                    cf, _fac, _raw = intraday._code_features(
-                        code, p_feats, data_dir)
-                    if cf is None or ref is None:
-                        continue
-                    frow = cf.filter(pl.col("day") == as_of)
-                    if not frow.height:
-                        continue
-                    slope_up = (frow.to_dicts()[0].get("slope") or 0) > 0
-                    budget_pct = base_max if slope_up else base_min
-                    max_pos = float(cfg.get("max_pos_pct") or 40.0)
-                    amount = min(equity * budget_pct / 100,
-                                 equity * max_pos / 100, cash)
-                    amount = round(amount, 0)
-                    if amount < ref * 100:
-                        continue   # 不足一手：跳过且不占槽位
-                    tag = "满配" if slope_up else "试仓"
-                    reason = (f"动态重选入池（{cfg['rank_key']}排序，{tag}"
-                              f"第{used + 1}/{slots}槽）")
-                    sid = db.add_live_signal(
-                        "premarket", "开仓", code,
-                        name_map.get(code, code), reason,
-                        amount, ref,
-                        extra={"as_of": as_of, "score": r.get("score"),
-                               "budget_pct": budget_pct, "slot": used + 1,
-                               "pool_size": picked.height})
-                    signals.append({"id": sid, "code": code,
-                                    "stype": "开仓",
-                                    "name": name_map.get(code, code),
-                                    "reason": reason,
-                                    "suggest_amount": amount, "ref_price": ref})
-                    cash -= amount
-                    used += 1
-                messages.append(
-                    f"开仓名单 {used} 只（槽位 {slots}，单票≤"
-                    f"{float(cfg.get('max_pos_pct') or intraday.MAX_POS_PCT):.0f}%权益；"
-                    f"试仓 {base_min:.0f}%/满配 {base_max:.0f}%，受单票上限收敛）"
-                    f"——其余候选候补，盘中退出后补位")
+    if gate_on:
+        messages.append(f"池级开关：停开仓中（健康度 {health}，"
+                        f"恢复线 {enter_th * 2:.2f}）——今日不建仓，重选冻结")
+    elif need_refill:
+        if picked.height == 0:
+            messages.append(f"候选域内无票过门槛（基准日 {as_of}）——空仓等待")
+            idle_start = idle_start or as_of
         else:
+            refill_mode = len(pos_codes) > 0   # 枯竭换血：持仓保留，只换候选域
+            new_pool = [{"code": r["code"],
+                         "name": name_map.get(r["code"], r["code"])}
+                        for r in picked.to_dicts()]
+            idle_start = None
+            rebalanced = True
+            head = "池子换血" if refill_mode else "动态重选"
+            messages.append(f"{head}（基准日 {as_of}）：新池 {picked.height} 只"
+                            + (f"（持仓 {len(pos_codes)} 只保留）" if refill_mode else ""))
+            # 开仓信号按池子座次（picked 顺序 = 候选域∩门槛后按模板
+            # rank_key 排序）取前 slots 个有效槽位；候选域与排序键均来自
+            # 模板参数（与池子同一把尺）。其余候选候补——盘中退出后由
+            # 冷却/门槛机制与次日盘前名单接续。
+            # （曾用全市场 score 前 pool_n 作准入：与池子两把尺子，
+            #   交叉可能为空 -> 开仓名单 0 只、无信号可回填）
+            _sp = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
+            # 试仓/满配占比：cfg 优先（模板注入的 params 全量键在此承接），
+            # schema 默认兜底——与回测同一把尺
+            base_max = float(cfg.get("base_pct_max") or _sp["base_pct_max"])
+            base_min = float(cfg.get("base_pct_min") or _sp["base_pct_min"])
+            equity, cash_all = intraday._virtual_equity(
+                cfg, positions, daily_close)
+            # 换血不动持仓：可用槽位 = max_holdings - 已持仓数
+            slots = max(0, int(cfg.get("max_holdings") or 3) - len(pos_codes))
+            cash_reserve = float(cfg.get("cash_reserve_pct")
+                                 or intraday.CASH_RESERVE_PCT)
+            cash = cash_all * (1 - cash_reserve / 100)
+            used = 0
+            p_feats = intraday.cfg_pick_params(cfg)
+            for r in picked.to_dicts():
+                if used >= slots:
+                    break
+                code = r["code"]
+                if code in pos_codes:
+                    continue   # 已持仓票不发开仓信号（换血不动持仓）
+                ref = daily_close.get(code)
+                cf, _fac, _raw = intraday._code_features(
+                    code, p_feats, data_dir)
+                if cf is None or ref is None:
+                    continue
+                frow = cf.filter(pl.col("day") == as_of)
+                if not frow.height:
+                    continue
+                slope_up = (frow.to_dicts()[0].get("slope") or 0) > 0
+                budget_pct = base_max if slope_up else base_min
+                max_pos = float(cfg.get("max_pos_pct") or 40.0)
+                amount = min(equity * budget_pct / 100,
+                             equity * max_pos / 100, cash)
+                amount = round(amount, 0)
+                if amount < ref * 100:
+                    continue   # 不足一手：跳过且不占槽位
+                tag = "满配" if slope_up else "试仓"
+                reason = (f"动态重选入池（{cfg['rank_key']}排序，{tag}"
+                          f"第{used + 1}/{slots}槽）")
+                sid = db.add_live_signal(
+                    "premarket", "开仓", code,
+                    name_map.get(code, code), reason,
+                    amount, ref,
+                    extra={"as_of": as_of, "score": r.get("score"),
+                           "budget_pct": budget_pct, "slot": used + 1,
+                           "pool_size": picked.height})
+                signals.append({"id": sid, "code": code,
+                                "stype": "开仓",
+                                "name": name_map.get(code, code),
+                                "reason": reason,
+                                "suggest_amount": amount, "ref_price": ref})
+                cash -= amount
+                used += 1
+            messages.append(
+                f"开仓名单 {used} 只（槽位 {slots}，单票≤"
+                f"{float(cfg.get('max_pos_pct') or intraday.MAX_POS_PCT):.0f}%权益；"
+                f"试仓 {base_min:.0f}%/满配 {base_max:.0f}%，受单票上限收敛）"
+                f"——其余候选候补，盘中退出后补位")
+    else:
+        if not pos_codes:
             messages.append(f"空仓第 {idle_days} 日（重选阈值 "
                             f"{cfg['auto_idle_days']}）——继续等待")
-    elif rebalanced is False and pool_codes:
-        messages.append(f"当前池 {len(pool_codes)} 只，持仓 {len(pos_codes)} 只——未触发重选")
+        else:
+            messages.append(f"当前池 {len(pool_codes)} 只，持仓 {len(pos_codes)} 只——未触发重选")
 
     # ---- 4) 持仓票退出检查（exit_need 信号数） ----
     warns: list[dict] = []

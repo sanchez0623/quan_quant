@@ -86,7 +86,7 @@ _PICK_SYNC_KEYS = mc.PICK_SYNC_KEYS
 BAR_KEEP_COLS = {
     "date", "open", "high", "low", "close", "volume", "adj_factor",
     "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
-    "atr_pct", "d_atr", "atr", "pool_gate",
+    "atr_pct", "d_atr", "atr", "pool_gate", "index_gate",
 }
 # 动态访问形态（静态扫描无法捕获 f-string 键，如 f"atr{risk_cfg.atr_period}"）：
 # 新增动态读取形态时同步扩充此处正则。
@@ -293,6 +293,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
             f"universe_auto 仅支持策略 {AUTO_STRATEGIES}，当前: {cfg['strategy_id']}")
     start, end = cfg["start_date"], cfg["end_date"]
     idle_n = max(1, int(cfg.get("auto_idle_days") or 5))
+    refill_min = max(0, int(cfg.get("pool_refill_min") or 0))   # 0=关闭枯竭换血
     top_x = max(1, int(cfg.get("auto_top_x") or 30))
     min_rps = cfg.get("auto_min_rps")
     wd_base = float(cfg.get("monthly_withdraw_base") or 0)
@@ -342,17 +343,19 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
             progress_cb(max(3.0, min(95.0, 100.0 * _day_ratio(seg_start, start, end))),
                         f"段{seg_no}：{seg_start} 起 {len(seg_universe)} 只")
         rep = _run_one(seg_cfg, data_dir, None, init_withdraw=carry_w)
-        trig = _find_refresh_point(rep, idle_n)
+        trig_pack = _find_refresh_point(rep, idle_n, refill_min,
+                                        rep.get("gate_days"))
         info = {"seg": seg_no, "start": seg_start, "as_of": as_of,
                 "universe": list(seg_universe),
                 "picked": _picked_rows(picked, data_dir)}
-        if trig is None:
+        if trig_pack is None:
             _accumulate_segment(acc, rep, seg_no, cutoff=None)
             info["end"] = end
             final_debts = rep.get("t_open_debts") or []
             seg_infos.append(info)
             break
         # 触发重选：本段截断到触发日（其后旧池交易丢弃），旧池退役
+        trig, trig_reason = trig_pack
         _accumulate_segment(acc, rep, seg_no, cutoff=trig)
         carry_cash = _equity_at(rep, trig)
         carry_w = _summarize_withdraw(
@@ -361,7 +364,7 @@ def _run_auto_segments(cfg: dict, data_dir, progress_cb) -> dict:
         as_of = trig
         info["end"] = trig
         info["trigger_day"] = trig
-        info["trigger_reason"] = f"全空仓持续{idle_n}个交易日"
+        info["trigger_reason"] = trig_reason
         domain = _auto_domain(cfg, data_dir, as_of=as_of)
         picked = mc.select_top(mf, as_of, top_x, min_rps, domain=domain,
                                rank_key=rank_key)
@@ -474,16 +477,37 @@ def _auto_domain(cfg: dict, data_dir,
     return dom
 
 
-def _find_refresh_point(rep: dict, idle_n: int) -> Optional[str]:
-    """扫描段内持仓快照，返回第一个「连续空仓达 idle_n 个交易日」的触发日；
-    触发日之后段内已无交易日（回测自然结束）时返回 None。"""
+def _find_refresh_point(rep: dict, idle_n: int, refill_min: int = 0,
+                        gate_days: Optional[dict] = None) -> Optional[tuple[str, str]]:
+    """扫描段内持仓快照，返回重选触发 (触发日, 原因)；无触发返回 None。
+
+    三个触发（按日序，先到先得）：
+    - gate 停开仓日（gate_days[day]=True，pool/index 任一）：闸门期冻结——
+      不累计空仓、不换血（停开仓状态下选了也买不了，重选是无用功）
+    - 日终持仓数 < refill_min（refill_min>0 时启用）：枯竭换血。段首起
+      idle_n 日为建仓宽限期（新池成交需要 T+1，宽限期内持仓 0/1 属正常），
+      宽限期后仍低于换血线 -> 当天收盘后换血；已持仓不动
+    - 连续全空仓 idle_n 日：空仓快速重选（gate 日不计数）
+    触发日为段内最后一天时返回 None（其后已无交易日，重选无意义）。"""
     snaps = rep.get("position_snapshots") or []
+    gate_days = gate_days or {}
     idle = 0
-    for s in snaps:
-        if not s.get("positions"):
+    last_day = snaps[-1]["date"] if snaps else None
+    for idx, s in enumerate(snaps):
+        day = s["date"]
+        if gate_days.get(day):
+            idle = 0
+            continue
+        n_pos = len(s.get("positions") or [])
+        if n_pos == 0:
             idle += 1
-            if idle >= idle_n:
-                return s["date"] if s["date"] < snaps[-1]["date"] else None
+            if idle >= idle_n and last_day is not None and day < last_day:
+                return day, f"全空仓持续{idle_n}个交易日"
+        elif 0 < refill_min and idx >= idle_n and n_pos < refill_min:
+            # 建仓宽限期（段首 idle_n 日）已过仍低于换血线 -> 枯竭换血
+            if last_day is not None and day < last_day:
+                return day, f"持仓{n_pos}只低于换血线{refill_min}（枯竭换血）"
+            return None
         else:
             idle = 0
     return None
@@ -741,6 +765,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     t_cycle_pnls: list[float] = []     # 已闭环做T周期价差合计（旧周期口径，t_pnl_closed 对照）
     t_cycle_records: list[dict] = []   # 配对口径周期明细 {code, sell_date, buy_date, pnl}
     t_reject_events: list[dict] = []   # 追回/回补被拒事件（审计可见，不污染 trade_log）
+    gate_days: dict[str, bool] = {}    # 逐日停开仓标记（pool/index 任一触发，重选冻结用）
     state = {"intraday_trades": {}, "commission_total": 0.0, "trade_seq": 0}  # code -> 当日交易次数
 
     def _t_state(code: str) -> dict:
@@ -1214,10 +1239,12 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
     # ---------------- 主循环 ----------------
     n_bars = len(timeline)
     cur_day = None
+    gate_today = False
     for ti, t in enumerate(timeline):
         day = t[:10]
         if day != cur_day:  # 新交易日：重置日内状态（做T债务跨日保留直至回补/到期作废）
             cur_day = day
+            gate_today = False
             state["intraday_trades"] = {}
             # 方案E：当日市况写入风控（T-1 对齐；无市况表/缺失日降级 range）
             if regime_map:
@@ -1236,6 +1263,8 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
             bar = bars[code][i]
             # 金额口径用真实市场价（后复权价除以复权因子）；价格比较（止损/ATR）仍用 bar 后复权价
             price_map[code] = bar["close"] / float(bar.get("adj_factor") or 1.0)
+            if bar.get("pool_gate") or bar.get("index_gate"):
+                gate_today = True   # 逐日停开仓标记（任一票任一 bar 触发即记）
             if in_warmup:
                 continue
 
@@ -1277,6 +1306,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         # 日终：更新净值与资金曲线（调整净值 = 真实净值 + 累计提取，统计口径基准）
         is_last_bar_of_day = ti + 1 >= n_bars or timeline[ti + 1][:10] != day
         if is_last_bar_of_day and not in_warmup:
+            gate_days[day] = gate_today
             equity = portfolio.equity(price_map)
             mv = portfolio.market_value(price_map)
             adj_equity = equity + w_state["total"]
@@ -1371,6 +1401,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
         "t_cycle_records": t_cycle_records,   # 配对口径周期明细（分段拼接重算 metrics 用）
         "t_open_debts": t_open_debts,
         "t_reject_events": t_reject_events,
+        "gate_days": gate_days,               # 逐日停开仓标记（pool/index 任一触发）
     }
     if cfg.get("task_id"):
         report["task_id"] = cfg["task_id"]

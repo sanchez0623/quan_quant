@@ -173,6 +173,7 @@ class LiveConfigBody(BaseModel):
     rank_key: str = "score"
     top_x: int = 30
     auto_idle_days: int = 5
+    pool_refill_min: int = 2   # 枯竭换血线：持仓低于该值（gate off 时）盘后重选；0=关闭
     exit_need: int = 2
     enter_th: float = 0.15
     pool_n: int = 6
