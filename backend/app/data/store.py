@@ -7,12 +7,19 @@ DATA_DIR 结构：
   trade_calendar.parquet   date,is_open(int)
   stock_basic.parquet      code,name,st(bool),list_date
 """
+import time
 from pathlib import Path
 from typing import Optional
 
 import polars as pl
 
 from .. import config
+
+
+# 进程内统计缓存：minute5 冷盘 IO（约 3000 文件逐读 footer）可达十几秒，
+# TTL 内重复打开数据管理页秒回，避免每次重新扫描
+_stats_cache: dict[str, tuple[float, Optional[dict]]] = {}
+_STATS_TTL = 60.0
 
 
 def data_root(data_dir: Optional[str] = None) -> Path:
@@ -339,20 +346,28 @@ def parquet_stats_daily(data_dir: Optional[str] = None) -> Optional[dict]:
 
 
 def parquet_stats_minute5(data_dir: Optional[str] = None) -> Optional[dict]:
+    key = f"minute5:{str(data_root(data_dir))}"
+    now = time.time()
+    hit = _stats_cache.get(key)
+    if hit and now - hit[0] < _STATS_TTL:
+        return hit[1]
     root = data_root(data_dir) / "minute5"
     codes = list_minute5_codes(data_dir)
     if not codes:
         return None
     # 行数用 parquet 元数据统计（不加载数据体），起止日期抽样首个文件
     import pyarrow.parquet as pq
-    rows = 0
-    for c in codes:
-        fp = root / f"{c}.parquet"
-        if fp.exists():
-            try:
-                rows += pq.read_metadata(str(fp)).num_rows
-            except Exception:  # noqa: BLE001
-                pass
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _num_rows(fp: Path) -> int:
+        try:
+            return pq.read_metadata(str(fp)).num_rows
+        except Exception:  # noqa: BLE001
+            return 0
+
+    # 冷盘 IO 下约 3000 个文件逐读 footer 可达十几秒：线程池并发读显著提速
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        rows = sum(ex.map(_num_rows, (root / f"{c}.parquet" for c in codes)))
     start = end = None
     try:
         d = (pl.scan_parquet(str(root / f"{codes[0]}.parquet"))
@@ -361,8 +376,10 @@ def parquet_stats_minute5(data_dir: Optional[str] = None) -> Optional[dict]:
         start, end = (d["s"][0] or "")[:10], (d["e"][0] or "")[:10]
     except Exception:  # noqa: BLE001
         pass
-    return {"stocks": len(codes), "rows": rows, "start": start, "end": end,
-            "updated_at": _mtime(root / f"{codes[0]}.parquet")}
+    stats = {"stocks": len(codes), "rows": rows, "start": start, "end": end,
+             "updated_at": _mtime(root / f"{codes[0]}.parquet")}
+    _stats_cache[key] = (now, stats)
+    return stats
 
 
 def parquet_stats_adj_factor(data_dir: Optional[str] = None) -> Optional[dict]:
