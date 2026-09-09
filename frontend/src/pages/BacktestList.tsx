@@ -502,7 +502,7 @@ export default function BacktestList() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${(name || 'backtest_config').replace(/[\\/:*?"<>|]/g, '_')}_${dayjs().format('YYYYMMDD')}.json`
+    a.download = `${(name || 'backtest_config').replace(/[\\/:*?"<>|]/g, '_')}_${dayjs().format('YYYYMMDD_HHmmss')}.json`
     a.click()
     URL.revokeObjectURL(url)
   }
