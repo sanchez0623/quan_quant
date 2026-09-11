@@ -427,6 +427,11 @@ def test_scheduler_tick_windows_and_idempotent(monkeypatch):
     assert r2["submitted"] == ["postclose"]
     assert submitted[-1][0] == "live_postclose"
     assert scheduler.tick(dt.datetime(2026, 9, 3, 16, 0))["submitted"] == []
+    # 盘后数据更新窗口（18:10 起，baostock 当日日线 17:30 后就绪）：提交 data_update（串行防黑名单）
+    r3 = scheduler.tick(dt.datetime(2026, 9, 3, 18, 20))
+    assert r3["submitted"] == ["evening"]
+    assert submitted[-1][0] == "data_update"
+    assert scheduler.tick(dt.datetime(2026, 9, 3, 19, 0))["submitted"] == [], "evening 当日幂等"
     # 窗口外（07:00）不提交
     assert scheduler.tick(dt.datetime(2026, 9, 4, 7, 0))["submitted"] == []
     # auto_schedule=off 空转
@@ -436,6 +441,64 @@ def test_scheduler_tick_windows_and_idempotent(monkeypatch):
     # 非交易日不提交
     monkeypatch.setattr(scheduler, "_is_trading_day", lambda t, n: False)
     assert scheduler.tick(dt.datetime(2026, 9, 5, 8, 30))["trading_day"] is False
+
+
+def test_expected_daily_latest(monkeypatch):
+    """预期日线最新日 = 上一交易日：日历跳过节假日；日历缺失按周一~五兜底"""
+    from app import task_manager
+
+    cal = pl.DataFrame({"date": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+                        "is_open": [1, 0, 1, 1]})
+    monkeypatch.setattr(store, "read_calendar", lambda data_dir=None: cal)
+    # 09-04（周五）盘前：预期 09-03
+    assert task_manager._expected_daily_latest(dt.datetime(2026, 9, 4, 8, 30)) == "2026-09-03"
+    # 09-03 盘前：09-02 休市 -> 预期跳到 09-01
+    assert task_manager._expected_daily_latest(dt.datetime(2026, 9, 3, 8, 30)) == "2026-09-01"
+    # 日历缺失：weekday 兜底（周一 -> 上周五）
+    monkeypatch.setattr(store, "read_calendar", lambda data_dir=None: None)
+    assert task_manager._expected_daily_latest(dt.datetime(2026, 9, 7, 8, 30)) == "2026-09-04"
+
+
+def test_premarket_task_guard(monkeypatch):
+    """盘前编排守卫：数据完整 -> 跳过拉取直接进流程（数据由盘后 18:10 evening 负责）；
+    缺漏（昨晚 evening 未跑）或显式 update_data=True -> 现场串行补拉兜底"""
+    from app import task_manager
+    ran = {"premarket": 0, "incr": 0}
+
+    def _fake_premarket(push):
+        ran["premarket"] += 1
+        return {"as_of": TODAY, "rebalanced": False, "pool": [],
+                "stale": False, "signals": [], "pushed": False}
+
+    monkeypatch.setattr(store, "daily_latest_date", lambda data_dir=None: "2026-09-03")
+    monkeypatch.setattr(premarket, "run_premarket", _fake_premarket)
+    monkeypatch.setattr(task_manager, "_daily_incremental",
+                        lambda *a, **k: ran.__setitem__("incr", ran["incr"] + 1)
+                        or "2026-08-29")
+
+    # 1) 数据完整（latest == 预期上一交易日）：不拉，直接进盘前流程
+    monkeypatch.setattr(task_manager, "_expected_daily_latest",
+                        lambda now=None: "2026-09-03")
+    db.create_task("live_g_fresh", "盘前测试-完整", "live_premarket")
+    task_manager.live_premarket_task("live_g_fresh", db_path=None, data_dir="x",
+                                     push=False)
+    assert ran == {"premarket": 1, "incr": 0}, "数据完整不应触发补拉"
+    assert db.get_task("live_g_fresh")["status"] == "success"
+
+    # 2) 缺漏（latest < 预期上一交易日）：守卫现场补拉兜底
+    monkeypatch.setattr(task_manager, "_expected_daily_latest",
+                        lambda now=None: "2026-09-04")
+    db.create_task("live_g_stale", "盘前测试-缺漏", "live_premarket")
+    task_manager.live_premarket_task("live_g_stale", db_path=None, data_dir="x",
+                                     push=False)
+    assert ran == {"premarket": 2, "incr": 1}, "缺漏应触发补拉"
+    assert db.get_task("live_g_stale")["status"] == "success"
+
+    # 3) 显式 update_data=True：强制拉取
+    db.create_task("live_g_force", "盘前测试-强制", "live_premarket")
+    task_manager.live_premarket_task("live_g_force", db_path=None, data_dir="x",
+                                     update_data=True, push=False)
+    assert ran == {"premarket": 3, "incr": 2}, "显式指定应强制拉取"
 
 
 def test_scheduler_manual_auto_mutex(monkeypatch):

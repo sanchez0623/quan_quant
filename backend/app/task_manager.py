@@ -6,6 +6,7 @@ import json
 import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -214,43 +215,99 @@ def data_update_task(task_id: str, scope: str, db_path: str, data_dir: str,
                 start_date=start_date, end_date=end_date)
 
 
-def live_premarket_task(task_id: str, db_path: str, data_dir: str,
-                        update_data: bool = True, push: bool = True) -> None:
-    """实盘盘前编排（LIVE_SIGNAL_SYSTEM §5 盘前）：日线增量更新（含完整性守卫）
-    → 盘前信号流程（特征重算/重选/gate/退出检查/推送）→ AI 盘前简报（可选）。"""
-    from .live import premarket
-    if update_data:
-        from datetime import datetime as _dt, timedelta as _td
+def _expected_daily_latest(now: Optional[datetime] = None) -> str:
+    """预期日线库最新日期 = 上一交易日。
+
+    数据源当日日线 17:30 后才就绪：今天 T 的预期最新日线是 T-1（盘前视角）。
+    交易日历查今天之前最近一个 is_open=1 的日期；日历缺失按周一~五兜底
+    （周五预期周四、周末预期周五）。"""
+    import polars as pl
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    try:
         from .data import store as _store
-        latest = _store.daily_latest_date(data_dir=data_dir)
-        if latest is None:
-            raise RuntimeError(
-                "日线库为空：请先在数据管理页执行一次全量更新（建议填写日期区间分批拉取），"
-                "盘前编排不做首次全历史建库（全市场全历史拉取会内存溢出）")
-        start = (_dt.strptime(latest, "%Y-%m-%d") - _td(days=5)).strftime("%Y-%m-%d")
-        # 日线增量范围收窄：候选域(指数成分) ∪ 池 ∪ 持仓 ∪ 状态机票，替代全市场 5000+ 只全拉。
-        # 实盘候选域固定（默认 zz500）时选股/重选正确性不受影响；成分表缺失则兜底全市场防漏数据。
-        codes: set[str] = set()
-        for k in [x for x in (_live_cfg().get("auto_index") or []) if x]:
-            idx = _store.read_index_constituents_history(
-                data_dir=data_dir, index_keys=[k], as_of=latest)
-            if idx is not None and idx.height:
-                codes |= set(idx["code"].to_list())
-        pool_state = db.get_live_pool()
-        codes |= {p["code"] for p in (pool_state.get("pool") or [])}
-        codes |= {p["code"] for p in db.list_live_positions()}
-        codes |= set(db.get_strategy_states())
-        update_codes = sorted(codes) if codes else None  # None=全市场兜底
+        cal = _store.read_calendar()
+        if cal is not None and cal.height:
+            prev = cal.filter(
+                (pl.col("date") < today) & (pl.col("is_open").cast(pl.Int8) == 1)
+            ).sort("date")
+            if prev.height:
+                return str(prev["date"][-1])
+    except Exception:  # noqa: BLE001  日历缺失/异常走 weekday 兜底
+        pass
+    d = now.date() - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
+def _daily_incremental(task_id: str, db_path: str, data_dir: str,
+                       progress_from: float = 5.0, progress_to: float = 85.0) -> str:
+    """日线串行增量更新，返回增量起点日期。
+
+    baostock 并发连接触发黑名单 -> 必须单连接串行，不做并发拉取。
+    范围收窄：候选域(指数成分) ∪ 池 ∪ 持仓 ∪ 状态机票，替代全市场 5000+ 只全拉。
+    实盘候选域固定（默认 zz500）时选股/重选正确性不受影响；成分表缺失则兜底全市场防漏数据。"""
+    from .data import store as _store, updater as _updater
+    latest = _store.daily_latest_date(data_dir=data_dir)
+    if latest is None:
+        raise RuntimeError(
+            "日线库为空：请先在数据管理页执行一次全量更新（建议填写日期区间分批拉取），"
+            "编排不做首次全历史建库（全市场全历史拉取会内存溢出）")
+    start = (datetime.strptime(latest, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
+    codes: set[str] = set()
+    for k in [x for x in (_live_cfg().get("auto_index") or []) if x]:
+        idx = _store.read_index_constituents_history(
+            data_dir=data_dir, index_keys=[k], as_of=latest)
+        if idx is not None and idx.height:
+            codes |= set(idx["code"].to_list())
+    pool_state = db.get_live_pool()
+    codes |= {p["code"] for p in (pool_state.get("pool") or [])}
+    codes |= {p["code"] for p in db.list_live_positions()}
+    codes |= set(db.get_strategy_states())
+    update_codes = sorted(codes) if codes else None  # None=全市场兜底
+    db.update_task(task_id, db_path=db_path, status="running",
+                   message=f"日线增量更新（{start} 起，"
+                           f"{len(update_codes) if update_codes else '全市场(候选域缺失兜底)'} 只）...")
+    _updater.update(scope="daily", codes=update_codes, data_dir=data_dir,
+                    start_date=start,
+                    progress_cb=lambda p, m: db.update_progress(
+                        task_id, progress_from + p * (progress_to - progress_from), m,
+                        db_path=db_path))
+    from .engine import datafeed
+    datafeed.clear_cache()
+    return start
+
+
+def live_premarket_task(task_id: str, db_path: str, data_dir: str,
+                        update_data: bool = False, push: bool = True) -> None:
+    """实盘盘前编排（LIVE_SIGNAL_SYSTEM §5 盘前）：盘前信号流程（特征重算/重选/
+    gate/退出检查/推送）→ AI 盘前简报（可选）。
+
+    数据职责移至盘后 18:10 evening 自动任务（baostock 当日日线 17:30 后就绪）：
+    盘前默认不拉数据、秒级完成信号流程。完整性守卫：库内最新日线落后于预期
+    上一交易日（如昨晚 evening 未跑/服务未开机）→ 现场串行补拉兜底，保证信号
+    不基于陈旧数据；update_data=True 显式强制拉取。"""
+    from .live import premarket
+    from .data import store as _store
+    latest = _store.daily_latest_date(data_dir=data_dir)
+    if latest is None:
+        raise RuntimeError(
+            "日线库为空：请先在数据管理页执行一次全量更新（建议填写日期区间分批拉取），"
+            "编排不做首次全历史建库（全市场全历史拉取会内存溢出）")
+    expected = _expected_daily_latest()
+    if update_data or latest < expected:
+        if update_data:
+            db.update_task(task_id, db_path=db_path, status="running",
+                           message="盘前增量更新（显式指定）...")
+        else:
+            db.update_task(task_id, db_path=db_path, status="running",
+                           message=f"日线数据缺漏（最新 {latest} < 预期 {expected}）"
+                                   "——现场串行补拉兜底...")
+        _daily_incremental(task_id, db_path, data_dir)
+    else:
         db.update_task(task_id, db_path=db_path, status="running",
-                       message=f"日线增量更新（{start} 起，"
-                               f"{len(update_codes) if update_codes else '全市场(候选域缺失兜底)'} 只）...")
-        from .data import updater
-        updater.update(scope="daily", codes=update_codes, data_dir=data_dir,
-                       start_date=start,
-                       progress_cb=lambda p, m: db.update_progress(
-                           task_id, 5 + p * 0.8, m, db_path=db_path))
-        from .engine import datafeed
-        datafeed.clear_cache()
+                       message=f"日线数据完整（最新 {latest}），跳过拉取直接进入盘前流程")
     db.update_progress(task_id, 88, "盘前信号流程（特征重算/重选/gate/推送）...",
                        db_path=db_path)
     result = premarket.run_premarket(push=push)

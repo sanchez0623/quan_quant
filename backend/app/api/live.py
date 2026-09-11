@@ -349,21 +349,24 @@ def reset_live(body: ResetBody, _user: str = Depends(get_current_user)):
     today = datetime.now().strftime("%Y-%m-%d")
     db.set_meta("auto_morning_date", today)
     db.set_meta("auto_postclose_date", today)
+    db.set_meta("auto_evening_date", today)
     return {"reset": True, "keep_config": body.keep_config}
 
 
 # ---------------- M2 盘中信号机 ----------------
 
 class MorningBody(BaseModel):
-    update_data: bool = True   # 先做日线增量更新（含完整性守卫）
+    update_data: bool = True   # 先做日线增量更新（数据职责已移至盘后 evening；缺数据时守卫会自动补拉）
     push: bool = True
     force: bool = False        # 当日已执行过时强制重跑（默认幂等拦截）
 
 
 @router.post("/morning")
 def morning_run(body: MorningBody, _user: str = Depends(get_current_user)):
-    """盘前编排任务（异步）：日线增量更新 → 盘前信号流程。
-    进度在任务中心查看；数据更新全市场约数分钟。
+    """盘前编排任务（异步）：盘前信号流程（默认不拉数据，秒级；数据由盘后 18:10
+    evening 自动任务负责）。update_data=True 强制拉取；即使不拉，日线缺漏时
+    完整性守卫也会现场串行补拉兜底。
+    进度在任务中心查看。
     写当日自动调度标记 -> 手动+自动互斥（当天只跑一次盘前）。"""
     today = datetime.now().strftime("%Y-%m-%d")
     if not body.force and db.get_meta("auto_morning_date") == today:

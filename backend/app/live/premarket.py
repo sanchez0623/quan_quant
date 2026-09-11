@@ -41,7 +41,7 @@ DEFAULT_CFG = {
     "max_holdings": 3,       # 最大持仓只数（盘中开仓槽位管理；与风控引擎取更严者）
     "max_pos_pct": 40.0,     # 单票市值上限（%权益，与回测 risk_config.max_position_pct_per_stock 同尺）
     "cash_reserve_pct": 1.5,  # 现金缓冲（%权益，与回测 risk_config.cash_reserve_pct 同尺）
-    "auto_schedule": True,   # 每日自动调度（盘前 08:25 / 盘后 15:25 交易日自动提交）
+    "auto_schedule": True,   # 每日自动调度（盘前 08:25 信号 / 盘后 15:25 对账 / 盘后 18:10 数据更新）
     "dd_breaker_pct": 30.0,  # 回撤熔断阈值（%）：虚拟权益较峰值回撤达阈值强制停开仓
     "ai_briefing": True,     # 盘前流程后 AI 生成盘前简报（推飞书；无可用 LLM Key 自动跳过）
     "ai_commentary": True,   # 盘后对账后 AI 生成信号质量点评（推飞书）

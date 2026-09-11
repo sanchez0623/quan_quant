@@ -15,7 +15,7 @@ start() 幂等（模块级引用），由 main.py 启动时拉起。
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .. import db
 from ..data import store
@@ -25,6 +25,7 @@ from . import premarket
 TICK_SEC = 30
 MORNING_WINDOW = (8 * 60 + 25, 11 * 60 + 30)     # 08:25~11:30
 POSTCLOSE_WINDOW = (15 * 60 + 25, 23 * 60 + 59)  # 15:25~23:59
+EVENING_WINDOW = (18 * 60 + 10, 23 * 60 + 59)    # 18:10~23:59（baostock 当日日线 17:30 后就绪）
 
 _thread: threading.Thread | None = None
 
@@ -55,10 +56,20 @@ def _submit_task(kind: str, today: str, name: str) -> None:
     import uuid
     task_id = "live_" + uuid.uuid4().hex[:12]
     if kind == "morning":
+        # 盘前只做信号流程（数据由盘后 18:10 evening 任务负责，避免盘前串行拉数小时）
         db.create_task(task_id, name, "live_premarket",
-                       payload={"update_data": True, "push": True,
+                       payload={"update_data": False, "push": True,
                                 "auto": True})
-        manager.submit("live_premarket", task_id, update_data=True, push=True)
+        manager.submit("live_premarket", task_id, update_data=False, push=True)
+    elif kind == "evening":
+        latest = store.daily_latest_date()
+        base = datetime.strptime(latest, "%Y-%m-%d") if latest else datetime.now()
+        start = (base - timedelta(days=5)).strftime("%Y-%m-%d")
+        db.create_task(task_id, name, "data_update",
+                       payload={"scope": "daily", "start_date": start,
+                                "end_date": "2099-12-31", "auto": True})
+        manager.submit("data_update", task_id, scope="daily",
+                       start_date=start, end_date="2099-12-31")
     else:
         db.create_task(task_id, name, "live_postclose",
                        payload={"push": True, "auto": True})
@@ -85,6 +96,11 @@ def tick(now: datetime | None = None) -> dict:
         if _in_window(now, POSTCLOSE_WINDOW) and not _submitted("postclose", today):
             _submit_task("postclose", today, f"实盘盘后流程（自动）{today}")
             out["submitted"].append("postclose")
+        # 盘后数据更新（18:10 起，baostock 当日日线就绪后）：串行全市场增量，
+        # 供次日盘前信号直接使用（盘前不再耗时拉数）
+        if _in_window(now, EVENING_WINDOW) and not _submitted("evening", today):
+            _submit_task("evening", today, f"实盘盘后数据更新（自动）{today}")
+            out["submitted"].append("evening")
     except Exception:
         out["error"] = traceback.format_exc(limit=3)
     return out
