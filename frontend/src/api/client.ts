@@ -53,7 +53,7 @@ import type {
 export const TOKEN_KEY = 'quant_token'
 export const USERNAME_KEY = 'quant_username'
 
-export const api = axios.create({ baseURL: '/api', timeout: 60000 })
+export const api = axios.create({ baseURL: '/api', timeout: 300_000 })
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY)
@@ -424,8 +424,7 @@ export async function runMorning(updateData = true, force = false): Promise<{ ta
 }
 
 export async function runIntraday(): Promise<IntradayRunResult> {
-  // 盘中轮询单轮耗时可达数十秒（并发拉 bar+特征），独立放宽超时防误取消
-  const res = await api.post<IntradayRunResult>('/live/intraday', null, { timeout: 180_000 })
+  const res = await api.post<IntradayRunResult>('/live/intraday')
   return res.data
 }
 
