@@ -22,11 +22,24 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.data import sources, store  # noqa: E402
+from app.data import sources, store, updater  # noqa: E402
 from app.data.adj_health import check_adj_health, fmt_health_report  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
 DATA = Path(__file__).resolve().parents[2] / "data"
+
+
+def fetch_daily_factor(src, code: str, daily_grid: dict[str, list[str]]):
+    """按源类型取日级因子：akshare 日级直连；baostock 事件级 -> 展开日级。"""
+    if src.name == "baostock":
+        ev = src.get_adj_factor(code)
+        if ev is None or not ev.height:
+            return None
+        grid = {code: daily_grid.get(code) or []}
+        if not grid[code]:
+            return None
+        return updater._expand_adj_to_daily(ev, grid)
+    return src.get_adj_factor(code)
 
 
 def universe_codes(snapshot: str | None, all_codes: bool) -> list[str]:
@@ -48,17 +61,30 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--snapshot", default=None, help="zz500 历史快照日（默认最近一期）")
     ap.add_argument("--all", action="store_true", help="修复全库（默认仅 v4 快照域）")
+    ap.add_argument("--source", choices=["akshare", "baostock"], default="akshare",
+                    help="因子源：akshare 日级直连 / baostock 事件级展开（2026-09-11 实测两者同口径）")
     ap.add_argument("--sleep", type=float, default=0.35, help="请求间隔秒（防封）")
     args = ap.parse_args()
 
     t0 = time.time()
     OUT_DIR.mkdir(exist_ok=True)
-    ak = next((s for s in sources.SOURCES if s.name == "akshare" and s.available()), None)
-    if ak is None:
-        raise SystemExit("akshare 源不可用（检查安装与网络）")
-    print(f"修复源: akshare 日级直连（hfq/raw 比值）", flush=True)
+    if args.source == "baostock":
+        src = next((s for s in sources.SOURCES if s.name == "baostock" and s.available()), None)
+    else:
+        src = next((s for s in sources.SOURCES if s.name == "akshare" and s.available()), None)
+    if src is None:
+        raise SystemExit(f"{args.source} 源不可用")
+    print(f"修复源: {args.source}", flush=True)
 
     codes = universe_codes(args.snapshot, args.all)
+
+    # baostock 事件级展开需要每股实际交易日 grid（来自本地日线）
+    daily_grid: dict[str, list[str]] = {}
+    if args.source == "baostock":
+        daily = store.read_daily(codes=codes, data_dir=None)
+        for r in daily.select(["code", "date"]).iter_rows(named=True):
+            daily_grid.setdefault(r["code"], []).append(r["date"])
+        print(f"交易日 grid: {len(daily_grid)} 只", flush=True)
     before = check_adj_health(data_dir=None)
     print(fmt_health_report(before), flush=True)
 
@@ -84,7 +110,7 @@ def main():
         df = None
         for attempt in (1, 2):
             try:
-                df = ak.get_adj_factor(code)
+                df = fetch_daily_factor(src, code, daily_grid)
             except Exception:
                 df = None
             if df is not None and df.height:
@@ -93,10 +119,10 @@ def main():
         if df is not None and df.height:
             ok_rows.append(df)
             repaired += 1
+            done.add(code)   # 只记成功（失败者下次续跑重试）
         else:
             refetch.append(code)
             kept_old += 1
-        done.add(code)
         if i % 25 == 0 or i == total - 1:
             progress_path.write_text(json.dumps(sorted(done)))
             print(f"  [{i + 1}/{total}] 已修复 {repaired}｜失败 {len(refetch)} "
