@@ -11,16 +11,20 @@ interface Props {
   benchmarkName?: string
 }
 
-/** 资金曲线：上图 净值（面积）+ 基准指数（虚线）+ 仓位比例（右副轴，虚线），下图 回撤%（绿色面积向下），dataZoom 联动缩放 */
+/** 资金曲线：上图 账户权益（实线）+ 调整净值·含累计出金（紫虚线）+ 基准指数（灰虚线）
+ *  + 仓位比例（右副轴，橙虚线），下图 回撤%（绿色面积向下），dataZoom 联动缩放 */
 export default function EquityChart({ data, benchmark, benchmarkName }: Props) {
   const option = useMemo(() => {
     const dates = data.map((d) => d.date)
     const equities = data.map((d) => d.equity)
+    // 调整净值 = 实际净值 + 累计已提取（月度出金加回），与收益统计同口径
+    const adjusted = data.map((d) => d.adjusted_equity ?? d.equity)
     const drawdowns = data.map((d) => +(d.drawdown * 100).toFixed(3))
     const hasPos = data.some((d) => d.position_ratio !== undefined && d.position_ratio !== null)
     const posRatios = data.map((d) =>
       d.position_ratio === undefined || d.position_ratio === null ? null : +(d.position_ratio * 100).toFixed(1)
     )
+    const hasAdj = data.some((d) => d.adjusted_equity !== undefined && Math.abs((d.adjusted_equity ?? d.equity) - d.equity) > 0.5)
     const benchName = benchmarkName || '基准指数'
     const benchData = benchmark && benchmark.length === data.length
       ? benchmark.map((b) => b.equity)
@@ -31,6 +35,7 @@ export default function EquityChart({ data, benchmark, benchmarkName }: Props) {
       legend: {
         data: [
           '账户权益',
+          ...(hasAdj ? ['调整净值(含累计出金)'] : []),
           ...(benchData ? [benchName] : []),
           ...(hasPos ? ['仓位比例'] : []),
           '回撤%'
@@ -83,6 +88,21 @@ export default function EquityChart({ data, benchmark, benchmarkName }: Props) {
           itemStyle: { color: '#1f4e79' },
           areaStyle: { color: 'rgba(31,78,121,0.12)' }
         },
+        ...(hasAdj
+          ? [
+              {
+                name: '调整净值(含累计出金)',
+                type: 'line' as const,
+                xAxisIndex: 0,
+                yAxisIndex: 0,
+                data: adjusted,
+                showSymbol: false,
+                connectNulls: true,
+                lineStyle: { type: 'dashed' as const, width: 1.5, color: '#722ed1' },
+                itemStyle: { color: '#722ed1' }
+              }
+            ]
+          : []),
         ...(benchData
           ? [
               {
