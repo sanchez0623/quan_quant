@@ -19,6 +19,8 @@ buy_budget 预算上限（对齐 risk.py 默认 max_position_pct_per_stock=40）
 数据断流熔断（盘中全源失败 >10 分钟推送告警）。
 """
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -205,11 +207,26 @@ def _stype_of(sig: dict) -> str:
     return "清仓" if sig["signal"] < 0 else "加仓"
 
 
+_intraday_lock = threading.Lock()
+
+
 def run_intraday(data_dir=None, push: bool = True,
                  now: Optional[datetime] = None) -> dict:
-    """执行一次盘中轮询：拉行情 → 喂完成 bar → 信号 → 风控 → 推送/落库。
+    """执行一次盘中轮询（防重入：上一轮未完成时立即返回跳过，防请求堆积雪崩）。
 
     幂等：last_bar 游标去重，同一 bar 不重复喂；可安全反复调用。"""
+    if not _intraday_lock.acquire(blocking=False):
+        return {"skipped": "上一轮盘中处理仍在进行，本轮跳过",
+                "signals": [], "suspended": [], "notes": [], "fed_bars": 0}
+    try:
+        return _run_intraday_impl(data_dir=data_dir, push=push, now=now)
+    finally:
+        _intraday_lock.release()
+
+
+def _run_intraday_impl(data_dir=None, push: bool = True,
+                       now: Optional[datetime] = None) -> dict:
+    """盘中轮询主体：拉行情 → 喂完成 bar → 信号 → 风控 → 推送/落库。"""
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
     cfg = _live_cfg()
@@ -263,8 +280,14 @@ def run_intraday(data_dir=None, push: bool = True,
     fed_bars = 0
     any_bars = False
 
+    # 批量并发拉取 5 分钟 bar：外部 IO 串行是本轮最大耗时（30 只×3~5s≈2min，
+    # 超过前端 60s 超时导致请求堆积雪崩）；8 并发 ~20s。mootdx 连接已 thread-local。
+    with ThreadPoolExecutor(max_workers=8) as _pool:
+        bars_map = dict(zip(active, _pool.map(
+            lambda c: quotes.fetch_minute5(c, today), active)))
+
     for code in active:
-        bars = quotes.fetch_minute5(code, today)
+        bars = bars_map.get(code)
         if bars is None or bars.height == 0:
             no_data.append(code)
             continue

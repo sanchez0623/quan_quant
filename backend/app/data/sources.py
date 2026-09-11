@@ -697,7 +697,7 @@ class MootdxSource(DataSource):
     def __init__(self):
         try:
             from mootdx.quotes import Quotes  # noqa: F401
-            self._client = None
+            self._tls = threading.local()   # 每线程独立 TCP 连接（pytdx 非线程安全）
             self._ok = True
         except ImportError:
             self._ok = False
@@ -706,10 +706,11 @@ class MootdxSource(DataSource):
         return self._ok
 
     def _get_client(self):
-        if self._client is None:
+        cli = getattr(self._tls, "client", None)
+        if cli is None:
             from mootdx.quotes import Quotes
-            self._client = Quotes.factory(market="std", timeouts=(10, 10))  # 不走代理
-        return self._client
+            cli = self._tls.client = Quotes.factory(market="std", timeouts=(10, 10))  # 不走代理
+        return cli
 
     def health_check(self, timeout: float = 10) -> bool:
         if not self._ok:

@@ -424,7 +424,8 @@ export async function runMorning(updateData = true, force = false): Promise<{ ta
 }
 
 export async function runIntraday(): Promise<IntradayRunResult> {
-  const res = await api.post<IntradayRunResult>('/live/intraday')
+  // 盘中轮询单轮耗时可达数十秒（并发拉 bar+特征），独立放宽超时防误取消
+  const res = await api.post<IntradayRunResult>('/live/intraday', null, { timeout: 180_000 })
   return res.data
 }
 

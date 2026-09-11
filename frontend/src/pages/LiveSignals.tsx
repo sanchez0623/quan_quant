@@ -122,8 +122,15 @@ export default function LiveSignals() {
 
   useEffect(() => {
     if (!autoPoll) return
+    let inFlight = false
     const t = setInterval(async () => {
-      try { await runIntraday() } catch { /* 断流由后端熔断推送告警 */ }
+      if (inFlight) return   // 上一轮未返回，跳过本轮（防请求堆积）
+      inFlight = true
+      try {
+        await runIntraday()
+      } catch { /* 断流由后端熔断推送告警 */ } finally {
+        inFlight = false
+      }
       loadStatus()
     }, 60_000)
     return () => clearInterval(t)
