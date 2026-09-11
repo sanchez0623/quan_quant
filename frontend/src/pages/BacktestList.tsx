@@ -25,7 +25,7 @@ import {
   Typography,
   Upload
 } from 'antd'
-import { DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, RobotOutlined, SaveOutlined } from '@ant-design/icons'
+import { CalendarOutlined, CloseOutlined, DiffOutlined, ExportOutlined, ImportOutlined, PlayCircleOutlined, RobotOutlined, SaveOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import TaskStopButton from '../components/TaskStopButton'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -91,6 +91,12 @@ function fmtDiffVal(v: unknown): string {
   if (typeof v === 'number') return String(Math.round(v * 100) / 100)
   if (Array.isArray(v)) return v.length ? v.join(', ') : '（空）'
   return String(v)
+}
+
+interface DatePreset {
+  label: string
+  start: string
+  end: string
 }
 
 interface BacktestFormValues {
@@ -235,6 +241,12 @@ export default function BacktestList() {
   // ---- AI 生成任务名称 ----
   const [naming, setNaming] = useState(false)
   const [tplNaming, setTplNaming] = useState(false)  // 存为模板弹窗的 AI 命名
+  // ---- 常用回测区间（自定义保存，localStorage 私有） ----
+  const [datePresets, setDatePresets] = useState<DatePreset[]>(() => {
+    try { return JSON.parse(localStorage.getItem('bt_date_presets') || '[]') as DatePreset[] } catch { return [] }
+  })
+  const [presetNameOpen, setPresetNameOpen] = useState(false)
+  const [presetName, setPresetName] = useState('')
   const prefillApplied = useRef(false)
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
@@ -525,6 +537,70 @@ export default function BacktestList() {
     }
     reader.readAsText(file)
     return false // 阻止 Upload 自动上传
+  }
+
+  // ---- 常用回测区间（内置相对区间 + localStorage 自定义） ----
+  const builtInDatePresets = [
+    { key: 'b1', label: '近 1 年', range: () => [dayjs().subtract(1, 'year'), dayjs()] },
+    { key: 'b2', label: '近 2 年', range: () => [dayjs().subtract(2, 'year'), dayjs()] },
+    { key: 'b3', label: '近 3 年', range: () => [dayjs().subtract(3, 'year'), dayjs()] },
+    { key: 'y2023', label: '2023 全年', range: () => [dayjs('2023-01-01'), dayjs('2023-12-31')] },
+    { key: 'y2024', label: '2024 全年', range: () => [dayjs('2024-01-01'), dayjs('2024-12-31')] },
+    { key: 'y2025', label: '2025 全年', range: () => [dayjs('2025-01-01'), dayjs('2025-12-31')] },
+    { key: 'ytd', label: '2026 至今', range: () => [dayjs('2026-01-01'), dayjs()] },
+  ]
+  const persistDatePresets = (list: DatePreset[]) => {
+    setDatePresets(list)
+    localStorage.setItem('bt_date_presets', JSON.stringify(list))
+  }
+  const removeDatePreset = (i: number) =>
+    persistDatePresets(datePresets.filter((_, j) => j !== i))
+  const saveDatePreset = () => {
+    const dr = form.getFieldValue('dateRange') as [Dayjs, Dayjs] | undefined
+    if (!dr?.[0] || !dr?.[1]) { setPresetNameOpen(false); return }
+    const label = presetName.trim() || `${dr[0].format('YYYY-MM-DD')} ~ ${dr[1].format('YYYY-MM-DD')}`
+    const next = [...datePresets.filter((p) => p.label !== label),
+      { label, start: dr[0].format('YYYY-MM-DD'), end: dr[1].format('YYYY-MM-DD') }].slice(-10)
+    persistDatePresets(next)
+    setPresetNameOpen(false)
+    message.success('已保存常用区间')
+  }
+  const datePresetMenu = {
+    items: [
+      ...builtInDatePresets.map((p) => ({ key: p.key, label: p.label })),
+      ...(datePresets.length ? [{ type: 'divider' as const },
+        ...datePresets.map((p, i) => ({
+          key: `c${i}`,
+          label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span>{p.label}</span>
+              <CloseOutlined
+                style={{ color: '#999', fontSize: 10 }}
+                onClick={(e) => { e.stopPropagation(); removeDatePreset(i) }}
+              />
+            </span>
+          ),
+        })) ] : []),
+      { type: 'divider' as const },
+      { key: '__save', label: '★ 保存当前区间...' },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === '__save') {
+        const dr = form.getFieldValue('dateRange') as [Dayjs, Dayjs] | undefined
+        if (!dr?.[0] || !dr?.[1]) { message.warning('请先选择回测区间'); return }
+        setPresetName(`${dr[0].format('YYYY-MM-DD')} ~ ${dr[1].format('YYYY-MM-DD')}`)
+        setPresetNameOpen(true)
+        return
+      }
+      const ci = /^c(\d+)$/.exec(key)
+      if (ci) {
+        const p = datePresets[Number(ci[1])]
+        if (p) form.setFieldsValue({ dateRange: [dayjs(p.start), dayjs(p.end)] })
+        return
+      }
+      const b = builtInDatePresets.find((x) => x.key === key)
+      if (b) form.setFieldsValue({ dateRange: b.range() })
+    },
   }
 
   // ---- 模板参数 diff ----
@@ -1072,7 +1148,16 @@ export default function BacktestList() {
             <Col span={6}>
               <Form.Item
                 name="dateRange"
-                label="回测区间"
+                label={
+                  <Space size={4}>
+                    回测区间
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Dropdown menu={datePresetMenu} trigger={['click']}>
+                        <Button size="small" type="text" icon={<CalendarOutlined />}>常用</Button>
+                      </Dropdown>
+                    </span>
+                  </Space>
+                }
                 rules={[{ required: true, message: '请选择时间区间' }]}
               >
                 <BacktestRangePicker />
@@ -1299,6 +1384,27 @@ export default function BacktestList() {
             </Button>
           </Tooltip>
         </Space.Compact>
+      </Modal>
+
+      <Modal
+        title="保存常用回测区间"
+        open={presetNameOpen}
+        onOk={saveDatePreset}
+        onCancel={() => setPresetNameOpen(false)}
+        okText="保存"
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          保存后出现在「常用」下拉里（本浏览器私有，最多保留 10 个），一键填入起止日期。
+        </Typography.Paragraph>
+        <Input
+          placeholder="区间名称，默认用起止日期"
+          value={presetName}
+          onChange={(e) => setPresetName(e.target.value)}
+          maxLength={30}
+          onPressEnter={saveDatePreset}
+          autoFocus
+        />
       </Modal>
 
       <Modal
