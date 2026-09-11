@@ -69,16 +69,40 @@ def _attach_adj(df: pl.DataFrame, adj: Optional[pl.DataFrame]) -> pl.DataFrame:
     # => 复权因子数据异常（如 2023-03-28 283 只归 1 事故），标记 bad_adj。
     # 止损判定冻结该 bar（除权日的真实 factor 跳变伴随真实价格调整，不会被误标）。
     df = df.with_columns(pl.col("close").alias("raw_close"))
-    df = df.with_columns([
-        (pl.col("adj_factor") /
-         pl.col("adj_factor").shift(1).over("code") - 1).abs().alias("_fchg"),
-        (pl.col("raw_close") /
-         pl.col("raw_close").shift(1).over("code") - 1).abs().alias("_rchg"),
-    ])
-    df = df.with_columns(
-        ((pl.col("_fchg") > 0.30) & (pl.col("_rchg") < 0.02))
-        .fill_null(False).alias("bad_adj")
-    ).drop(["_fchg", "_rchg"])
+    is_minute = df["date"].str.contains(" ").any()
+    if is_minute:
+        # 分钟性能优化：factor 日内恒定，断崖只在跨日发生——按 (code,交易日)
+        # 聚合预计算（~480 万行），再 join 回分钟行；避免 1 亿行的 over 窗口。
+        agg = (df.group_by(["code", pl.col("date").str.slice(0, 10).alias("_d")])
+               .agg(pl.col("adj_factor").first().alias("_f0"),
+                    pl.col("close").first().alias("_c0"),
+                    pl.col("close").last().alias("_c1"))
+               .sort(["code", "_d"])
+               .with_columns([
+                   (pl.col("_f0") /
+                    pl.col("_f0").shift(1).over("code") - 1).abs().alias("_fchg"),
+                   (pl.col("_c0") /
+                    pl.col("_c1").shift(1).over("code") - 1).abs().alias("_rchg"),
+               ])
+               .with_columns(((pl.col("_fchg") > 0.30) &
+                              (pl.col("_rchg") < 0.02)).fill_null(False)
+                             .alias("bad_adj"))
+               .select(["code", "_d", "bad_adj"]))
+        df = (df.with_columns(pl.col("date").str.slice(0, 10).alias("_d"))
+              .join(agg, on=["code", "_d"], how="left")
+              .with_columns(pl.col("bad_adj").fill_null(False))
+              .drop("_d"))
+    else:
+        df = df.with_columns([
+            (pl.col("adj_factor") /
+             pl.col("adj_factor").shift(1).over("code") - 1).abs().alias("_fchg"),
+            (pl.col("raw_close") /
+             pl.col("raw_close").shift(1).over("code") - 1).abs().alias("_rchg"),
+        ])
+        df = df.with_columns(
+            ((pl.col("_fchg") > 0.30) & (pl.col("_rchg") < 0.02))
+            .fill_null(False).alias("bad_adj")
+        ).drop(["_fchg", "_rchg"])
     return df.with_columns([
         (pl.col("open") * pl.col("adj_factor")).alias("open"),
         (pl.col("high") * pl.col("adj_factor")).alias("high"),

@@ -43,8 +43,8 @@ from app.engine import runner  # noqa: E402
 OUT_DIR = Path(__file__).parent / "out"
 ROWS_JSONL = OUT_DIR / "stageT_oat_rows.jsonl"
 
-START_DEFAULT = "2022-09-01"   # 最近四年；起点前 ~400 交易日预热充足
-END_DEFAULT = "2026-09-07"
+START_DEFAULT = "2022-09-11"   # v5 重验区间（与阶段 0-4 对齐；起点前预热充足）
+END_DEFAULT = "2026-09-10"
 SUBSET = 150
 SEED_DEFAULT = 20260908
 
