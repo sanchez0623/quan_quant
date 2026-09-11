@@ -1,0 +1,18 @@
+[
+ {
+  "name": "opt-pool300-full",
+  "total_return": -0.091965,
+  "bench": 0.214631,
+  "excess": -0.306596,
+  "mdd": -0.439932,
+  "sharpe": 0.0751
+ },
+ {
+  "name": "opt-pool300-oos",
+  "total_return": 0.589743,
+  "bench": 0.292103,
+  "excess": 0.29764,
+  "mdd": -0.244342,
+  "sharpe": 1.2819
+ }
+]

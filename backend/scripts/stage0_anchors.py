@@ -32,9 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.data import store  # noqa: E402
 from app.engine import runner  # noqa: E402
 
-START_DEFAULT = "2021-07-15"   # 起点前 ~124 交易日预热（mom_long=120 就绪），
-                               # 数据批量起点 2021-01-04 提供热身；快照自动取 2021-06-14
-END_DEFAULT = "2026-09-07"
+START_DEFAULT = "2022-09-11"   # v5 重验区间（用户指定 2022.9.11-2026.9.10，与实盘
+                               # 任务 bt_e2b0ca48c46d 同期）；预热充足，快照沿用 2021-06-14
+END_DEFAULT = "2026-09-10"
 BENCHMARK = "000905"
 SEED_DEFAULT = 20260908
 
