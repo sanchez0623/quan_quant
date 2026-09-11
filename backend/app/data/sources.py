@@ -417,7 +417,9 @@ class BaostockSource(DataSource):
             return None
         fields, rows = res
         if not rows:
-            # 上市以来无除权除息 -> 因子恒为 1.0（占位行，bisect 展开后每日=1.0）
+            # 查询成功且上市以来无除权除息 -> 因子恒为 1.0（可信恒等；
+            # 前提: start 为全历史，见 docstring）。updater 合并时会保护
+            # 既有非 1.0 值不被该占位覆盖（L3 合并保护）。
             return pl.DataFrame(
                 {"code": [code], "date": [start], "adj_factor": [1.0]})
         i_date = fields.index("dividOperateDate")
@@ -431,8 +433,9 @@ class BaostockSource(DataSource):
             if f > 0 and r[i_date]:
                 out.append({"code": code, "date": r[i_date], "adj_factor": f})
         if not out:
-            return pl.DataFrame(
-                {"code": [code], "date": [start], "adj_factor": [1.0]})
+            # L2: 有事件行但全部解析失败 -> 数据可疑，绝不写 1.0 占位
+            # （2023-03-28 adj_factor 断崖事故的根因之一），交由调用方重试
+            return None
         return pl.DataFrame(out).unique(subset=["date"]).sort("date")
 
     def get_index_constituents(self, index_key: str,

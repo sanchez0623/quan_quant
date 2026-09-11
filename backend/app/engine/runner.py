@@ -87,6 +87,7 @@ BAR_KEEP_COLS = {
     "date", "open", "high", "low", "close", "volume", "adj_factor",
     "signal", "tag", "reason", "budget_pct", "t_ratio", "reduce_pct",
     "atr_pct", "d_atr", "atr", "pool_gate", "index_gate",
+    "bad_adj",   # 数据治理 L6：复权因子断崖且价格平稳 -> 冻结止损判定（risk.check_stop）
 }
 # 动态访问形态（静态扫描无法捕获 f-string 键，如 f"atr{risk_cfg.atr_period}"）：
 # 新增动态读取形态时同步扩充此处正则。

@@ -75,6 +75,47 @@ def _expand_adj_to_daily(adj_events: pl.DataFrame, daily_dates: dict[str, list[s
     return pl.concat(frames).sort(["code", "date"])
 
 
+def _merge_adj_protected(existing: Optional[pl.DataFrame],
+                         incoming: pl.DataFrame) -> pl.DataFrame:
+    """数据治理 L3 合并保护：新因子=1.0 且既有值非 1.0 -> 保留既有值。
+
+    防增量批次的 1.0 占位覆盖历史正确因子（2023-03-28 283 只断崖事故根因）。
+    返回合并后全量因子表（按 code,date 排序）。"""
+    if existing is None or existing.height == 0:
+        return incoming
+    merged = existing.join(incoming, on=["code", "date"], how="full",
+                           coalesce=True, suffix="_new")
+    n_protected = merged.filter(
+        (pl.col("adj_factor") != 1.0) &
+        (pl.col("adj_factor_new") == 1.0)).height
+    if n_protected:
+        import logging
+        logging.warning(f"复权因子合并保护: {n_protected} 行新值 1.0 被既有非 1.0 "
+                        f"值覆盖拒绝（疑似占位污染），请关注数据健康报告")
+    out = merged.with_columns(
+        pl.when(pl.col("adj_factor_new").is_null())
+        .then(pl.col("adj_factor"))
+        .when((pl.col("adj_factor") != 1.0) &
+              (pl.col("adj_factor_new") == 1.0))
+        .then(pl.col("adj_factor"))
+        .otherwise(pl.col("adj_factor_new"))
+        .alias("adj_factor")
+    ).select(["code", "date", "adj_factor"])
+    return out.sort(["code", "date"])
+
+
+def _adj_src_priority(src_used):
+    """数据治理 L1：因子源优先级——日级直连（akshare hfq/raw 比值，全历史连续、
+    无事件展开边界）优先，日线同源降级，其余可用源兜底。"""
+    from . import sources as _s
+    cands = [s for s in _s.SOURCES
+             if hasattr(s, "get_adj_factor") and s.available()]
+    daylevel = [s for s in cands if s is not src_used and s.name == "akshare"]
+    same = [s for s in cands if s is src_used]
+    others = [s for s in cands if s not in daylevel and s not in same]
+    return daylevel + same + others
+
+
 def _fetch_all_index_constituents() -> Optional[list[dict]]:
     """baostock 三指数成分 + csi800 派生；任一基础指数失败返回 None（调用方做失败安全）"""
     from .sources import (BaostockSource, INDEX_CSI800, INDEX_PARENTS,
@@ -487,12 +528,14 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
     scopes = ["daily", "minute5"] if scope == "all" else [scope]
     stats: dict = {"scope": scope, "codes": len(update_codes), "daily_rows": 0,
                    "minute5_rows": 0, "adj_factor_rows": 0, "adj_factor_codes": 0,
+                   "adj_needs_refetch": [], "adj_health_ok": None,
                    "start_date": start_date, "end_date": end_date}
 
     if "daily" in scopes:
         frames = []
         adj_frames = []
         adj_ok_codes = 0
+        adj_refetch: list[str] = []
         total = len(update_codes)
         BATCH = 200    # 分批落库：全市场全历史拉取时 frames 常驻内存会 OOM（子进程被杀）
         daily_rows = 0
@@ -534,11 +577,9 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
                 adj_events = pl.concat(adj_frames, how="diagonal_relaxed").select(
                     ["code", "date", pl.col("adj_factor").cast(pl.Float64)])
                 adj_daily = _expand_adj_to_daily(adj_events, batch_grid)
-                existing_adj = store.read_adj_factor(None, data_dir)
-                if existing_adj is not None and existing_adj.height:
-                    adj_daily = (pl.concat([existing_adj, adj_daily])
-                                 .unique(subset=["code", "date"], keep="last")
-                                 .sort(["code", "date"]))
+                # 数据治理 L3：合并保护（新值 1.0 不覆盖既有非 1.0）
+                adj_daily = _merge_adj_protected(
+                    store.read_adj_factor(None, data_dir), adj_daily)
                 store.write_adj_factor(adj_daily, data_dir)
                 adj_rows = adj_daily.height
                 adj_codes = adj_daily["code"].n_unique()
@@ -556,15 +597,22 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
                     break
             if df is not None:
                 frames.append(df)
-                # 复权因子必须与日线同源，避免不同平台复权口径不一致
-                if src_used is not None and hasattr(src_used, "get_adj_factor"):
+                # 数据治理 L1/L2：因子源优先级 = 日级直连（akshare hfq/raw 比值，
+                # 全历史连续无展开边界）> 日线同源 > 其它；拉取失败进 needs_refetch，
+                # 绝不写 1.0 占位（2023-03-28 断崖事故根因）
+                adj_df = None
+                for src in _adj_src_priority(src_used):
                     try:
-                        adj_df = src_used.get_adj_factor(code)
+                        adj_df = src.get_adj_factor(code)
                     except Exception:
                         adj_df = None
                     if adj_df is not None and adj_df.height:
-                        adj_frames.append(adj_df)
-                        adj_ok_codes += 1
+                        break
+                if adj_df is not None and adj_df.height:
+                    adj_frames.append(adj_df)
+                    adj_ok_codes += 1
+                else:
+                    adj_refetch.append(code)
             done_msg = (f"日线完成: {code} ({i + 1}/{total})" if df is not None
                         else f"日线拉取失败(跳过): {code} ({i + 1}/{total})")
             report(5 + 70 * (i + 1) / total, done_msg)
@@ -581,6 +629,21 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
             report(76, "警告：未获取到任何复权因子，后复权将退化为恒等（除权日会有假跳空）")
         else:
             report(76, f"日线更新完成（{daily_rows} 行，复权因子 {adj_rows} 行 / {adj_codes} 只）")
+        if adj_refetch:
+            stats["adj_needs_refetch"] = adj_refetch
+            report(76, f"警告：{len(adj_refetch)} 只股票复权因子拉取失败，"
+                       f"已记入 needs_refetch（未写 1.0 占位，可重跑更新补齐）")
+        # ---- 数据治理 L4：更新后复权因子健康门禁 ----
+        try:
+            from .adj_health import check_adj_health, fmt_health_report
+            h = check_adj_health(data_dir=data_dir)
+            stats["adj_health_ok"] = h["ok"]
+            if h["needs_refetch"]:
+                stats["adj_needs_refetch"] = h["needs_refetch"]
+            for line in fmt_health_report(h).splitlines():
+                report(77, line)
+        except Exception as e:   # 健康检查失败不阻断更新
+            report(77, f"复权因子健康检查执行失败（不阻断）: {e}")
         stats["daily_rows"] = daily_rows
         stats["adj_factor_rows"] = adj_rows
         stats["adj_factor_codes"] = adj_codes

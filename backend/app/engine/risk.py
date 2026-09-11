@@ -173,7 +173,12 @@ class RiskManager:
         方案B（双层止损）：交易仓(tag=做T)用独立档，核心仓沿用默认档。
         方案E（市况条件化）：regime_b_on 开启时，B 档只在 trend 市**激活**（
         粘滞：trend 出现一次即锁定到平仓，只在非趋势持仓期退回默认档），
-        避免日级市况切换导致做T仓止损档位中途跳变（宽→紧扫损）。"""
+        避免日级市况切换导致做T仓止损档位中途跳变（宽→紧扫损）。
+        数据治理 L6：bar["bad_adj"]=True（复权因子断崖且价格平稳，数据异常）
+        时冻结止损判定——异常 factor 会让 hfq 止损线假跌穿（2023-03-28
+        283 只假清仓事故）。"""
+        if bar and bar.get("bad_adj"):
+            return None
         c = self.cfg
         is_trade = c.trade_tier_on and pos.tag == "做T"
         if c.regime_b_on:

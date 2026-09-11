@@ -65,13 +65,27 @@ def _attach_adj(df: pl.DataFrame, adj: Optional[pl.DataFrame]) -> pl.DataFrame:
     else:
         df = df.with_columns(pl.lit(1.0).alias("adj_factor"))
     df = df.with_columns(pl.col("adj_factor").fill_null(1.0))
+    # 数据治理 L6 引擎防御：factor 环比断崖（|Δ|>30%）且真实价格平稳（|涨跌|<2%）
+    # => 复权因子数据异常（如 2023-03-28 283 只归 1 事故），标记 bad_adj。
+    # 止损判定冻结该 bar（除权日的真实 factor 跳变伴随真实价格调整，不会被误标）。
+    df = df.with_columns(pl.col("close").alias("raw_close"))
+    df = df.with_columns([
+        (pl.col("adj_factor") /
+         pl.col("adj_factor").shift(1).over("code") - 1).abs().alias("_fchg"),
+        (pl.col("raw_close") /
+         pl.col("raw_close").shift(1).over("code") - 1).abs().alias("_rchg"),
+    ])
+    df = df.with_columns(
+        ((pl.col("_fchg") > 0.30) & (pl.col("_rchg") < 0.02))
+        .fill_null(False).alias("bad_adj")
+    ).drop(["_fchg", "_rchg"])
     return df.with_columns([
         (pl.col("open") * pl.col("adj_factor")).alias("open"),
         (pl.col("high") * pl.col("adj_factor")).alias("high"),
         (pl.col("low") * pl.col("adj_factor")).alias("low"),
         (pl.col("close") * pl.col("adj_factor")).alias("close"),
-        pl.col("close").alias("raw_close"),
-    ]).with_columns(pl.col("raw_close").alias("raw_close"))
+        pl.col("raw_close"),
+    ])
 
 
 def load_daily(codes: list[str], start: Optional[str] = None, end: Optional[str] = None,
