@@ -228,10 +228,25 @@ def live_premarket_task(task_id: str, db_path: str, data_dir: str,
                 "日线库为空：请先在数据管理页执行一次全量更新（建议填写日期区间分批拉取），"
                 "盘前编排不做首次全历史建库（全市场全历史拉取会内存溢出）")
         start = (_dt.strptime(latest, "%Y-%m-%d") - _td(days=5)).strftime("%Y-%m-%d")
+        # 日线增量范围收窄：候选域(指数成分) ∪ 池 ∪ 持仓 ∪ 状态机票，替代全市场 5000+ 只全拉。
+        # 实盘候选域固定（默认 zz500）时选股/重选正确性不受影响；成分表缺失则兜底全市场防漏数据。
+        codes: set[str] = set()
+        for k in [x for x in (_live_cfg().get("auto_index") or []) if x]:
+            idx = _store.read_index_constituents_history(
+                data_dir=data_dir, index_keys=[k], as_of=latest)
+            if idx is not None and idx.height:
+                codes |= set(idx["code"].to_list())
+        pool_state = db.get_live_pool()
+        codes |= {p["code"] for p in (pool_state.get("pool") or [])}
+        codes |= {p["code"] for p in db.list_live_positions()}
+        codes |= set(db.get_strategy_states())
+        update_codes = sorted(codes) if codes else None  # None=全市场兜底
         db.update_task(task_id, db_path=db_path, status="running",
-                       message=f"日线增量更新（{start} 起，库内最新 {latest}）...")
+                       message=f"日线增量更新（{start} 起，"
+                               f"{len(update_codes) if update_codes else '全市场(候选域缺失兜底)'} 只）...")
         from .data import updater
-        updater.update(scope="daily", data_dir=data_dir, start_date=start,
+        updater.update(scope="daily", codes=update_codes, data_dir=data_dir,
+                       start_date=start,
                        progress_cb=lambda p, m: db.update_progress(
                            task_id, 5 + p * 0.8, m, db_path=db_path))
         from .engine import datafeed
