@@ -179,6 +179,7 @@ def main():
 
     # 各组当前最优（round1 起点 = HALF_GATE 默认；round2 用 round1 结果）
     group_best: dict[str, dict] = {}   # group -> {(where,key): value}
+    group_best_score: dict[str, float] = {}
     best_score = _run_score(base)["score"]
     print(f"HALF_GATE 起点 score = {best_score:.4f}", flush=True)
     with ROWS_JSONL.open("a", encoding="utf-8") as f:
@@ -199,11 +200,13 @@ def main():
                 study_name=study_name, direction="maximize",
                 storage=f"sqlite:///{STUDY_DIR / (study_name + '.db')}",
                 load_if_exists=True)
-            done = len(study.trials)
+            done = sum(1 for t in study.trials
+                       if t.state == optuna.trial.TrialState.COMPLETE)
             if done >= n_trials:
                 print(f"[r{rnd} {gname}] 已有 {done} trial（缓存跳过）", flush=True)
                 best = study.best_trial
                 group_best[gname] = _ov_from_json(best.user_attrs["ov"])
+                group_best_score[gname] = best.value
                 cnt += done
                 continue
 
@@ -213,7 +216,14 @@ def main():
                     v = trial.suggest_categorical(f"{where}.{key}", choices)
                     ov[(where, key)] = v
                 cfg = _apply(base, {**outer, **ov})
-                r = _run_score(cfg)
+                try:
+                    r = _run_score(cfg)
+                except Exception as e:  # 退化组合（如动态初始池筛空）记最低分不终止
+                    print(f"  [r{rnd} {gname}] trial{trial.number} 退化：{e}",
+                          flush=True)
+                    r = {"score": -9e9, "mean_excess": None, "std_excess": None,
+                         "min_dd": None, "windows": 0,
+                         "total_return": None, "max_drawdown": None}
                 trial.set_user_attr("ov", json.dumps(
                     {f"{w}.{k}": v for (w, k), v in ov.items()}))
                 trial.set_user_attr("total_return", r["total_return"])
@@ -228,6 +238,7 @@ def main():
             study.optimize(objective, n_trials=n_trials - done)
             best = study.best_trial
             group_best[gname] = _ov_from_json(best.user_attrs["ov"])
+            group_best_score[gname] = best.value
             if best.value > best_score:
                 pass  # 组最优在轮内记录，轮末统一合成
             print(f"[r{rnd} {gname}] best score={best.value:.4f} "
@@ -238,15 +249,6 @@ def main():
     final_ov = dict(half_gate)
     for gb in group_best.values():
         final_ov.update(gb)
-    final_cfg = _apply(base_cfg, final_ov)
-    final_cfg["name"] = "stage3_best"
-    print("[final] 最优合成配置全区间回测 ...", flush=True)
-    rep = runner.run_backtest(final_cfg)
-    m = rep.get("metrics", {}) or {}
-    final_full = {k: m.get(k) for k in
-                  ("total_return", "annual_return", "benchmark_return",
-                   "excess_return", "max_drawdown", "sharpe", "win_rate")}
-
     split_rep = runner.run_backtest(_cfg("stage3_split_probe", [] if AUTO else uni_all,
                                          universe_auto=AUTO,
                                          start=args.start, end=args.end,
@@ -258,7 +260,31 @@ def main():
     oos_cfg = _cfg("stage3_best_oos", [] if AUTO else uni_all, universe_auto=AUTO,
                    start=split, end=args.end, capital=args.capital)
     oos_cfg = _apply(oos_cfg, final_ov)
-    rep_oos = runner.run_backtest(oos_cfg)
+    final_cfg["name"] = "stage3_best"
+    merged_mode = "全部组最优"
+    print("[final] 最优合成配置：全区间 + OOS ...", flush=True)
+    try:
+        rep = runner.run_backtest(final_cfg)
+        rep_oos = runner.run_backtest(oos_cfg)
+    except Exception as e:
+        # 联合配置退化（如动态初始池筛空）→ 仅并入优于起点的组重试
+        print(f"[final] 联合配置退化（{e}）→ 仅并入优于起点的组重试", flush=True)
+        final_ov = dict(half_gate)
+        for gname, gb in group_best.items():
+            if group_best_score.get(gname, -9e9) > best_score:
+                final_ov.update(gb)
+        final_cfg = _apply(base_cfg, final_ov)
+        final_cfg["name"] = "stage3_best"
+        oos_cfg = _apply(_cfg("stage3_best_oos", [] if AUTO else uni_all,
+                              universe_auto=AUTO, start=split, end=args.end,
+                              capital=args.capital), final_ov)
+        merged_mode = "仅并入优于起点的组（联合配置退化回退）"
+        rep = runner.run_backtest(final_cfg)
+        rep_oos = runner.run_backtest(oos_cfg)
+    m = rep.get("metrics", {}) or {}
+    final_full = {k: m.get(k) for k in
+                  ("total_return", "annual_return", "benchmark_return",
+                   "excess_return", "max_drawdown", "sharpe", "win_rate")}
     m_oos = rep_oos.get("metrics", {}) or {}
     final_oos = {k: m_oos.get(k) for k in
                  ("total_return", "annual_return", "benchmark_return",
@@ -273,6 +299,7 @@ def main():
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 区间：{args.start} ~ {args.end}｜OOS = {split} 起｜起点 = HALF_GATE"
         f"｜语境 = {label}｜5 组 × 2 轮 × {n_trials} trial",
+        f"- 合成口径：{merged_mode}",
         "",
         "## 最优配置（HALF_GATE + 各组最优）",
         "",
