@@ -36,8 +36,9 @@ def run_and_save(name, start, end):
     (REPORTS / f"{tid}.json").write_text(
         json.dumps(rep, ensure_ascii=False, default=str), encoding="utf-8")
     payload = {"strategy_id": cfg.get("strategy_id", ""), "period": cfg.get("period", ""),
-               "config": cfg}
+               "config": cfg, "report_path": str(REPORTS / f"{tid}.json")}
     db.create_task(tid, name, "backtest", payload)
+    db.save_report(tid, str(REPORTS / f"{tid}.json"))
     db.update_task(tid, status="success", progress=100, message="")
     m = rep.get("metrics") or {}
     print(f"{tid}  {name}  收益 {m.get('total_return'):+.2%}  超额 {m.get('excess_return'):+.2%}",
