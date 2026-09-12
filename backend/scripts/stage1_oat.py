@@ -175,10 +175,15 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个参数（冒烟）")
     ap.add_argument("--report-only", action="store_true",
                     help="不跑回测，仅从 jsonl 重新生成报告")
+    ap.add_argument("--auto", action="store_true",
+                    help="动态换血语境（universe_auto=zz500），缓存与报告独立命名")
     args = ap.parse_args()
 
     t0 = time.time()
     OUT_DIR.mkdir(exist_ok=True)
+    global ROWS_JSONL
+    if args.auto:
+        ROWS_JSONL = OUT_DIR / "stageD_oat_rows.jsonl"
     done: dict[str, dict] = {}
     if ROWS_JSONL.exists():
         for line in ROWS_JSONL.read_text(encoding="utf-8").splitlines():
@@ -190,7 +195,8 @@ def main():
         print(f"续跑：已有 {len(done)} 条结果", flush=True)
 
     uni_all = _zz500_universe(as_of=args.start)
-    base_cfg = _cfg("stage1_oat_base", uni_all, start=args.start,
+    base_cfg = _cfg("stage1_oat_base", [] if args.auto else uni_all,
+                    universe_auto=args.auto, start=args.start,
                     end=args.end, capital=args.capital)
 
     grids = GRIDS[:args.limit] if args.limit else GRIDS
@@ -319,7 +325,8 @@ def _report(done: dict, base: dict, args) -> None:
         "视本次开关扫描结果决定是否跑第二批",
         "- 本排名是阶段 2 砍半的输入，最终名单以阶段 2 消融验收（砍半 vs 全参数 OOS 对照）为准",
     ]
-    out = OUT_DIR / f"stage1_oat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    prefix = "stageD_oat" if getattr(args, "auto", False) else "stage1_oat"
+    out = OUT_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"报告 → {out}", flush=True)
 
