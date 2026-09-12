@@ -35,6 +35,11 @@ OUT_DIR = Path(__file__).parent / "out"
 # 与 stage1_oat.py 勘误 v4 口径一致：起点 2021-07-15（预热自然完成）
 ROWS_JSONL = OUT_DIR / "stage1_oat_rows_v4.jsonl"
 
+# 动态语境（--auto）：D-OAT 缓存 + D 版保留名单（stageD_oat_20260912_124506.md 切分）
+AUTO = "--auto" in sys.argv
+if AUTO:
+    ROWS_JSONL = OUT_DIR / "stageD_oat_rows.jsonl"
+
 # 保留名单（阶段 1 v4 报告 stage1_oat_20260908_230404.md 切分预览，21 项）
 KEEP = {
     ("params", "pool_n"), ("params", "crash_abs_cap"), ("params", "macd_fast"),
@@ -45,6 +50,17 @@ KEEP = {
     ("params", "exit_confirm_days"), ("params", "add_scale"), ("risk", "stop_loss_mode"),
     ("risk", "adaptive"), ("params", "max_adds"), ("params", "base_pct_max"),
 }
+if AUTO:
+    KEEP = {
+        ("params", "w_short"), ("params", "macd_slow"), ("params", "crash_vol_n"),
+        ("risk", "atr_multiplier"), ("risk", "stop_loss_mode"), ("params", "ma_fast"),
+        ("params", "add_cooldown"), ("params", "max_adds"), ("params", "add_scale"),
+        ("params", "max_holdings"), ("params", "add_breakout_n"), ("params", "w_accel"),
+        ("params", "w_mid"), ("params", "mom_long"), ("params", "macd_fast"),
+        ("params", "base_pct_max"), ("params", "crash_sigma"),
+        ("params", "exit_confirm_days"), ("risk", "take_profit_pct"),
+        ("params", "mom_short"), ("params", "exit_cooldown"),
+    }
 
 # 消融裁决开关：pool_gate（阶段0 收益口径 +18pt vs OAT 超额口径 -0.53 的矛盾）
 GATE_KEY = ("top", "pool_gate")
@@ -124,7 +140,7 @@ def main():
     half_gate_ov = dict(half_ov)
     half_gate_ov[GATE_KEY] = True
 
-    base_cfg = _cfg("stage2_base", uni_all)
+    base_cfg = _cfg("stage2_base", [] if AUTO else uni_all, universe_auto=AUTO)
 
     rows: list[dict] = []
 
@@ -146,22 +162,26 @@ def main():
     print(f"[2/4] OOS 段（{split} ~ {END_DEFAULT}）：B / FULL / HALF / HALF_GATE ...", flush=True)
     for tag, ov in (("B-oos", {}), ("FULL-oos", full_ov), ("HALF-oos", half_ov),
                     ("HALF_GATE-oos", half_gate_ov)):
-        cfg = _cfg(f"stage2_{tag.lower()}", uni_all, start=split, end=END_DEFAULT)
+        cfg = _cfg(f"stage2_{tag.lower()}", [] if AUTO else uni_all,
+                   universe_auto=AUTO, start=split, end=END_DEFAULT)
         cfg = _apply_overrides(cfg, ov)
         _run(tag, cfg, rows)
 
-    print("[3/4] 跨池（随机300）：FULL / HALF / HALF_GATE ...", flush=True)
-    for tag, ov in (("FULL-pool300", full_ov), ("HALF-pool300", half_ov),
-                    ("HALF_GATE-pool300", half_gate_ov)):
-        cfg = _cfg(f"stage2_{tag.lower()}", uni_300)
-        cfg = _apply_overrides(cfg, ov)
-        _run(tag, cfg, rows)
+    if AUTO:
+        print("[3/4][4/4] 跨池对照跳过（动态语境域固定为 zz500，无换池概念）", flush=True)
+    else:
+        print("[3/4] 跨池（随机300）：FULL / HALF / HALF_GATE ...", flush=True)
+        for tag, ov in (("FULL-pool300", full_ov), ("HALF-pool300", half_ov),
+                        ("HALF_GATE-pool300", half_gate_ov)):
+            cfg = _cfg(f"stage2_{tag.lower()}", uni_300)
+            cfg = _apply_overrides(cfg, ov)
+            _run(tag, cfg, rows)
 
-    print("[4/4] 跨池 OOS（随机300）：HALF / HALF_GATE ...", flush=True)
-    for tag, ov in (("HALF-pool300-oos", half_ov), ("HALF_GATE-pool300-oos", half_gate_ov)):
-        cfg = _cfg(f"stage2_{tag.lower()}", uni_300, start=split, end=END_DEFAULT)
-        cfg = _apply_overrides(cfg, ov)
-        _run(tag, cfg, rows)
+        print("[4/4] 跨池 OOS（随机300）：HALF / HALF_GATE ...", flush=True)
+        for tag, ov in (("HALF-pool300-oos", half_ov), ("HALF_GATE-pool300-oos", half_gate_ov)):
+            cfg = _cfg(f"stage2_{tag.lower()}", uni_300, start=split, end=END_DEFAULT)
+            cfg = _apply_overrides(cfg, ov)
+            _run(tag, cfg, rows)
 
     _report(rows, split, full_ov, half_ov)
     print(f"总耗时 {time.time() - t0:,.0f}s", flush=True)
@@ -222,7 +242,8 @@ def _report(rows: list[dict], split: str, full_ov: dict, half_ov: dict) -> None:
                  f"OOS {d('HALF-oos','B-oos')}")
     lines += ["", f"- FULL 采纳明细：{json.dumps({f'{w}.{k}': v for (w, k), v in sorted(full_ov.items())}, ensure_ascii=False)}",
               f"- HALF 采纳明细：{json.dumps({f'{w}.{k}': v for (w, k), v in sorted(half_ov.items())}, ensure_ascii=False)}"]
-    out = OUT_DIR / f"stage2_ablation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    prefix = "stageD_ablation" if AUTO else "stage2_ablation"
+    out = OUT_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"报告 → {out}", flush=True)
 

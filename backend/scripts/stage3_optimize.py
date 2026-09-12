@@ -12,7 +12,10 @@
 用法（backend/ 下）：
   python scripts/stage3_optimize.py --quick      # 每组 3 trial 冒烟
   python scripts/stage3_optimize.py              # 全量 200 trial（~35 分钟）
+  python scripts/stage3_optimize.py --auto       # 动态语境 D-寻优（D 版 21 项空间）
 输出：scripts/out/stage3_opt_<时间戳>.md + stage3_studies/*.db + 控制台进度。
+动态语境（--auto）：起点 = D-消融 HALF_GATE（stageD_oat_rows.jsonl），采纳线
+= D-消融 B-OOS 超额 +6.71%；缓存独立命名（stageD_studies / stage3D_rows.jsonl）。
 """
 import argparse
 import json
@@ -32,11 +35,13 @@ from stage1_oat import _score  # noqa: E402
 from app.engine import runner  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
-STUDY_DIR = OUT_DIR / "stage3_studies"
-ROWS_JSONL = OUT_DIR / "stage3_rows.jsonl"
+# 动态语境（--auto）：D-消融起点 + D 版保留空间，缓存与报告独立命名
+AUTO = "--auto" in sys.argv
+STUDY_DIR = OUT_DIR / ("stageD_studies" if AUTO else "stage3_studies")
+ROWS_JSONL = OUT_DIR / ("stage3D_rows.jsonl" if AUTO else "stage3_rows.jsonl")
 
-# 21 项保留参数（v4 报告），离散档位以 OAT 网格为界
-GROUPS = [
+# 静态版 21 项保留参数（v4 报告），离散档位以 OAT 网格为界
+GROUPS_STATIC = [
     ("G1_池与仓位", {
         ("params", "pool_n"): [4, 6, 8, 10, 12, 14, 16, 18],
         ("params", "max_holdings"): [2, 3, 4, 5, 6],
@@ -69,6 +74,43 @@ GROUPS = [
         ("params", "add_scale"): [0.35, 0.5, 0.65, 0.8],
     }),
 ]
+
+# 动态语境（D 版）21 项保留参数（stageD_oat_20260912_124506.md 切分），
+# 档位以 D-OAT 网格为界（含插值中档）；stop_loss_mode 须含 fixed（D-OAT 反转档）
+GROUPS_D = [
+    ("G1_池与仓位", {
+        ("params", "max_holdings"): [2, 3, 4, 5, 6, 8, 10],
+        ("params", "base_pct_max"): [20, 30, 40, 60, 80],
+    }),
+    ("G2_动量与MACD", {
+        ("params", "mom_short"): [5, 10, 15, 20, 25, 30],
+        ("params", "mom_long"): [90, 105, 120, 150, 200],
+        ("params", "w_mid"): [0.1, 0.2, 0.3, 0.4, 0.5],
+        ("params", "macd_fast"): [5, 8, 12, 16, 20],
+        ("params", "macd_slow"): [10, 12, 18, 26, 40, 55],
+    }),
+    ("G3_趋势确认与崩溃过滤", {
+        ("params", "w_short"): [0.1, 0.2, 0.3, 0.4, 0.5],
+        ("params", "w_accel"): [0.0, 0.1, 0.3, 0.5, 0.7],
+        ("params", "ma_fast"): [5, 10, 15, 20, 30, 45],
+        ("params", "crash_vol_n"): [20, 40, 60, 90, 120],
+        ("params", "crash_sigma"): [1.0, 1.5, 2.0, 2.5, 3.0],
+    }),
+    ("G4_退出与止盈", {
+        ("params", "exit_confirm_days"): [0, 2, 5, 8, 10],
+        ("params", "exit_cooldown"): [0, 2, 5, 10, 20],
+        ("risk", "take_profit_pct"): [15, 25, 40, 60, 100],
+        ("params", "add_cooldown"): [1, 3, 5, 10, 15],
+    }),
+    ("G5_止损与加仓", {
+        ("risk", "atr_multiplier"): [1.5, 2.0, 2.5, 3.0, 3.5],
+        ("risk", "stop_loss_mode"): ["fixed", "atr", "atr_trailing", "trailing"],
+        ("params", "max_adds"): [0, 1, 2, 3, 4],
+        ("params", "add_scale"): [0.2, 0.35, 0.5, 0.65, 0.8],
+        ("params", "add_breakout_n"): [5, 10, 20, 35, 55],
+    }),
+]
+GROUPS = GROUPS_D if AUTO else GROUPS_STATIC
 
 
 def _load_half_gate_overrides() -> dict:
@@ -118,6 +160,8 @@ def main():
     ap.add_argument("--capital", type=float, default=3_000_000.0)
     ap.add_argument("--trials", type=int, default=20, help="每组每轮 trial 数")
     ap.add_argument("--quick", action="store_true", help="每组每轮 3 trial 冒烟")
+    ap.add_argument("--auto", action="store_true",
+                    help="动态换血语境（universe_auto=zz500），缓存与报告独立命名")
     args = ap.parse_args()
     n_trials = 3 if args.quick else args.trials
 
@@ -127,8 +171,8 @@ def main():
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     uni_all = _zz500_universe(as_of=args.start)
-    base_cfg = _cfg("stage3_base", uni_all, start=args.start, end=args.end,
-                    capital=args.capital)
+    base_cfg = _cfg("stage3_base", [] if AUTO else uni_all, universe_auto=AUTO,
+                    start=args.start, end=args.end, capital=args.capital)
     half_gate = _load_half_gate_overrides()
     base = _apply(base_cfg, half_gate)
     print(f"HALF_GATE 起点：{len(half_gate)} 项采纳（含 gate）", flush=True)
@@ -203,15 +247,16 @@ def main():
                   ("total_return", "annual_return", "benchmark_return",
                    "excess_return", "max_drawdown", "sharpe", "win_rate")}
 
-    split_rep = runner.run_backtest(_cfg("stage3_split_probe", uni_all,
+    split_rep = runner.run_backtest(_cfg("stage3_split_probe", [] if AUTO else uni_all,
+                                         universe_auto=AUTO,
                                          start=args.start, end=args.end,
                                          capital=args.capital))
     dates = sorted({str(p.get("date"))[:10]
                     for p in split_rep.get("equity_curve") or []})
     split = dates[int(len(dates) * 0.7) - 1]
 
-    oos_cfg = _cfg("stage3_best_oos", uni_all, start=split, end=args.end,
-                   capital=args.capital)
+    oos_cfg = _cfg("stage3_best_oos", [] if AUTO else uni_all, universe_auto=AUTO,
+                   start=split, end=args.end, capital=args.capital)
     oos_cfg = _apply(oos_cfg, final_ov)
     rep_oos = runner.run_backtest(oos_cfg)
     m_oos = rep_oos.get("metrics", {}) or {}
@@ -219,12 +264,15 @@ def main():
                  ("total_return", "annual_return", "benchmark_return",
                   "excess_return", "max_drawdown", "sharpe", "win_rate")}
 
+    label = "动态语境 universe_auto(zz500)" if AUTO else "静态池"
+    accept_th = 0.0671 if AUTO else 0.0410
+    accept_src = ("D-消融 B-OOS 超额 +6.71%" if AUTO else "阶段 2 消融")
     lines = [
-        "# 阶段 3 联合寻优报告",
+        "# 阶段 3 联合寻优报告（动态语境）" if AUTO else "# 阶段 3 联合寻优报告",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 区间：{args.start} ~ {args.end}｜OOS = {split} 起｜起点 = HALF_GATE"
-        f"｜5 组 × 2 轮 × {n_trials} trial",
+        f"｜语境 = {label}｜5 组 × 2 轮 × {n_trials} trial",
         "",
         "## 最优配置（HALF_GATE + 各组最优）",
         "",
@@ -246,13 +294,14 @@ def main():
         "",
         "## 采纳判定（对照方案 §5.4）",
         "",
-        f"- 采纳线：HALF_GATE 的 OOS 超额 +4.10%（阶段 2 消融）",
+        f"- 采纳线：HALF_GATE 的 OOS 超额 {accept_th:.2%}（{accept_src}）",
         f"- 寻优最优 OOS 超额：{_fmt(final_oos['excess_return'])}"
-        f"（{'✅ 赢采纳线，可采纳' if (final_oos['excess_return'] or -9) > 0.041 else '❌ 未过采纳线，参数不采纳'}）",
+        f"（{'✅ 赢采纳线，可采纳' if (final_oos['excess_return'] or -9) > accept_th else '❌ 未过采纳线，参数不采纳'}）",
         f"- D3① 标准档：全区间总收益 vs 基准 {_fmt(final_full['total_return'])} vs "
         f"{_fmt(final_full['benchmark_return'])}，年化超额需 ≥ 8%",
     ]
-    out = OUT_DIR / f"stage3_opt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    prefix = "stageD_opt" if AUTO else "stage3_opt"
+    out = OUT_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"报告 → {out}", flush=True)
     print(f"总耗时 {time.time() - t0:,.0f}s", flush=True)
