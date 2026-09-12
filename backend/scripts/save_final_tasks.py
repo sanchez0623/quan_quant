@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.stage0_anchors import END_DEFAULT, START_DEFAULT, BENCHMARK, _cfg, _zz500_universe  # noqa: E402
 from scripts.stage4_crosspool import OPT  # noqa: E402
 
+from app import db  # noqa: E402
 from app.engine import runner  # noqa: E402
 
 REPORTS = Path(__file__).resolve().parents[2] / "data" / "reports"
@@ -34,6 +35,10 @@ def run_and_save(name, start, end):
     tid = "bt_" + uuid.uuid4().hex[:12]
     (REPORTS / f"{tid}.json").write_text(
         json.dumps(rep, ensure_ascii=False, default=str), encoding="utf-8")
+    payload = {"strategy_id": cfg.get("strategy_id", ""), "period": cfg.get("period", ""),
+               "config": cfg}
+    db.create_task(tid, name, "backtest", payload)
+    db.update_task(tid, status="success", progress=100, message="")
     m = rep.get("metrics") or {}
     print(f"{tid}  {name}  收益 {m.get('total_return'):+.2%}  超额 {m.get('excess_return'):+.2%}",
           flush=True)
