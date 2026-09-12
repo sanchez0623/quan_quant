@@ -31,7 +31,9 @@ function WithdrawalTable({ wd }: { wd: WithdrawalSummary }) {
       if (!byMonth.has(it.month)) byMonth.set(it.month, [])
       byMonth.get(it.month)!.push(it)
     }
-    return Object.keys(wd.months ?? {})
+    // 行 = months ∪ log 月份并集：无出金的月份（纯缺口月）也成行，避免对账断档
+    const monthSet = new Set<string>([...Object.keys(wd.months ?? {}), ...byMonth.keys()])
+    return [...monthSet]
       .sort()
       .map((month) => {
         const items = byMonth.get(month) ?? []
