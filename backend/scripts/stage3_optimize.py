@@ -249,6 +249,7 @@ def main():
     final_ov = dict(half_gate)
     for gb in group_best.values():
         final_ov.update(gb)
+    final_cfg = _apply(base_cfg, final_ov)
     split_rep = runner.run_backtest(_cfg("stage3_split_probe", [] if AUTO else uni_all,
                                          universe_auto=AUTO,
                                          start=args.start, end=args.end,
