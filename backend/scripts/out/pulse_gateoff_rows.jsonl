@@ -1,0 +1,2 @@
+{"score": -0.26542519500845957, "mean_excess": -0.15818427885180325, "std_excess": 0.2144818323133126, "min_dd": -0.33930096840184787, "windows": 5, "total_return": -0.115564, "excess_return": -0.330195, "max_drawdown": -0.440263, "combo": "GATEOFF_full"}
+{"score": -0.29776413749954633, "mean_excess": 0.3301892853067947, "std_excess": 1.255906845612682, "min_dd": -0.16145122973539183, "windows": 5, "total_return": 0.310622, "excess_return": 0.018519, "max_drawdown": -0.219489, "combo": "GATEOFF_oos"}
