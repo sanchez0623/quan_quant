@@ -141,8 +141,10 @@ export async function generateBacktestName(data: {
   return res.data
 }
 
-export async function getBacktests(): Promise<BacktestListItem[]> {
-  const res = await api.get<BacktestListItem[]>('/backtests')
+export async function getBacktests(search?: string): Promise<BacktestListItem[]> {
+  // 服务端搜索（name/id LIKE）：落库后无需刷新页面即可搜到
+  const res = await api.get<BacktestListItem[]>(
+    '/backtests', search ? { params: { search } } : undefined)
   return res.data
 }
 

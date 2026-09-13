@@ -264,9 +264,9 @@ export default function BacktestList() {
     }
   }, [])
 
-  const fetchList = useCallback(async () => {
+  const fetchList = useCallback(async (kw?: string) => {
     try {
-      setList(await getBacktests())
+      setList(await getBacktests(kw?.trim() || undefined))
     } catch {
       /* 列表加载失败静默，轮询时继续尝试 */
     } finally {
@@ -281,9 +281,11 @@ export default function BacktestList() {
     loadTemplates()
   }, [loadTemplates])
 
+  // 搜索防抖 300ms：服务端搜索（name/id LIKE），落库后无需刷新页面即可搜到
   useEffect(() => {
-    fetchList()
-  }, [fetchList])
+    const timer = window.setTimeout(() => fetchList(searchText), 300)
+    return () => window.clearTimeout(timer)
+  }, [searchText, fetchList])
 
   /**
    * 表单值 -> 回测配置（模板保存与提交共用）。
@@ -401,17 +403,17 @@ export default function BacktestList() {
     navigate('/backtests', { replace: true })
   }, [location.state, strategies, applyConfigToForm, navigate])
 
-  // 存在运行中任务时每 3s 自动刷新
+  // 存在运行中任务时每 3s 自动刷新（带当前搜索词，保持服务端过滤一致）
   const hasActive = list.some((t) => t.status === 'pending' || t.status === 'running')
   useEffect(() => {
     if (!hasActive) return
     const timer = window.setInterval(() => {
-      getBacktests()
+      getBacktests(searchText.trim() || undefined)
         .then(setList)
         .catch(() => {})
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [hasActive])
+  }, [hasActive, searchText])
 
   // 股票池远程搜索与批量粘贴逻辑已抽至 StockPicker 组件（方案 §8.3）
 

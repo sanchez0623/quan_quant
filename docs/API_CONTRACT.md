@@ -195,6 +195,8 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 
 ### GET /api/backtests
 
+查询参数：`search`（可选）——服务端搜索，按任务名称/任务 ID 模糊匹配（SQL LIKE），落库后无需刷新页面即可搜到。
+
 响应：`[{"task_id","name","status(pending|running|success|failed)","created_at","strategy_id","period","config(完整回测配置,供存为模板)","error}]`（倒序）
 
 ### GET /api/backtests/templates

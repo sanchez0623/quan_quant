@@ -463,16 +463,32 @@ def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
             "payload": payload}
 
 
-def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None) -> list[dict]:
+def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
+               search: Optional[str] = None) -> list[dict]:
     with conn(db_path) as c:
+        kw = (search or "").strip()
         if task_type:
-            rows = c.execute(
-                "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                "FROM tasks WHERE type=? ORDER BY created_at DESC, rowid DESC", (task_type,)).fetchall()
+            if kw:
+                like = f"%{kw}%"
+                rows = c.execute(
+                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
+                    "FROM tasks WHERE type=? AND (name LIKE ? OR id LIKE ?) "
+                    "ORDER BY created_at DESC, rowid DESC", (task_type, like, like)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
+                    "FROM tasks WHERE type=? ORDER BY created_at DESC, rowid DESC", (task_type,)).fetchall()
         else:
-            rows = c.execute(
-                "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                "FROM tasks ORDER BY created_at DESC, rowid DESC").fetchall()
+            if kw:
+                like = f"%{kw}%"
+                rows = c.execute(
+                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
+                    "FROM tasks WHERE name LIKE ? OR id LIKE ? "
+                    "ORDER BY created_at DESC, rowid DESC", (like, like)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
+                    "FROM tasks ORDER BY created_at DESC, rowid DESC").fetchall()
     out = []
     for row in rows:
         try:

@@ -303,9 +303,11 @@ def create_backtest(req: BacktestRequest, _user: str = Depends(get_current_user)
 
 
 @router.get("")
-def list_backtests(_user: str = Depends(get_current_user)):
+def list_backtests(_user: str = Depends(get_current_user),
+                   search: str = ""):
+    # 服务端搜索（name/id LIKE）：落库后无需刷新页面即可搜到新任务
     out = []
-    for t in db.list_tasks("backtest"):
+    for t in db.list_tasks("backtest", search=search):
         payload = t.get("payload") or {}
         cfg = payload.get("config")
         # 归一化后再回显：老任务配置缺改版后新增的参数时，「存为模板」也能拿到全量配置
