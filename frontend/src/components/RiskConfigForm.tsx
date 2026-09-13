@@ -198,12 +198,12 @@ export const RISK_FIELDS: RiskField[] = [
   },
   {
     key: 'adaptive_k_loose',
-    label: '趋势市放宽倍数',
-    hint: '趋势确立（trend）或高波动分位（vol）时 k1/k2 的放大倍数',
+    label: '高波放宽倍数',
+    hint: '仅 vol 模式生效：高波动分位时 k1/k2 的放大倍数（trend 模式的放宽分支实证无效已移除）',
     step: 0.1,
     precision: 1,
     group: '自适应止损',
-    show_if: { stop_loss_mode: ['atr_trailing'], adaptive: ['trend', 'vol'] }
+    show_if: { stop_loss_mode: ['atr_trailing'], adaptive: ['vol'] }
   },
   {
     key: 'adaptive_k_tight',
@@ -331,7 +331,9 @@ function describeStopRule(v: Record<string, unknown> | undefined): string {
   const suffix =
     adaptive === 'off'
       ? ''
-      : `；自适应 ${adaptive === 'trend' ? '个股趋势' : '波动率分位'}：放宽 ×${v?.adaptive_k_loose ?? '-'} / 收紧 ×${v?.adaptive_k_tight ?? '-'}`
+      : adaptive === 'trend'
+        ? `；自适应 个股趋势：破位收紧 ×${v?.adaptive_k_tight ?? '-'}（放宽分支实证无效已移除）`
+        : `；自适应 波动率分位：高波放宽 ×${v?.adaptive_k_loose ?? '-'} / 低波收紧 ×${v?.adaptive_k_tight ?? '-'}`
   switch (mode) {
     case 'fixed':
       return `固定止损：价格 ≤ 成本 ×（1 − ${pct ?? '-'}%）→ 清仓${suffix}`

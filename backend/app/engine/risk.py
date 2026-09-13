@@ -41,7 +41,8 @@ class RiskConfig:
         self.adaptive = str(cfg.get("adaptive", "trend") or "trend").lower()
         self.adaptive_trend_ma = int(cfg.get("adaptive_trend_ma", 60) or 60)
         self.adaptive_slope_n = int(cfg.get("adaptive_slope_n", 5) or 5)
-        # 趋势确立（价在均线上且均线走平/向上）-> 放宽止损，让利润奔跑
+        # vol 模式高波分位 -> 放宽止损（trend 模式的放宽分支实证死参已移除，
+        # 见 docs/OPTIMIZE_PULSE_TRAIL.md 语境#9）
         self.adaptive_k_loose = float(cfg.get("adaptive_k_loose", 1.5) or 1.0)
         # 趋势破坏（价跌破均线）-> 收紧止损，快速离场
         self.adaptive_k_tight = float(cfg.get("adaptive_k_tight", 0.7) or 1.0)
@@ -244,11 +245,10 @@ class RiskManager:
                 return 1.0
             if close <= ma:
                 return c.adaptive_k_tight
-            # 价在均线上方：均线走平或向上才算趋势确立
-            slope = bar.get("adaptive_slope")
-            if slope is None:
-                return 1.0
-            return c.adaptive_k_loose if slope >= 0 else 1.0
+            # 价在均线上方：趋势市放宽分支实证为死参数（k_loose 只在上涨 bar 生效，
+            # 而上涨 bar 的止损线远低于现价永不触发，1.8 vs 1.2 位级相同，
+            # 见 docs/OPTIMIZE_PULSE_TRAIL.md 语境#9）——trend 模式仅保留跌破收紧。
+            return 1.0
         if c.adaptive == "vol":
             q = bar.get("adaptive_vol_q")
             if q is None:
