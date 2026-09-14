@@ -38,8 +38,17 @@ const TAG_COLOR: Record<string, string> = {
   '做T': 'purple'
 }
 
+/** 行的库存组归属：卖出用 tag（引擎落盘），买入 tag 未落日志但 type 即组性质
+ *  （开仓买入→底仓组/加仓买入→加仓组/做T买入→做T组），确定性回填 */
+const rowTag = (t: TradeLogItem): string | undefined => {
+  if (t.tag) return TAG_LABEL[t.tag] ?? t.tag
+  if (t.side === 'buy') return TAG_LABEL[t.type]
+  return undefined
+}
+
 export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [groupFilter, setGroupFilter] = useState<string>('all')
   const [sideFilter, setSideFilter] = useState<string>('all')
   const [codeFilter, setCodeFilter] = useState<string>('all')
 
@@ -61,13 +70,15 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
           typeFilter === 'all' ||
           t.type === typeFilter ||
           (typeFilter === '做T' && t.tag === '做T')
+        const groupHit = groupFilter === 'all' || rowTag(t) === groupFilter
         return (
           (codeFilter === 'all' || t.code === codeFilter) &&
           typeHit &&
+          groupHit &&
           (sideFilter === 'all' || t.side === sideFilter)
         )
       }),
-    [trades, codeFilter, typeFilter, sideFilter]
+    [trades, codeFilter, typeFilter, groupFilter, sideFilter]
   )
 
   // 每笔交易成交后该股票的剩余持仓量（按交易时间顺序累计，过滤不影响数值）
@@ -97,7 +108,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       t.amount,
       t.fee,
       t.type,
-      TAG_LABEL[t.tag ?? ''] ?? '',
+      rowTag(t) ?? '',
       t.t_mode ?? '',
       t.reason ?? '',
       t.pnl ?? ''
@@ -197,14 +208,14 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       )
     },
     {
-      // 组别=库存归属（tag）：与类型（订单性质）正交——做T组的清仓/止损卖出在此可见
+      // 组别=库存归属（tag）：卖出用引擎落盘 tag，买入按 type 回填（开仓→底仓/加仓/做T）
       title: '组别',
       dataIndex: 'tag',
       width: 60,
-      render: (v: string | undefined) => {
-        if (!v) return '-'
-        const label = TAG_LABEL[v] ?? v
-        return <Tag color={TAG_COLOR[label] ?? 'default'}>{label}</Tag>
+      render: (_v, t) => {
+        const g = rowTag(t)
+        if (!g) return '-'
+        return <Tag color={TAG_COLOR[g] ?? 'default'}>{g}</Tag>
       }
     },
     {
@@ -265,6 +276,16 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
             ...TRADE_TYPES.map((t) => ({ value: t, label: t }))
           ]}
         />
+        <Typography.Text>组别：</Typography.Text>
+        <Select
+          value={groupFilter}
+          onChange={setGroupFilter}
+          style={{ width: 100 }}
+          options={[
+            { value: 'all', label: '全部' },
+            ...Object.entries(TAG_LABEL).map(([v, label]) => ({ value: v, label }))
+          ]}
+        />
         <Typography.Text>方向：</Typography.Text>
         <Select
           value={sideFilter}
@@ -287,6 +308,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
         columns={columns}
         size="small"
         scroll={{ x: 1240 }}
+        rowClassName={(t) => (rowTag(t) === '做T' ? 't-group-row' : '')}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 笔` }}
       />
     </div>

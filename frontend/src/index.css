@@ -30,3 +30,11 @@ body {
 .md-content table { border-collapse: collapse; margin: 10px 0; }
 .md-content th, .md-content td { border: 1px solid #e8e8e8; padding: 5px 10px; font-size: 13px; }
 .md-content a { color: #1f4e79; }
+
+/* 交易明细：做T组行高亮（库存组=做T：正向T买入/反向T买回/做T组清仓止损等） */
+.ant-table-tbody > tr.t-group-row > td {
+  background: #f9f0ff;
+}
+.ant-table-tbody > tr.t-group-row.ant-table-row:hover > td {
+  background: #efdbff;
+}
