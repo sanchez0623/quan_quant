@@ -21,7 +21,8 @@ from pulse_ratchet_oat import run_score  # noqa: E402
 
 OUT_DIR = Path(__file__).parent / "out"
 ROWS_JSONL = OUT_DIR / "pulse_fwdtbud_rows.jsonl"
-GRID = [10, 35, 50]
+GRID = [5, 8, 12]  # 首轮 10/35/50 已入缓存（35/50 现金钳制位级相同）；补测更小档
+REPORT_GRID = [5, 8, 10, 12, 25, 35, 50]  # 报告展示全档（25=基线）
 BASE_BUDGET = 25
 
 
@@ -93,7 +94,9 @@ def _report(done: dict, bf: dict, boos_ex: float) -> None:
         "|---|---|---|---|---|---|---|---|",
     ]
     passed = []
-    for budget in GRID:
+    for budget in REPORT_GRID:
+        if budget == BASE_BUDGET:
+            continue
         rf = done.get(f"bud{budget}_full")
         ro = done.get(f"bud{budget}_oos")
         if not (rf and ro):
