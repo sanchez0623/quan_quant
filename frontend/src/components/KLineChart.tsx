@@ -35,6 +35,7 @@ interface TradeMarkPoint {
   time: string
   volume: number
   reason?: string | null
+  tag?: string | null
 }
 
 function parseTs(dateStr: string): number {
@@ -75,7 +76,11 @@ function ensureIndicatorRegistered(): void {
           const y = yAxis.convertToPixel(m.price)
           if (!Number.isFinite(x) || !Number.isFinite(y)) return
           const isBuy = m.side === 'buy'
-          const color = MARK_COLORS[m.type] ?? (isBuy ? '#f5222d' : '#52c41a')
+          // 卖出且库存属做T组（tag）但订单性质非做T（清仓/止损/减仓信号带走做T库存）
+          // → 颜色按组（紫），文字仍按订单性质（清/损/减），色=组、字=信号
+          const groupType =
+            !isBuy && m.tag === '做T' && m.type !== '做T' ? '做T' : m.type
+          const color = MARK_COLORS[groupType] ?? (isBuy ? '#f5222d' : '#52c41a')
           ctx.fillStyle = color
           ctx.beginPath()
           if (isBuy) {
@@ -188,7 +193,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
     for (const m of marks) {
       const di = tsIndex.get(parseTs(m.time))
       if (di === undefined) continue
-      points.push({ dataIndex: di, price: m.price, side: m.side, type: m.type, time: m.time, volume: m.volume, reason: m.reason ?? null })
+      points.push({ dataIndex: di, price: m.price, side: m.side, type: m.type, time: m.time, volume: m.volume, reason: m.reason ?? null, tag: m.tag ?? null })
     }
     markPointsRef.current = points
     try {

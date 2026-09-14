@@ -26,6 +26,18 @@ const TMODE_LABEL: Record<string, string> = {
   off: '关'
 }
 
+/** 库存组归属标签（tag 字段：这笔交易属于哪个组——开仓组即底仓） */
+const TAG_LABEL: Record<string, string> = {
+  '开仓': '底仓',
+  '加仓': '加仓',
+  '做T': '做T',
+  '减仓': '减仓'
+}
+
+const TAG_COLOR: Record<string, string> = {
+  '做T': 'purple'
+}
+
 export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [sideFilter, setSideFilter] = useState<string>('all')
@@ -42,12 +54,19 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
 
   const filtered = useMemo(
     () =>
-      trades.filter(
-        (t) =>
+      trades.filter((t) => {
+        // 类型筛选：做T按“库存组”口径命中（type=做T 的订单性质卖出 或 tag=做T 的库存组卖出），
+        // 否则做T组库存被清仓/止损/减仓带走时按 type 筛会漏，做T统计偏小；其余类型仍按 type 精确匹配
+        const typeHit =
+          typeFilter === 'all' ||
+          t.type === typeFilter ||
+          (typeFilter === '做T' && t.tag === '做T')
+        return (
           (codeFilter === 'all' || t.code === codeFilter) &&
-          (typeFilter === 'all' || t.type === typeFilter) &&
+          typeHit &&
           (sideFilter === 'all' || t.side === sideFilter)
-      ),
+        )
+      }),
     [trades, codeFilter, typeFilter, sideFilter]
   )
 
@@ -65,7 +84,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
   }, [trades])
 
   const exportCsv = () => {
-    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '剩余持仓', '金额', '手续费', '类型', 'T模式', '理由', '平仓盈亏']
+    const headers = ['trade_id', '时间', '代码', '名称', '方向', '价格', '数量', '剩余持仓', '金额', '手续费', '类型', '组别', 'T模式', '理由', '平仓盈亏']
     const rows = filtered.map((t) => [
       t.trade_id,
       t.time,
@@ -78,6 +97,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       t.amount,
       t.fee,
       t.type,
+      TAG_LABEL[t.tag ?? ''] ?? '',
       t.t_mode ?? '',
       t.reason ?? '',
       t.pnl ?? ''
@@ -177,6 +197,17 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
       )
     },
     {
+      // 组别=库存归属（tag）：与类型（订单性质）正交——做T组的清仓/止损卖出在此可见
+      title: '组别',
+      dataIndex: 'tag',
+      width: 60,
+      render: (v: string | undefined) => {
+        if (!v) return '-'
+        const label = TAG_LABEL[v] ?? v
+        return <Tag color={TAG_COLOR[label] ?? 'default'}>{label}</Tag>
+      }
+    },
+    {
       // 理由固定宽度多行展开：不设 width 的自适应列会被固定列挤压成省略号；
       // 3 行 clamp 尽量放下全文，超长悬浮 Tooltip 兜底
       title: '理由',
@@ -255,7 +286,7 @@ export default function TradeLogTab({ trades }: { trades: TradeLogItem[] }) {
         dataSource={filtered}
         columns={columns}
         size="small"
-        scroll={{ x: 1180 }}
+        scroll={{ x: 1240 }}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 笔` }}
       />
     </div>

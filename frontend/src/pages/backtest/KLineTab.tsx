@@ -60,16 +60,25 @@ export default function KLineTab({ taskId, universe, trades, reportPeriod }: Pro
     }
   }, [taskId, code, period])
 
-  // 按 trade_id 关联交易理由
-  const reasonMap = useMemo(() => {
-    const mp = new Map<number, string | null>()
-    trades.forEach((t) => mp.set(t.trade_id, t.reason ?? null))
-    return mp
+  // 按 trade_id 关联交易理由与库存组归属（tag：做T组卖出标紫用）
+  const attrMap = useMemo(() => {
+    const reason = new Map<number, string | null>()
+    const tag = new Map<number, string | null>()
+    trades.forEach((t) => {
+      reason.set(t.trade_id, t.reason ?? null)
+      tag.set(t.trade_id, t.tag ?? null)
+    })
+    return { reason, tag }
   }, [trades])
 
   const marksWithReason = useMemo(
-    () => (data?.marks ?? []).map((m) => ({ ...m, reason: reasonMap.get(m.trade_id) ?? null })),
-    [data, reasonMap]
+    () =>
+      (data?.marks ?? []).map((m) => ({
+        ...m,
+        reason: attrMap.reason.get(m.trade_id) ?? null,
+        tag: attrMap.tag.get(m.trade_id) ?? null
+      })),
+    [data, attrMap]
   )
 
   return (

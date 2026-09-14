@@ -421,6 +421,8 @@ export interface TradeLogItem {
   t_mode?: string | null
   /** 动态选股段号（universe_auto 分段滚动重选时标记归属段） */
   seg?: number
+  /** 库存组归属（开仓=底仓/加仓/做T/减仓）——type 是订单性质（触发信号），tag 是卖出库存属于哪个组 */
+  tag?: string
 }
 
 export interface PositionSnapshotPosition {
@@ -765,6 +767,8 @@ export interface KLineMark {
   volume: number
   /** 前端扩展：由 trade_log 按 trade_id 关联出的交易理由 */
   reason?: string | null
+  /** 前端扩展：由 trade_log 按 trade_id 关联出的库存组归属（做T组卖出标紫用） */
+  tag?: string | null
 }
 
 export interface KLineResponse {
