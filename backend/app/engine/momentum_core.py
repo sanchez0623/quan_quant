@@ -460,10 +460,11 @@ INDEX_GATE_BUFFER = 0.01
 
 
 def compute_index_gate(data_dir: Optional[str] = None,
-                       index_key: str = INDEX_GATE_INDEX) -> Optional[pl.DataFrame]:
+                       index_key: str = INDEX_GATE_INDEX,
+                       ma_n: int = INDEX_GATE_MA) -> Optional[pl.DataFrame]:
     """大盘趋势闸门（日级，T-1 对齐）。
 
-    判定：指数收盘 < MA20 连续 2 日 -> 停开仓；收盘 >= MA20×(1+缓冲带)
+    判定：指数收盘 < MA{ma_n} 连续 2 日 -> 停开仓；收盘 >= MA{ma_n}×(1+缓冲带)
     连续 2 日 -> 恢复（滞回，防均线附近反复穿越抖动）；中间地带保持现状。
     返回列 (day, index_gate)，输出已 T-1 对齐（当日 bar 只能看见上一完整
     交易日收盘状态，无后视镜），首日视为不抑制；供策略 prepare 内 join
@@ -473,7 +474,7 @@ def compute_index_gate(data_dir: Optional[str] = None,
     if df is None or df.height == 0:
         return None
     df = df.sort("date")
-    df = add_ma(df, INDEX_GATE_MA, "close", "ma_gate")
+    df = add_ma(df, max(2, int(ma_n)), "close", "ma_gate")
     df = df.with_columns([
         pl.col("date").str.slice(0, 10).alias("day"),
         (pl.col("close") < pl.col("ma_gate")).alias("below"),

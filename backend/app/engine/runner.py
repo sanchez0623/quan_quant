@@ -234,7 +234,8 @@ def _run_one(cfg: dict, data_dir: Optional[str] = None,
     # 指数日线缺失 -> None -> 不抑制（同 benchmark 缺失静默降级，T-1 对齐防未来函数）
     index_gate_df = None
     if cfg.get("index_gate") and strategy_id in ("momentum_t", "momentum_slot"):
-        index_gate_df = mc.compute_index_gate(data_dir)
+        index_gate_df = mc.compute_index_gate(
+            data_dir, ma_n=int(cfg.get("index_gate_ma") or 20))
     prepare_kw: dict = {}
     if market_regime is not None:
         prepare_kw["market_regime"] = market_regime

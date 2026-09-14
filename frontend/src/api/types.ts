@@ -253,6 +253,7 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   pool_gate_enter_th?: number
   /** 大盘趋势闸门：中证500收盘<MA20连续2日抑制开仓/加仓（恢复缓冲带内置，退出与做T照常） */
   index_gate?: boolean
+  index_gate_ma?: number
   start_date: string
   end_date: string
   period: Period

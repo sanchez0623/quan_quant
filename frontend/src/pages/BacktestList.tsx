@@ -75,7 +75,7 @@ function flattenTemplateConfig(cfg: BacktestCreateRequest): Map<string, { group:
     ['auto_idle_days', '空仓触发'], ['auto_top_x', '池子大小'], ['auto_above_ma', '均线锚'],
     ['auto_with_accel', '加速项'], ['auto_rank_key', '排序键'], ['exclude_st', '剔除ST'],
     ['pool_gate', '池级趋势开关'], ['pool_gate_enter_th', '趋势触发阈值'],
-    ['index_gate', '大盘趋势闸门']
+    ['index_gate', '大盘趋势闸门'], ['index_gate_ma', '大盘闸门MA']
   ]
   const rcfg = cfg as unknown as Record<string, unknown>
   topKeys.forEach(([k, label]) => {
@@ -137,6 +137,7 @@ interface BacktestFormValues {
   pool_gate_enter_th?: number
   // ---- 大盘趋势闸门（INDEX_GATE）----
   index_gate?: boolean
+  index_gate_ma?: number
   params?: Record<string, string | number | boolean>
   risk_config?: Record<string, string | number>
   capital_preset?: string
@@ -253,6 +254,7 @@ export default function BacktestList() {
   // 动态选股开关与开始日期联动（StockPicker 动量预筛需要 startDate，无后视镜）
   const universeAuto = Form.useWatch('universe_auto', form)
   const poolGate = Form.useWatch('pool_gate', form)
+  const indexGate = Form.useWatch('index_gate', form)
   const dateRangeWatch = Form.useWatch('dateRange', form)
   const startDate = dateRangeWatch?.[0] ? (dateRangeWatch[0] as Dayjs).format('YYYY-MM-DD') : undefined
 
@@ -316,6 +318,7 @@ export default function BacktestList() {
       pool_gate: values.pool_gate ?? false,
       pool_gate_enter_th: values.pool_gate_enter_th ?? 0.15,
       index_gate: values.index_gate ?? false,
+      index_gate_ma: values.index_gate_ma ?? 20,
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
       period: (values.period as 'daily' | 'minute5') ?? 'daily',
@@ -366,7 +369,8 @@ export default function BacktestList() {
         ...(cfg.benchmark != null ? { benchmark: cfg.benchmark } : {}),
         pool_gate: cfg.pool_gate ?? false,
         ...(cfg.pool_gate_enter_th != null ? { pool_gate_enter_th: cfg.pool_gate_enter_th } : {}),
-        index_gate: cfg.index_gate ?? false
+        index_gate: cfg.index_gate ?? false,
+        index_gate_ma: cfg.index_gate_ma ?? 20
       }
       if (cfg.start_date && cfg.end_date) {
         values.dateRange = [dayjs(cfg.start_date), dayjs(cfg.end_date)]
@@ -938,6 +942,7 @@ export default function BacktestList() {
             pool_gate: false,
             pool_gate_enter_th: 0.15,
             index_gate: false,
+            index_gate_ma: 20,
             risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
           }}
         >
@@ -1138,14 +1143,25 @@ export default function BacktestList() {
                 name="index_gate"
                 valuePropName="checked"
                 style={{ marginBottom: 8 }}
-                tooltip="大盘趋势闸门（INDEX_GATE）：中证500收盘跌破MA20连续2日时抑制开新仓/加仓，持仓退出与做T照常；收盘回升至MA20×1.01上方连续2日后自动恢复（滞回防抖，T-1对齐无未来函数）。需先在数据管理页拉取指数日线，缺失时闸门不生效。与池级趋势开关叠加，任一触发即停开仓。"
+                tooltip="大盘趋势闸门（INDEX_GATE）：中证500收盘跌破所选均线（默认MA20，可调）连续2日时抑制开新仓/加仓，持仓退出与做T照常；收盘回升至均线×1.01上方连续2日后自动恢复（滞回防抖，T-1对齐无未来函数）。需先在数据管理页拉取指数日线，缺失时闸门不生效。与池级趋势开关叠加，任一触发即停开仓。"
               >
                 <Checkbox>
-                  大盘趋势闸门：中证500跌破MA20时停开新仓
+                  大盘趋势闸门：中证500跌破动态均线时停开新仓
                   {strategyId && !['momentum_t', 'momentum_slot'].includes(strategyId)
                     ? '（仅支持 momentum_t / momentum_slot）' : ''}
                 </Checkbox>
               </Form.Item>
+              {indexGate && (
+                <Space size={4} style={{ marginBottom: 8 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>闸门均线周期：</Typography.Text>
+                  <Form.Item name="index_gate_ma" noStyle>
+                    <InputNumber size="small" min={5} max={250} step={5} style={{ width: 80 }} />
+                  </Form.Item>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    （日，默认20；恢复线 = 均线×1.01，内置）
+                  </Typography.Text>
+                </Space>
+              )}
             </Col>
             <Col span={6}>
               <Form.Item

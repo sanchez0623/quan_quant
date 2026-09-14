@@ -79,7 +79,8 @@ class BacktestRequest(BaseModel):
     pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
     pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
     # ---- 大盘趋势闸门（INDEX_GATE，仅 momentum_t/momentum_slot）----
-    index_gate: bool = False          # 中证500收盘<MA20连续2日时抑制开仓/加仓（恢复缓冲带内置）
+    index_gate: bool = False          # 中证500收盘<MA{index_gate_ma}连续2日时抑制开仓/加仓（恢复缓冲带内置）
+    index_gate_ma: int = 20           # 大盘闸门均线周期（可填 20/30/60 等）
     start_date: str
     end_date: str
     end_date_today: bool = False
@@ -177,7 +178,7 @@ def normalize_config(cfg: dict) -> dict:
         # 池级趋势开关
         "pool_gate": False, "pool_gate_enter_th": 0.15,
         # 大盘趋势闸门
-        "index_gate": False,
+        "index_gate": False, "index_gate_ma": 20,
         # 基准 / 剔除ST
         "benchmark": "000905", "exclude_st": True,
     }
