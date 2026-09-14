@@ -117,9 +117,20 @@ HALF_GATE 选股层 + P4 + asym0（分钟）：**OOS 超额 +30.28%、夏普 1.4
 
 风格空间角点 5 组合（趋势倾斜 0.15/0.45/0.30、加速主导 0.20/0.20/0.50、短期敏锐 0.50/0.20/0.20、中期稳态 0.20/0.50/0.20、短加双高 0.45/0.15/0.30）×双段，无组合过线：趋势倾斜全区间 +22pt 转正但 OOS -6.8pt；短期敏锐 OOS -41.5pt（敏锐化全灭再实锤）；**中期稳态 OOS 唯一 score 转正（+0.046）/超额 +23.0pt/回撤最浅 -16.8%，但全区间 -82.4pt 大崩——regime 专用形态非全天候**。**结论：均衡权重（0.30/0.30/0.30）是风格空间最稳健中心点**，维持。
 
+### 环境层扫描（2026-09-14）：大盘趋势闸门 MA 周期
+
+`index_gate`（中证500 跌破 MA 连续 2 日停开新仓）的 MA 周期参数化为 `index_gate_ma`（默认 20，可填 30/60），双段扫描 + 年度稳健性仲裁：
+
+- **双段扫描**（基座=闸门关，全区间超额 -17.0%/OOS +1.85%）：MA20 OOS -4.3pt（敏感误伤，924 型脉冲被掐）；**MA30 全区间 +36.5pt/OOS +14.3pt 双超额改善**但 score -0.236（全区间回撤 -37.7% 拖累）；MA60 OOS +28.5pt/回撤最浅 -29.1% 但全区间仅 +2.4pt、score 差 0.024——**score 纪律与超额证据打架**，用户拍板加测年度窗口仲裁。
+- **年度仲裁**（2022-2025 逐年 vs 闸门关，12 回测）：**MA30 胜率 4/4（+22.4/+16.4/+28.1/+3.9pt，Δ均值 +17.7%）为唯一每年全正档位**；MA60 3/4（2025 年 -4.6pt，2024 年 924 行情仅 +1.1pt 几乎踏空）。
+- **score 打架根源定位**：score = 5 窗超额均值 − 0.5×std − 回撤击穿罚，罚的是"稳定深度"；闸门参数的目标是总量超额 + 年度不翻车。MA30 赚总量但窗口间 Δ 波动大（+3.9~+28.1pt）+ 回撤更深 → std 罚与回撤罚压分；MA60 闸门钝、回撤最浅所以 score 接近基座，代价是超额几乎归零。年度 4/4 全胜证明双段超额非特定切窗幻觉。
+- **用户拍板：采纳 MA30**（7 项证据维度赢 6 项：全区间/OOS 双段、年度胜率、年度均值、2024、2025 全占优；MA60 仅 OOS 与回撤两项）。
+
+载体任务：`bt_b97b590f8d4f`（MA30 全区间）🏷️ / `bt_6e27d17bcf14`（MA30 OOS）🏷️；对照 `bt_6ceef116ddbf`（MA60 全区间）/ `bt_3f435a89b69d`（MA60 OOS）。
+
 ---
 
-## 3. 最终形态（7 项，每项都有双段证据）
+## 3. 最终形态（8 项，每项都有双段证据）
 
 | 参数 | 值 | 证据 |
 |---|---|---|
@@ -130,15 +141,16 @@ HALF_GATE 选股层 + P4 + asym0（分钟）：**OOS 超额 +30.28%、夏普 1.4
 | `atr_trail_floor`（止损线棘轮） | False | 基座对照双段 +3pt |
 | `t_debt_max_days`（债务时限） | 1 | 1-10 天扫描唯一双段过线 |
 | `pool_gate`（池级趋势开关） | on / 0.15 | 关闭 -16pt；0.15 双侧局部最优 |
+| `index_gate` + `index_gate_ma`（大盘趋势闸门） | on / MA=30 | 双段 +36.5/+14.3pt；年度 4/4 全胜（Δ均值 +17.7pt） |
 
-载体任务：`bt_76889c798212`（全区间）/ `bt_c0814085b738`（OOS）🏷️（= 前六项）+ `bt_03f865d5ea73` 系（成本基准确认 first）。
+载体任务：`bt_76889c798212`（全区间）/ `bt_c0814085b738`（OOS）🏷️（= 前六项）+ `bt_b97b590f8d4f` / `bt_6e27d17bcf14`（闸门 MA30 第七项）🏷️ + `bt_03f865d5ea73` 系（成本基准确认 first）。
 确认保留的原有项：`stop_loss_mode=atr_trailing` + `adaptive=trend`（vol 模式证伪后反证 trend 正确）。
 
 ---
 
 ## 4. 规律总结（比参数更值钱的部分）
 
-**被采纳的 4 项的共性**：不碰"选谁"，只管"拿多久/怎么执行"（轮动、非对称、棘轮、债务时限）——**执行/持有层的边际在两个 regime 间大体对称**。
+**被采纳的 5 项的共性**：不碰"选谁"，只管"拿多久/怎么执行/何时允许开仓"（轮动、非对称、棘轮、债务时限、大盘闸门 MA30）——**执行/持有层的边际在两个 regime 间大体对称**。
 
 **被拦截的共性（三连）**：
 1. 敏锐化（排序键、更快止盈/追踪）→ OOS 全灭
@@ -154,7 +166,7 @@ HALF_GATE 选股层 + P4 + asym0（分钟）：**OOS 超额 +30.28%、夏普 1.4
 
 ## 5. 附录：索引
 
-- **脚本**：`scripts/pulse_oat.py`（P0 首轮）→ `pulse_fwdt.py`（fwd_t/排序键）→ `pulse_combine.py`（合并）→ `pulse_t_oat.py`（做T层）→ `pulse_ratchet_oat.py` → `pulse_slots_oat.py` → `pulse_vol_oat.py` → `pulse_debt_oat.py` → `pulse_gateoff_oat.py` → `pulse_gateth_oat.py` → `pulse_costbase_oat.py`
+- **脚本**：`scripts/pulse_oat.py`（P0 首轮）→ `pulse_fwdt.py`（fwd_t/排序键）→ `pulse_combine.py`（合并）→ `pulse_t_oat.py`（做T层）→ `pulse_ratchet_oat.py` → `pulse_slots_oat.py` → `pulse_vol_oat.py` → `pulse_debt_oat.py` → `pulse_gateoff_oat.py` → `pulse_gateth_oat.py` → `pulse_costbase_oat.py` → `pulse_gatema_oat.py`（闸门 MA 双段）→ `pulse_gatema_yearly.py`（年度仲裁）→ `pulse_gatema_adopt.py`（落库）
 - **报告**：`scripts/out/pulse_*.md`（每轮 OAT/AB 报告）＋ `*_rows.jsonl`（断点续跑数据）
 - **工程备注**：分钟回测有原生层内存残留（每轮回测 +180-300MB，~7 次后 0xC0000005）——批量脚本统一看门狗循环 + jsonl 断点续跑；根治方案（子进程编排）待实施
 - **服务端搜索**：`GET /api/backtests?search=`（API_CONTRACT.md）；重点任务 🏷️ 前缀规则见 project_rules.md
