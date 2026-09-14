@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""组合验证：TOP50 + 换血线2（universe_auto=on + auto_top_x=50 + pool_refill_min=2）。
+"""组合验证：TOP50 × 换血线 1/2/3（universe_auto=on + auto_top_x=50 + pool_refill_min∈{1,2,3}）。
 
 用户拍板跑的组合叠加验证（"过线≠可叠加"铁律：两组增益必须单独验证组合）。
-对照三方：TOP50 包（refill=0）｜换血线2档（top30）｜off 基座。
-2 回测双段，落库一体。
+对照三方：TOP50 包（refill=0）｜换血线单档（top30）｜off 基座。
+R2 已有缓存（COMBO_* 键），本轮补 R1/R3；落库一体。
 """
 import json
 import sqlite3
@@ -46,6 +46,10 @@ def main():
                 done[r["combo"]] = r
             except Exception:
                 continue
+    # R2 旧缓存键别名（COMBO_* → COMBOR2_*）
+    for tag in ("全区间", "OOS段"):
+        if f"COMBO_{tag}" in done:
+            done[f"COMBOR2_{tag}"] = done[f"COMBO_{tag}"]
 
     conn = sqlite3.connect(str(Path(__file__).resolve().parents[2] / "data" / "meta.db"))
     task_names = {x[0] for x in conn.execute("SELECT name FROM tasks")}
@@ -85,32 +89,35 @@ def main():
         return r
 
     cfg0 = base_gate_on()
-    for oos, tag in ((False, "全区间"), (True, "OOS段")):
-        cfg = mk_dyn(cfg0, oos, auto=True, top=50, refill=2)
-        run_and_log_save(cfg, f"COMBO_{tag}", f"组合-TOP50+换血线2-{tag}(分钟)")
+    for refill in (1, 2, 3):
+        for oos, tag in ((False, "全区间"), (True, "OOS段")):
+            cfg = mk_dyn(cfg0, oos, auto=True, top=50, refill=refill)
+            run_and_log_save(cfg, f"COMBOR{refill}_{tag}",
+                             f"组合-TOP50+换血线{refill}-{tag}(分钟)")
 
     _report(done)
     print(f"总耗时 {time.time()-t0:,.0f}s", flush=True)
 
 
 def _report(done: dict) -> None:
-    rf = done.get("COMBO_全区间")
-    ro = done.get("COMBO_OOS段")
     lines = [
-        "# 组合验证：TOP50 + 换血线2（universe_auto=on + auto_top_x=50 + pool_refill_min=2）",
+        "# 组合验证：TOP50 × 换血线 1/2/3（universe_auto=on + auto_top_x=50 + pool_refill_min∈{1,2,3}）",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}｜OOS = {OOS_SPLIT} 起",
-        "- 对照三方：TOP50包(refill0)｜换血线2档(top30)｜off基座",
+        "- 对照三方：TOP50包(refill0)｜换血线单档(top30)｜off基座",
         "",
         "| 配置 | 段 | score | 超额 | 回撤 |",
         "|---|---|---|---|---|",
     ]
-    if rf:
-        lines.append(f"| **组合 TOP50+换血线2** | full | {rf['score']:.4f} "
-                     f"| {_pct(rf.get('excess_return'))} | {_pct(rf.get('max_drawdown'))} |")
-    if ro:
-        lines.append(f"| **组合 TOP50+换血线2** | oos | {ro['score']:.4f} "
-                     f"| {_pct(ro.get('excess_return'))} | {_pct(ro.get('max_drawdown'))} |")
+    for refill in (1, 2, 3):
+        rf = done.get(f"COMBOR{refill}_全区间")
+        ro = done.get(f"COMBOR{refill}_OOS段")
+        if rf:
+            lines.append(f"| **组合 TOP50+换血线{refill}** | full | {rf['score']:.4f} "
+                         f"| {_pct(rf.get('excess_return'))} | {_pct(rf.get('max_drawdown'))} |")
+        if ro:
+            lines.append(f"| **组合 TOP50+换血线{refill}** | oos | {ro['score']:.4f} "
+                         f"| {_pct(ro.get('excess_return'))} | {_pct(ro.get('max_drawdown'))} |")
     for name, seg in REFS.items():
         for tag in ("full", "oos"):
             r = seg[tag]
