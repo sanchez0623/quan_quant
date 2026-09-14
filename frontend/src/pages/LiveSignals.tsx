@@ -419,7 +419,7 @@ export default function LiveSignals() {
     },
     { title: '代码', dataIndex: 'code', width: 90, render: (v) => v || '-' },
     { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
-    { title: '理由', dataIndex: 'reason', ellipsis: true },
+    { title: '理由', dataIndex: 'reason' },   // 完整展示不截断：理由含代码等信息需可复制
     {
       title: '建议金额', dataIndex: 'suggest_amount', width: 110, align: 'right',
       render: (v) => (v != null ? fmtMoney(v) : '-')
