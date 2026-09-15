@@ -90,6 +90,14 @@ class MomentumSlotStrategy(Strategy):
         {"key": "crash_abs_cap", "frozen": True, "label": "崩溃绝对涨幅上限", "type": "float", "default": 30,
          "min": 10, "max": 60, "step": 1, "unit": "%", "group": "选股排序", "advanced": True,
          "description": "近5日涨幅超此值硬性禁入（σ自适应阈值作第二道），防连板追高"},
+        {"key": "lagvol_filter", "label": "滞后波动禁入", "type": "categorical",
+         "choices": ["off", "on"], "default": "off", "group": "选股排序", "advanced": True,
+         "description": "on=滞后波动t值z分超阈值禁入（第三道闸）：5日收益÷5日前20日σ×√5再做60日z，"
+                        "σ滞后不含最近暴涨膨胀，破解连板撑大σ后crash_sigma放宽放行的漏洞"},
+        {"key": "lagvol_z_max", "label": "滞后波动z上限", "type": "float", "default": 2.0,
+         "min": 1.0, "max": 4.0, "step": 0.25, "group": "选股排序", "advanced": True,
+         "show_if": {"lagvol_filter": ["on"]},
+         "description": "lagged_vol_tstat 的 60 日 z 超此值禁入（on 时生效）"},
         # ---- G3 趋势判据（建仓确认 / 退出信号）----
         {"key": "macd_fast", "frozen": True, "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
          "group": "趋势判据"},
@@ -121,7 +129,15 @@ class MomentumSlotStrategy(Strategy):
         # ---- G5 退出（衰退初期，个股级）----
         {"key": "exit_need", "frozen": True, "label": "衰退信号满足数", "type": "int", "default": 2, "min": 1, "max": 3,
          "group": "衰退退出",
-         "description": "MACD死叉/跌破MA20/动量转负或跌出榜单，满足 ≥N 项即退出（2=更保险）"},
+         "description": "MACD死叉/跌破MA20/动量转负或跌出榜单（+可选影线票），满足 ≥N 项即退出（2=更保险）"},
+        {"key": "shadow_exit", "label": "影线衰退票", "type": "categorical",
+         "choices": ["off", "on"], "default": "off", "group": "衰退退出",
+         "description": "on=影线不对称z作为衰退第四票：(上影-下影)/(high-low) 的20日z > 阈值（异常长上影=抛压）计一票，"
+                        "与 MACD死叉/跌破MA20/动量衰减 同池凑 exit_need"},
+        {"key": "shadow_z_exit", "label": "影线z衰退阈值", "type": "float", "default": 1.5,
+         "min": 0.5, "max": 3.0, "step": 0.25, "group": "衰退退出",
+         "show_if": {"shadow_exit": ["on"]},
+         "description": "shadow_balance_zscore_20 超此值计衰退一票（on 时生效）"},
         {"key": "exit_cooldown", "frozen": True, "label": "退出冷却期", "type": "int", "default": 5, "min": 0, "max": 20,
          "unit": "交易日", "group": "衰退退出",
          "description": "该股退出后 N 个交易日内不重建，防\"止损->立即买回->再止损\"放血"},
@@ -369,25 +385,29 @@ class MomentumSlotStrategy(Strategy):
         reduces: list[float | None] = [None] * n
 
         cols = ["date", "close", "atr_pct", "bias", "vol_pos", "breakout",
-                "dif", "dea", "ma_fast", "slope", "score", "day_idx", "pool_gate", "index_gate"]
+                "dif", "dea", "ma_fast", "slope", "score", "day_idx", "pool_gate", "index_gate",
+                "shadow_z"]
         # pool_gate/index_gate 由 prepare 注入（POOL_GATE / INDEX_GATE）；直调 _walk 的旧路径兜底补列
         if "pool_gate" not in df.columns:
             df = df.with_columns(pl.lit(False).alias("pool_gate"))
         if "index_gate" not in df.columns:
             df = df.with_columns(pl.lit(False).alias("index_gate"))
+        if "shadow_z" not in df.columns:
+            df = df.with_columns(pl.lit(None).alias("shadow_z"))  # FACTOR_EXT 旧路径兜底
         dts = df["date"].to_list()
         is_eod = [i == n - 1 or dts[i][:10] != dts[i + 1][:10] for i in range(n)]
         st = SlotStepper(p, top_days, regime_map=regime_map)
 
         for i, row in enumerate(df.select(cols).iter_rows()):
             (date, close, atr_pct, bias, vol_pos, breakout,
-             dif, dea, ma_fast, slope, score, day_idx, pool_gate, index_gate) = row
+             dif, dea, ma_fast, slope, score, day_idx, pool_gate, index_gate,
+             shadow_z) = row
             if start_date and date[:10] < start_date:
                 continue
             # 双 gate 合一后传给 step（step 签名不变：实盘 SlotStepper 调用零影响）
             sig = st.step(date, close, atr_pct, bias, vol_pos, breakout,
                           dif, dea, ma_fast, slope, score, day_idx,
-                          bool(pool_gate or index_gate), is_eod[i])
+                          bool(pool_gate or index_gate), is_eod[i], shadow_z=shadow_z)
             if sig is not None:
                 signals[i] = sig["signal"]
                 tags[i] = sig["tag"]
@@ -530,6 +550,9 @@ class SlotStepper:
         # 优化：二清确认期 / 跌出榜单事件化（0=关闭，保持原行为，A/B 基线不变）
         self.exit_confirm_days = int(p.get("exit_confirm_days") or 0)
         self.out_top_days = int(p.get("out_top_days") or 0)
+        # FACTOR_EXT：影线衰退票（off=现有3票凑数不变；on=影线不对称z计第四票）
+        self.shadow_exit = str(p.get("shadow_exit") or "off") == "on"
+        self.shadow_z_exit = float(p.get("shadow_z_exit") or 1.5)
         # 方案D：动量状态机（off=沿用现有衰退信号）
         self.momentum_fsm_on = str(p.get("momentum_fsm_on") or "off") == "on"
         self.exit_fade_days = int(p.get("exit_fade_days") or 2)
@@ -660,8 +683,10 @@ class SlotStepper:
 
     def step(self, date: str, close: float, atr_pct, bias, vol_pos, breakout,
              dif, dea, ma_fast, slope, score, day_idx, pool_gate: bool,
-             is_eod: bool) -> dict | None:
-        """喂一根 bar，返回信号 dict 或 None（is_eod：当日末 bar，daily 时钟用）"""
+             is_eod: bool, shadow_z=None) -> dict | None:
+        """喂一根 bar，返回信号 dict 或 None（is_eod：当日末 bar，daily 时钟用）。
+
+        shadow_z：影线不对称 z 值（FACTOR_EXT，尾部可选参数——实盘旧调用不传=第四票恒关）"""
         day = date[:10]
         if day != self.cur_day:
             self.cur_day = day
@@ -714,6 +739,9 @@ class SlotStepper:
         s3 = ((score is not None and score < 0)
               or out_trigger
               or score_decay)
+        # FACTOR_EXT：影线衰退票（on 且 z>阈值 时计第四票；off/None 恒 False 零影响）
+        s4 = (self.shadow_exit and shadow_z is not None
+              and shadow_z > self.shadow_z_exit)
 
         # 方案D：动量状态机（momentum_fsm_on 时用 减速/衰竭 替代「3信号凑数」判定退出）
         if self.momentum_fsm_on:
@@ -731,7 +759,7 @@ class SlotStepper:
         else:
             self.fade_today = False
             self.mom_state = "idle"
-            exit_trigger = (int(s1) + int(s2) + int(s3)) >= self.exit_need
+            exit_trigger = (int(s1) + int(s2) + int(s3) + int(s4)) >= self.exit_need
 
         # ---- 0) ATR硬止损（最高优先级，盘中实时触发） ----
         if self.opened and bias is not None and bias < self.atr_stop_k:
@@ -758,6 +786,7 @@ class SlotStepper:
                 if score_decay: hits.append("动量衰减")
                 if score is not None and score < 0: hits.append("动量转负")
                 if day not in self.top_days: hits.append("跌出榜单")
+                if s4: hits.append(f"影线抛压(z={shadow_z:.1f})")
             if self.exit_stage == 0:
                 if self.has_reduced:
                     # 已首减过（此前取消过二清）：信号再次满足 -> 直接清仓，不再重复首减

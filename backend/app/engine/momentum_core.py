@@ -84,9 +84,10 @@ PICK_SYNC_KEYS = (
 
 
 def aggregate_daily(df: pl.DataFrame) -> pl.DataFrame:
-    """任意周期K线 -> 日线聚合：day / d_close(收盘) / d_high / d_low"""
+    """任意周期K线 -> 日线聚合：day / d_open(首值) / d_close(收盘) / d_high / d_low"""
     return (df.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
-              .group_by("day").agg(pl.col("close").last().alias("d_close"),
+              .group_by("day").agg(pl.col("open").first().alias("d_open"),
+                                   pl.col("close").last().alias("d_close"),
                                    pl.col("high").max().alias("d_high"),
                                    pl.col("low").min().alias("d_low"))
               .sort("day"))
@@ -189,6 +190,43 @@ def daily_feature_core(daily: pl.DataFrame, p: dict,
         pl.when(((pl.col("vol5") > 0) & (pl.col("ret5") > crash_sigma * pl.col("vol5")))
                 | (pl.col("ret5") > crash_abs))
           .then(pl.lit(None)).otherwise(pl.col("score")).alias("score"))
+
+    # ---- 因子扩展（FACTOR_EXT）：影线不对称 z 值 + 滞后波动 t 值（默认关闭零影响） ----
+    # shadow_balance_zscore_20：(上影-下影)/(high-low) 的 20 日时序 z-score。
+    # 上影=high-max(open,close)、下影=min(open,close)-low；正值=异常长上影（日内冲高回落抛压）。
+    # 一字板（high=low）比值未定义 -> None。open 列缺失（旧调用方）-> 恒 None。
+    lagvol_filter = str(p.get("lagvol_filter") or "off") == "on"
+    lagvol_z_max = float(p.get("lagvol_z_max") or 2.0)
+    if "d_open" in daily.columns:
+        _ub = pl.max_horizontal("d_open", "d_close")
+        _lb = pl.min_horizontal("d_open", "d_close")
+        _rng = pl.col("d_high") - pl.col("d_low")
+        _sb = (pl.when(_rng > 0)
+               .then(((pl.col("d_high") - _ub) - (_lb - pl.col("d_low"))) / _rng)
+               .otherwise(None))
+        _sb_mean = _sb.rolling_mean(20, **_rolling_params(20))
+        _sb_std = _sb.rolling_std(20, **_rolling_params(20))
+        shadow_z = (pl.when(_sb_std > 0)
+                    .then((_sb - _sb_mean) / _sb_std).otherwise(None))
+    else:
+        shadow_z = pl.lit(None)
+    # lagged_vol_tstat_5_20_60：5日收益 ÷ 5日前20日σ×√5（σ滞后=不含最近暴涨的膨胀，
+    # 破解"连板撑大σ导致 crash_sigma 放宽放行"的漏洞），再做 60 日时序 z-score。
+    vol20_lag = (daily_ret.rolling_std(20, **_rolling_params(20))
+                 .clip(lower_bound=_vol_floor).shift(5)) * (5 ** 0.5)
+    t5 = pl.when(vol20_lag > 0).then(ret5 / vol20_lag).otherwise(None)
+    t5_mean = t5.rolling_mean(60, **_rolling_params(60))
+    t5_std = t5.rolling_std(60, **_rolling_params(60))
+    lagvol_tstat = (pl.when(t5_std > 0)
+                    .then((t5 - t5_mean) / t5_std).otherwise(None))
+    daily = daily.with_columns([shadow_z.alias("shadow_z"),
+                                lagvol_tstat.alias("lagvol_tstat")])
+    # 滞后波动禁入（lagvol_filter=on 时启用）：z 超阈值 -> score 作废（与 crash 保护同位第三道闸）
+    if lagvol_filter:
+        daily = daily.with_columns(
+            pl.when(pl.col("lagvol_tstat") > lagvol_z_max)
+              .then(pl.lit(None)).otherwise(pl.col("score")).alias("score"))
+
     daily = daily.with_columns([
         # 突破 N 日新高（金字塔加仓条件）
         (pl.col("d_close") >= pl.col("d_close")
@@ -211,7 +249,8 @@ def daily_feature_core(daily: pl.DataFrame, p: dict,
           .otherwise(None).alias("cross_days"))
     daily = daily.drop("_hist", "_cross_idx")
     cols = ["day", "day_idx", "dif", "dea", anchor_name, "slope", "atr_pct",
-            "bias", "score", "mom_gap", "accel", "cross_days", "vol_pos", "breakout"]
+            "bias", "score", "mom_gap", "accel", "cross_days", "vol_pos", "breakout",
+            "shadow_z", "lagvol_tstat"]
     if keep_close:
         cols.append("d_close")  # 全市场路径：门槛「收盘 > 均线锚」需要后复权收盘价
     return daily.select(cols)
@@ -293,7 +332,8 @@ def market_features(data_dir: Optional[str] = None,
         code = g["code"][0]
         # 日线 parquet 无 day 列（date 即交易日，防御性截断），补齐供特征内核使用
         g = g.with_columns(pl.col("date").str.slice(0, 10).alias("day"))
-        g = g.rename({"close": "d_close", "high": "d_high", "low": "d_low"})
+        g = g.rename({"close": "d_close", "high": "d_high", "low": "d_low",
+                      "open": "d_open"})
         f = daily_feature_core(g, p, anchor_key="anchor_n", anchor_name=anchor_name,
                                with_accel=bool(p.get("with_accel")), keep_close=True)
         # 门槛布尔列在单股内算好：MACD 金叉 + 收盘站上均线锚
