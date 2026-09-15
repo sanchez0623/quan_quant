@@ -445,8 +445,8 @@ export default function OptimizeList() {
   }, [fetchList])
 
   useEffect(() => {
-    getBacktests()
-      .then(setBacktests)
+    getBacktests(undefined, undefined, 1, 1000)
+      .then((res) => setBacktests(res.items))
       .catch(() => {})
     getStrategies()
       .then(setStrategies)

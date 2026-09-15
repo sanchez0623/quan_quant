@@ -134,7 +134,7 @@ export default function AiAnalysis() {
 
   const loadBacktests = useCallback(async () => {
     try {
-      setBacktests(await getBacktests())
+      setBacktests((await getBacktests(undefined, undefined, 1, 1000)).items)
     } catch {
       /* ignore */
     }

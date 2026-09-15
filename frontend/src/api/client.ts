@@ -6,6 +6,7 @@ import type {
   AiSuggestionStats,
   BacktestCreateRequest,
   BacktestListItem,
+  BacktestListResponse,
   BacktestReport,
   BacktestTemplateItem,
   BsCheckResult,
@@ -141,12 +142,19 @@ export async function generateBacktestName(data: {
   return res.data
 }
 
-export async function getBacktests(search?: string, tag?: string): Promise<BacktestListItem[]> {
-  // 服务端搜索（name/id LIKE）+ 标签筛选（tag='重点'；'__none__'=只看无标签）：落库后无需刷新页面即可搜到
-  const params: Record<string, string> = {}
+export async function getBacktests(
+  search?: string, tag?: string, page = 1, pageSize = 20, includeConfig = false
+): Promise<BacktestListResponse> {
+  // 服务端分页 + 搜索（name/id LIKE）+ 标签筛选（'__none__'=只看无标签）；
+  // includeConfig=1 才返回完整 config（"存为模板"需要，响应体差一个量级）
+  const params: Record<string, string> = {
+    page: String(page),
+    page_size: String(pageSize),
+    include_config: includeConfig ? '1' : '0'
+  }
   if (search) params.search = search
   if (tag) params.tag = tag
-  const res = await api.get<BacktestListItem[]>('/backtests', Object.keys(params).length ? { params } : undefined)
+  const res = await api.get<BacktestListResponse>('/backtests', { params })
   return res.data
 }
 

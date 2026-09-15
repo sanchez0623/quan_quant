@@ -150,9 +150,9 @@ def test_backtest_flow(client, token):
     assert r.status_code == 200, r.text
     task_id = r.json()["task_id"]
     assert task_id.startswith("bt_")
-    # 列表
+    # 列表（服务端分页结构 {items,total,page,page_size}）
     r = client.get("/api/backtests", headers=H(token))
-    assert any(t["task_id"] == task_id for t in r.json())
+    assert any(t["task_id"] == task_id for t in r.json()["items"])
     # 轮询至成功
     st = _wait_task(client, task_id, token=token)
     assert st["status"] == "success", st
@@ -294,7 +294,7 @@ def test_ai_no_key_fails_with_friendly_error(client, token):
     assert prof["user_key_pool"] == []  # admin 未配置 DB key
     # 找一个成功的回测
     r = client.get("/api/backtests", headers=H(token))
-    success_bt = next((t["task_id"] for t in r.json() if t["status"] == "success"), None)
+    success_bt = next((t["task_id"] for t in r.json()["items"] if t["status"] == "success"), None)
     assert success_bt, "前置回测应已成功"
     r = client.post("/api/ai/analyze", headers=H(token),
                     json={"backtest_id": success_bt, "profile": "main"})

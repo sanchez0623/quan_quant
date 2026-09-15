@@ -230,6 +230,10 @@ export default function BacktestList() {
   const [searchText, setSearchText] = useState('')
   // 标签筛选（服务端精确匹配）：''=全部｜'重点'=只看重点｜'__none__'=只看无标签
   const [tagFilter, setTagFilter] = useState('')
+  // 服务端分页（API 只回当前页，total 由 count 提供）
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [total, setTotal] = useState(0)
   // ---- 配置模板 ----
   const [templates, setTemplates] = useState<BacktestTemplateItem[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined)
@@ -268,15 +272,18 @@ export default function BacktestList() {
     }
   }, [])
 
-  const fetchList = useCallback(async (kw?: string, tf?: string) => {
+  const fetchList = useCallback(async (kw?: string, tf?: string, pg?: number) => {
     try {
-      setList(await getBacktests(kw?.trim() || undefined, tf || undefined))
+      const res = await getBacktests(kw?.trim() || undefined, tf || undefined,
+        pg ?? page, pageSize, true)
+      setList(res.items)
+      setTotal(res.total)
     } catch {
       /* 列表加载失败静默，轮询时继续尝试 */
     } finally {
       setLoadingList(false)
     }
-  }, [])
+  }, [page, pageSize])
 
   useEffect(() => {
     getStrategies()
@@ -287,7 +294,10 @@ export default function BacktestList() {
 
   // 搜索防抖 300ms：服务端搜索（name/id LIKE）+ 标签筛选（tag 精确匹配），落库后无需刷新页面即可搜到
   useEffect(() => {
-    const timer = window.setTimeout(() => fetchList(searchText, tagFilter), 300)
+    const timer = window.setTimeout(() => {
+      setPage(1)
+      fetchList(searchText, tagFilter, 1)
+    }, 300)
     return () => window.clearTimeout(timer)
   }, [searchText, tagFilter, fetchList])
 
@@ -409,17 +419,17 @@ export default function BacktestList() {
     navigate('/backtests', { replace: true })
   }, [location.state, strategies, applyConfigToForm, navigate])
 
-  // 存在运行中任务时每 3s 自动刷新（带当前搜索词/标签，保持服务端过滤一致）
+  // 存在运行中任务时每 3s 自动刷新（带当前搜索词/标签/页码，保持服务端过滤一致）
   const hasActive = list.some((t) => t.status === 'pending' || t.status === 'running')
   useEffect(() => {
     if (!hasActive) return
     const timer = window.setInterval(() => {
-      getBacktests(searchText.trim() || undefined, tagFilter || undefined)
-        .then(setList)
+      getBacktests(searchText.trim() || undefined, tagFilter || undefined, page, pageSize, true)
+        .then((res) => { setList(res.items); setTotal(res.total) })
         .catch(() => {})
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [hasActive, searchText, tagFilter])
+  }, [hasActive, searchText, tagFilter, page, pageSize])
 
   // 股票池远程搜索与批量粘贴逻辑已抽至 StockPicker 组件（方案 §8.3）
 
@@ -1392,7 +1402,18 @@ export default function BacktestList() {
           dataSource={filteredList}
           columns={columns}
           loading={loadingList}
-          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (t) => `共 ${t} 条`,
+            onChange: (p, ps) => {
+              setPage(p)
+              setPageSize(ps)
+              fetchList(searchText, tagFilter, p)
+            }
+          }}
         />
       </Card>
 

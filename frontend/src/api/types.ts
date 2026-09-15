@@ -284,9 +284,17 @@ export interface BacktestListItem {
   period: string
   /** 重点任务标签（独立字段，可筛选；空=无标签） */
   tag?: string
-  /** 完整回测配置（供「存为模板」复用） */
+  /** 完整回测配置（供「存为模板」复用）；列表接口 include_config=1 时才返回 */
   config?: BacktestCreateRequest | null
   error?: string | null
+}
+
+/** GET /api/backtests 服务端分页响应 */
+export interface BacktestListResponse {
+  items: BacktestListItem[]
+  total: number
+  page: number
+  page_size: number
 }
 
 // ---- 回测配置模板（每用户私有） ----

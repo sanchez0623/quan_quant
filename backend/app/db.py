@@ -469,35 +469,50 @@ def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
             "payload": payload, "tag": row[10] or ""}
 
 
-def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
-               search: Optional[str] = None, tag: Optional[str] = None) -> list[dict]:
-    """tag 筛选：None=不过滤｜''（空串）=只看无标签｜其他值=精确匹配该标签"""
-    tag_filter = ""
+def _task_where(task_type: Optional[str], search: Optional[str],
+                tag: Optional[str]) -> tuple[str, list]:
+    """tasks 表公共 WHERE 组装（type/search/tag）；tag 语义同 list_tasks。"""
+    conds, vals = [], []
+    if task_type:
+        conds.append("type=?")
+        vals.append(task_type)
+    kw = (search or "").strip()
+    if kw:
+        conds.append("(name LIKE ? OR id LIKE ?)")
+        like = f"%{kw}%"
+        vals.extend([like, like])
     if tag is not None:
-        tag_filter = "" if tag == "__none__" else tag
         if tag == "__none__":
-            tag_cond, tag_val = "(tag IS NULL OR tag='')", ()
+            conds.append("(tag IS NULL OR tag='')")
         else:
-            tag_cond, tag_val = "tag=?", (tag_filter,)
-    else:
-        tag_cond, tag_val = None, ()
+            conds.append("tag=?")
+            vals.append(tag)
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    return where, vals
+
+
+def count_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
+                search: Optional[str] = None, tag: Optional[str] = None) -> int:
+    """与 list_tasks 同条件的轻量计数（分页 total 用，不解析 payload）"""
+    where, vals = _task_where(task_type, search, tag)
     with conn(db_path) as c:
-        kw = (search or "").strip()
-        conds, vals = [], []
-        if task_type:
-            conds.append("type=?")
-            vals.append(task_type)
-        if kw:
-            conds.append("(name LIKE ? OR id LIKE ?)")
-            like = f"%{kw}%"
-            vals.extend([like, like])
-        if tag_cond:
-            conds.append(tag_cond)
-            vals.extend(tag_val)
-        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        row = c.execute(f"SELECT COUNT(*) FROM tasks {where}", vals).fetchone()
+    return int(row[0]) if row else 0
+
+
+def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
+               search: Optional[str] = None, tag: Optional[str] = None,
+               limit: Optional[int] = None, offset: int = 0) -> list[dict]:
+    """tag 筛选：None=不过滤｜''（空串）=只看无标签｜其他值=精确匹配该标签。
+    limit/offset 可选分页（None=全量，兼容既有遍历型调用方）"""
+    where, vals = _task_where(task_type, search, tag)
+    page_sql = ""
+    if limit is not None:
+        page_sql = f"LIMIT {int(limit)} OFFSET {int(max(0, offset))}"
+    with conn(db_path) as c:
         rows = c.execute(
             f"SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload,tag "
-            f"FROM tasks {where} ORDER BY created_at DESC, rowid DESC", vals).fetchall()
+            f"FROM tasks {where} ORDER BY created_at DESC, rowid DESC {page_sql}", vals).fetchall()
     out = []
     for row in rows:
         try:
