@@ -98,6 +98,12 @@ class MomentumSlotStrategy(Strategy):
          "min": 1.0, "max": 4.0, "step": 0.25, "group": "选股排序", "advanced": True,
          "show_if": {"lagvol_filter": ["on"]},
          "description": "lagged_vol_tstat 的 60 日 z 超此值禁入（on 时生效）"},
+        {"key": "w_shadow_z", "label": "影线因子权重", "type": "float", "default": 0,
+         "min": 0, "max": 1.5, "step": 0.1, "group": "选股排序", "advanced": True,
+         "description": "排名加权（负向）：异常长上影（影线z为正）降分；0=关闭"},
+        {"key": "w_lagvol", "label": "滞后波动因子权重", "type": "float", "default": 0,
+         "min": 0, "max": 1.5, "step": 0.1, "group": "选股排序", "advanced": True,
+         "description": "排名加权（负向）：过度延伸（滞后波动t的z为正）降分；0=关闭"},
         # ---- G3 趋势判据（建仓确认 / 退出信号）----
         {"key": "macd_fast", "frozen": True, "label": "MACD快线", "type": "int", "default": 12, "min": 5, "max": 30,
          "group": "趋势判据"},
@@ -114,6 +120,14 @@ class MomentumSlotStrategy(Strategy):
         {"key": "base_pct_min", "frozen": True, "label": "试仓资金占比", "type": "float", "default": 10,
          "min": 5, "max": 40, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "金叉+站上快均线+入榜但斜率未确认时的首仓比例"},
+        {"key": "shadow_confirm", "label": "影线承接升级", "type": "categorical",
+         "choices": ["off", "on"], "default": "off", "group": "建仓与加仓",
+         "description": "on=长下影承接（影线z为负且超阈值）可替代斜率确认触发试仓升级满配"
+                        "（探底承接=回踩支撑的入场质量信号）"},
+        {"key": "shadow_z_confirm", "label": "影线承接z阈值", "type": "float", "default": 1.0,
+         "min": 0.5, "max": 3.0, "step": 0.25, "group": "建仓与加仓",
+         "show_if": {"shadow_confirm": ["on"]},
+         "description": "shadow_z < -此值 视为强承接（on 时生效）"},
         {"key": "base_pct_max", "label": "满配资金占比", "type": "float", "default": 50,
          "min": 5, "max": 90, "step": 1, "unit": "%", "group": "建仓与加仓",
          "description": "加速确认（斜率向上）后的目标仓位；实际仍受风控个股上限约束"},
@@ -553,6 +567,9 @@ class SlotStepper:
         # FACTOR_EXT：影线衰退票（off=现有3票凑数不变；on=影线不对称z计第四票）
         self.shadow_exit = str(p.get("shadow_exit") or "off") == "on"
         self.shadow_z_exit = float(p.get("shadow_z_exit") or 1.5)
+        # FACTOR_EXT：影线承接升级（off=仅斜率确认升级；on=长下影强承接可替代斜率触发升级）
+        self.shadow_confirm = str(p.get("shadow_confirm") or "off") == "on"
+        self.shadow_z_confirm = float(p.get("shadow_z_confirm") or 1.0)
         # 方案D：动量状态机（off=沿用现有衰退信号）
         self.momentum_fsm_on = str(p.get("momentum_fsm_on") or "off") == "on"
         self.exit_fade_days = int(p.get("exit_fade_days") or 2)
@@ -894,12 +911,16 @@ class SlotStepper:
                 return out
             return None
 
-        # ---- 3) 试仓升级 ----
-        if not self.full and slope_up and trend_ok and not pool_gate:
+        # ---- 3) 试仓升级（FACTOR_EXT：on 时影线强承接可替代斜率确认） ----
+        shadow_ok = (self.shadow_confirm and shadow_z is not None
+                     and shadow_z < -self.shadow_z_confirm)
+        if not self.full and (slope_up or shadow_ok) and trend_ok and not pool_gate:
             self.full = True
+            reason = ("斜率确认，试仓升级满配" if slope_up
+                      else f"影线承接确认( z={shadow_z:.1f})，试仓升级满配")
             return {"signal": 1, "tag": "加仓",
                     "budget_pct": max(0.0, self.base_max - self.base_min) * self._core_scale(date),
-                    "reason": "斜率确认，试仓升级满配"}
+                    "reason": reason}
 
         # ---- 4) 金字塔加仓：突破新高 + 冷却期 + 次数递减 ----
         # P1 防同价：冷却期自开仓日起算，且要求当前价高于开仓以来的
