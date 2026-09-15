@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   error TEXT,
   created_at TEXT NOT NULL,
   finished_at TEXT,
-  payload TEXT DEFAULT '{}'
+  payload TEXT DEFAULT '{}',
+  tag TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type, created_at);
 CREATE TABLE IF NOT EXISTS backtest_reports(
@@ -231,6 +232,9 @@ def init_db(db_path: Optional[str] = None) -> None:
 
 def _migrate(c: sqlite3.Connection) -> None:
     """轻量迁移：老库补列（幂等）"""
+    tcols = {r[1] for r in c.execute("PRAGMA table_info(tasks)")}
+    if "tag" not in tcols:
+        c.execute("ALTER TABLE tasks ADD COLUMN tag TEXT DEFAULT ''")  # 重点任务标签（独立字段可筛选）
     cols = {r[1] for r in c.execute("PRAGMA table_info(ai_analyses)")}
     if "suggestions" not in cols:
         c.execute("ALTER TABLE ai_analyses ADD COLUMN suggestions TEXT")  # AI结构化建议 JSON
@@ -366,11 +370,13 @@ class TaskCancelled(RuntimeError):
 
 
 def create_task(task_id: str, name: str, task_type: str, payload: Optional[dict] = None,
-                db_path: Optional[str] = None) -> None:
+                tag: str = "", db_path: Optional[str] = None) -> None:
     with conn(db_path) as c:
         c.execute(
-            "INSERT INTO tasks(id,name,type,status,progress,message,created_at,payload) VALUES(?,?,?,?,?,?,?,?)",
-            (task_id, name, task_type, "pending", 0, "", _now(), json.dumps(payload or {}, ensure_ascii=False)))
+            "INSERT INTO tasks(id,name,type,status,progress,message,created_at,payload,tag) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, name, task_type, "pending", 0, "", _now(),
+             json.dumps(payload or {}, ensure_ascii=False), tag or ""))
 
 
 def request_cancel(task_id: str, db_path: Optional[str] = None) -> str:
@@ -450,7 +456,7 @@ def reset_task(task_id: str, db_path: Optional[str] = None) -> None:
 def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
     with conn(db_path) as c:
         row = c.execute(
-            "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
+            "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload,tag "
             "FROM tasks WHERE id=?", (task_id,)).fetchone()
     if not row:
         return None
@@ -460,35 +466,38 @@ def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
         payload = {}
     return {"task_id": row[0], "name": row[1], "type": row[2], "status": row[3], "progress": row[4],
             "message": row[5], "error": row[6], "created_at": row[7], "finished_at": row[8],
-            "payload": payload}
+            "payload": payload, "tag": row[10] or ""}
 
 
 def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
-               search: Optional[str] = None) -> list[dict]:
+               search: Optional[str] = None, tag: Optional[str] = None) -> list[dict]:
+    """tag 筛选：None=不过滤｜''（空串）=只看无标签｜其他值=精确匹配该标签"""
+    tag_filter = ""
+    if tag is not None:
+        tag_filter = "" if tag == "__none__" else tag
+        if tag == "__none__":
+            tag_cond, tag_val = "(tag IS NULL OR tag='')", ()
+        else:
+            tag_cond, tag_val = "tag=?", (tag_filter,)
+    else:
+        tag_cond, tag_val = None, ()
     with conn(db_path) as c:
         kw = (search or "").strip()
+        conds, vals = [], []
         if task_type:
-            if kw:
-                like = f"%{kw}%"
-                rows = c.execute(
-                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                    "FROM tasks WHERE type=? AND (name LIKE ? OR id LIKE ?) "
-                    "ORDER BY created_at DESC, rowid DESC", (task_type, like, like)).fetchall()
-            else:
-                rows = c.execute(
-                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                    "FROM tasks WHERE type=? ORDER BY created_at DESC, rowid DESC", (task_type,)).fetchall()
-        else:
-            if kw:
-                like = f"%{kw}%"
-                rows = c.execute(
-                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                    "FROM tasks WHERE name LIKE ? OR id LIKE ? "
-                    "ORDER BY created_at DESC, rowid DESC", (like, like)).fetchall()
-            else:
-                rows = c.execute(
-                    "SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload "
-                    "FROM tasks ORDER BY created_at DESC, rowid DESC").fetchall()
+            conds.append("type=?")
+            vals.append(task_type)
+        if kw:
+            conds.append("(name LIKE ? OR id LIKE ?)")
+            like = f"%{kw}%"
+            vals.extend([like, like])
+        if tag_cond:
+            conds.append(tag_cond)
+            vals.extend(tag_val)
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        rows = c.execute(
+            f"SELECT id,name,type,status,progress,message,error,created_at,finished_at,payload,tag "
+            f"FROM tasks {where} ORDER BY created_at DESC, rowid DESC", vals).fetchall()
     out = []
     for row in rows:
         try:
@@ -497,7 +506,7 @@ def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
             payload = {}
         out.append({"task_id": row[0], "name": row[1], "type": row[2], "status": row[3],
                     "progress": row[4], "message": row[5], "error": row[6], "created_at": row[7],
-                    "finished_at": row[8], "payload": payload})
+                    "finished_at": row[8], "payload": payload, "tag": row[10] or ""})
     return out
 
 

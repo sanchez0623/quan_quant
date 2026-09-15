@@ -305,10 +305,12 @@ def create_backtest(req: BacktestRequest, _user: str = Depends(get_current_user)
 
 @router.get("")
 def list_backtests(_user: str = Depends(get_current_user),
-                   search: str = ""):
-    # 服务端搜索（name/id LIKE）：落库后无需刷新页面即可搜到新任务
+                   search: str = "", tag: str = ""):
+    # 服务端搜索（name/id LIKE）+ 标签筛选（tag=重点 精确匹配；tag=__none__ 只看无标签）：
+    # 落库后无需刷新页面即可搜到新任务
     out = []
-    for t in db.list_tasks("backtest", search=search):
+    tag_arg = tag if tag else None
+    for t in db.list_tasks("backtest", search=search, tag=tag_arg):
         payload = t.get("payload") or {}
         cfg = payload.get("config")
         # 归一化后再回显：老任务配置缺改版后新增的参数时，「存为模板」也能拿到全量配置
@@ -319,7 +321,7 @@ def list_backtests(_user: str = Depends(get_current_user),
                 pass
         out.append({
             "task_id": t["task_id"], "name": t["name"], "status": t["status"],
-            "created_at": t["created_at"],
+            "created_at": t["created_at"], "tag": t.get("tag", ""),
             "strategy_id": payload.get("strategy_id", ""),
             "period": payload.get("period", ""),
             "config": cfg,

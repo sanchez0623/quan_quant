@@ -141,10 +141,12 @@ export async function generateBacktestName(data: {
   return res.data
 }
 
-export async function getBacktests(search?: string): Promise<BacktestListItem[]> {
-  // 服务端搜索（name/id LIKE）：落库后无需刷新页面即可搜到
-  const res = await api.get<BacktestListItem[]>(
-    '/backtests', search ? { params: { search } } : undefined)
+export async function getBacktests(search?: string, tag?: string): Promise<BacktestListItem[]> {
+  // 服务端搜索（name/id LIKE）+ 标签筛选（tag='重点'；'__none__'=只看无标签）：落库后无需刷新页面即可搜到
+  const params: Record<string, string> = {}
+  if (search) params.search = search
+  if (tag) params.tag = tag
+  const res = await api.get<BacktestListItem[]>('/backtests', Object.keys(params).length ? { params } : undefined)
   return res.data
 }
 

@@ -18,7 +18,7 @@
 
 - **实验回测必须落库进回测列表（2026-09-13 用户明确要求）**：任何实验性回测产出（OAT/AB/采纳形态/对照形态）只要结论要给用户复查，就必须用三件套落库：`db.create_task(tid, name, "backtest", payload)` + `db.save_report(tid, path)` + `db.update_task(tid, status="success", progress=100)`（payload 含 config 与 report_path，参照 `scripts/save_pulse_tasks.py`）。只写 reports/*.json 不登记 tasks 表 = 界面完全不可见（历史事故两次）。业务库在 `data/meta.db`（`config.META_DB_PATH`），与 `backend/app.db` 无关。
 
-- **重点/有效任务打 🏷️ 标签（2026-09-13 用户要求）**：回测实验中"重点有效"（采纳形态、关键对照、结论载体）的任务，落库时名称加 `🏷️` 前缀（如 `🏷️做T层采纳形态-asym_bias0-全区间(分钟)`），已在列表的补打用 `db.update_task(tid, name=...)`。前端搜索同时匹配 name 与 task_id。
+- **重点/有效任务打标签（2026-09-13 用户要求；2026-09-15 升级为独立字段）**：回测实验中"重点有效"（采纳形态、关键对照、结论载体）的任务，落库时**打 `tag` 字段**（`db.create_task(..., tag="重点")` 或补打 `db.update_task(tid, tag="重点")`）——标签是 tasks.tag 独立列，**名称不再加 🏷️ 前缀**（历史前缀已迁移：名称去 🏷️、tag='重点'）。前端列表有"标签"列与筛选下拉（全部标签/重点/无标签），`GET /api/backtests?tag=重点` 服务端精确筛选（`tag=__none__`=只看无标签）。
 
 - 无后视镜：选股/重选基准日 = 严格早于段首的最近交易日（T-1），任何新选股逻辑不得引入未来数据。
 

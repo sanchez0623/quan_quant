@@ -228,6 +228,8 @@ export default function BacktestList() {
   const [list, setList] = useState<BacktestListItem[]>([])
   const [loadingList, setLoadingList] = useState(true)
   const [searchText, setSearchText] = useState('')
+  // 标签筛选（服务端精确匹配）：''=全部｜'重点'=只看重点｜'__none__'=只看无标签
+  const [tagFilter, setTagFilter] = useState('')
   // ---- 配置模板 ----
   const [templates, setTemplates] = useState<BacktestTemplateItem[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | undefined>(undefined)
@@ -266,9 +268,9 @@ export default function BacktestList() {
     }
   }, [])
 
-  const fetchList = useCallback(async (kw?: string) => {
+  const fetchList = useCallback(async (kw?: string, tf?: string) => {
     try {
-      setList(await getBacktests(kw?.trim() || undefined))
+      setList(await getBacktests(kw?.trim() || undefined, tf || undefined))
     } catch {
       /* 列表加载失败静默，轮询时继续尝试 */
     } finally {
@@ -283,11 +285,11 @@ export default function BacktestList() {
     loadTemplates()
   }, [loadTemplates])
 
-  // 搜索防抖 300ms：服务端搜索（name/id LIKE），落库后无需刷新页面即可搜到
+  // 搜索防抖 300ms：服务端搜索（name/id LIKE）+ 标签筛选（tag 精确匹配），落库后无需刷新页面即可搜到
   useEffect(() => {
-    const timer = window.setTimeout(() => fetchList(searchText), 300)
+    const timer = window.setTimeout(() => fetchList(searchText, tagFilter), 300)
     return () => window.clearTimeout(timer)
-  }, [searchText, fetchList])
+  }, [searchText, tagFilter, fetchList])
 
   /**
    * 表单值 -> 回测配置（模板保存与提交共用）。
@@ -407,17 +409,17 @@ export default function BacktestList() {
     navigate('/backtests', { replace: true })
   }, [location.state, strategies, applyConfigToForm, navigate])
 
-  // 存在运行中任务时每 3s 自动刷新（带当前搜索词，保持服务端过滤一致）
+  // 存在运行中任务时每 3s 自动刷新（带当前搜索词/标签，保持服务端过滤一致）
   const hasActive = list.some((t) => t.status === 'pending' || t.status === 'running')
   useEffect(() => {
     if (!hasActive) return
     const timer = window.setInterval(() => {
-      getBacktests(searchText.trim() || undefined)
+      getBacktests(searchText.trim() || undefined, tagFilter || undefined)
         .then(setList)
         .catch(() => {})
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [hasActive, searchText])
+  }, [hasActive, searchText, tagFilter])
 
   // 股票池远程搜索与批量粘贴逻辑已抽至 StockPicker 组件（方案 §8.3）
 
@@ -758,6 +760,13 @@ export default function BacktestList() {
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>
     },
     { title: '名称', dataIndex: 'name', ellipsis: true },
+    {
+      title: '标签',
+      dataIndex: 'tag',
+      width: 70,
+      render: (v: string | undefined) =>
+        v ? <Tag color="gold">{v}</Tag> : <span style={{ color: '#ccc' }}>-</span>
+    },
     { title: '策略', dataIndex: 'strategy_id', width: 110 },
     {
       title: '周期',
@@ -1357,13 +1366,25 @@ export default function BacktestList() {
       <Card
         title="回测任务列表"
         extra={
-          <Input.Search
-            placeholder="搜索名称 / 任务ID"
-            allowClear
-            style={{ width: 280 }}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-          />
+          <Space>
+            <Select
+              value={tagFilter}
+              onChange={setTagFilter}
+              style={{ width: 120 }}
+              options={[
+                { value: '', label: '全部标签' },
+                { value: '重点', label: '重点' },
+                { value: '__none__', label: '无标签' }
+              ]}
+            />
+            <Input.Search
+              placeholder="搜索名称 / 任务ID"
+              allowClear
+              style={{ width: 280 }}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+          </Space>
         }
       >
         <Table<BacktestListItem>

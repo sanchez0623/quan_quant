@@ -282,6 +282,8 @@ export interface BacktestListItem {
   created_at: string
   strategy_id: string
   period: string
+  /** 重点任务标签（独立字段，可筛选；空=无标签） */
+  tag?: string
   /** 完整回测配置（供「存为模板」复用） */
   config?: BacktestCreateRequest | null
   error?: string | null
