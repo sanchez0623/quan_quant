@@ -318,7 +318,7 @@ export default function BacktestList() {
       universe_meta: universeMeta ?? null,
       universe_auto: values.universe_auto ?? false,
       auto_idle_days: values.auto_idle_days ?? 5,
-      pool_refill_min: values.pool_refill_min ?? 2,
+      pool_refill_min: values.pool_refill_min ?? 0,  // 与 param_schema 默认一致（0=关闭枯竭换血）
       auto_top_x: values.auto_top_x ?? 30,
       auto_above_ma: values.auto_above_ma ?? 20,
       auto_with_accel: values.auto_with_accel ?? (values.strategy_id === 'momentum_slot'),
@@ -950,7 +950,7 @@ export default function BacktestList() {
             exclude_st: true,
             universe_auto: false,
             auto_idle_days: 5,
-            pool_refill_min: 2,
+            pool_refill_min: 0,  // 与 param_schema 默认一致（0=关闭枯竭换血）
             auto_top_x: 30,
             auto_above_ma: 20,
             auto_with_accel: false,

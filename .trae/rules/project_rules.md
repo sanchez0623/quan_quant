@@ -32,6 +32,8 @@
 
 - **回测顶层字段写入规则（模板保存契约）**：新增回测表单可调字段（含动态选股 auto\_\*、总资金止盈 nav\_\*、月度出金等顶层字段）时，**必须同步 4 处**，否则模板保存/载入会静默丢值（历史事故：auto\_rank\_key、nav\_take\_profit\_pct 未登记导致模板落库缺失）：① 后端 `api/backtests.py` `normalize_config` 的 `top_defaults` 登记表补默认；② 前端 `BacktestList.tsx` `buildConfigFromValues`；③ 前端 `BacktestList.tsx` `applyConfigToForm`（数值键加进 `numericKeys`）；④ 前端 `BacktestList.tsx` `initialValues`。
 
+- **前端表单默认值必须与 param_schema 默认一致（2026-09-15 用户拍板，pool_refill_min 事故）**：回测表单可调字段的默认值在 `BacktestList.tsx` 有两处（`buildConfigFromValues` 的 `?? 默认` 与 `initialValues`），**必须与后端 `param_schema[].default` 相同**，否则前端建任务会被静默注入错误默认（历史事故：pool_refill_min 前端默认 2 vs 引擎默认 0=关闭，用户手动建的"采纳形态复现"任务被静默配成已证伪的 TOP50+换血线2 组合）。新增字段时三处一起对：schema default / buildConfigFromValues / initialValues。
+
 - 池级趋势开关（pool\_gate）与 universe\_auto 正交互补：gate 管“能不能买”，重选管“买谁”；换池时 gate 随新池重置（新池=门槛筛选产物，无需确认期）。
 
 - SQLite executescript 中 SQL 注释只能用 `--`，不能用 `#`。

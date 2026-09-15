@@ -168,6 +168,8 @@ HALF_GATE 选股层 + P4 + asym0（分钟）：**OOS 超额 +30.28%、夏普 1.4
 
 **refill2 组合矩阵补齐（用户拍板，2026-09-14）**：refill2 × idle 1/2/3（top30）**全部与换血线2档=off 基座位级相同**（idle 维度死参数带在 refill2 下复现）；**refill2 × top20 全矩阵最差**（full -27.2%/OOS -35.2%，比 top20 单档更崩）。至此 refill2 组合空间闭环：**无一改善，全部等于或劣于参照**。动态选股参数矩阵完整：唯一采纳点 = top50（refill0），其余全灭。
 
+**默认值事故考古（2026-09-15，用户抽查 bt_af9ee940144e 触发）**：用户复现任务 bt_af9ee940144e 的日志出现"换血线2"但预期 refill=0——仲裁（tasks 表 config vs 报告 JSON config 快照，两者一致）揭示：① **前端 BacktestList 的 pool_refill_min 默认值写成了 2**（引擎 schema 默认 0=关），前端手动建任务被静默注入 2——bt_af9ee940144e / bt_3cffb42e189a（影线承接 z1.0 手动复现，top50+refill2）实为**已证伪组合**，其结果不可用于采纳形态评估（真载体 bt_ccfcd90d8acb refill=0）；② **实验链早期任务（bt_124c6d43225a 系 → 试仓占比20，9-12~9-14）config 均为 universe on/top30/refill2**——继承自 v5 形态的前端默认，但 **top30 下换血无实效**（换血线2档位级=off 基座的"奇异"由此得解：持仓<2 触发重选时 top30 动量排名稳定，重选出同池→无行为差异）→ 早期全部采纳增量的对比环境一致（等效 off），**结论有效**；③ TOP50 包起脚本显式 refill=0（bt_80a402b2cedb 报告 refill=0）。**处置**：前端默认值 2→0 修复（buildConfigFromValues/initialValues 两处）+ project_rules 新增"前端表单默认值=param_schema 默认"规则。教训：config 的"记录值"与"行为效果"要靠位级对照校验，同名参数跨层（schema/前端/引擎）默认值必须单一来源。
+
 ### 执行层扫描（2026-09-15）：最小T金额 min_t_amount
 
 基座=采纳形态 10 项（含动态选股 TOP50 包），档位 3/5/8/10w × 双段（2w=默认基线，复用 TOP50 载体），8 回测落库一体（脚本 pulse_mintamt_oat.py）：
