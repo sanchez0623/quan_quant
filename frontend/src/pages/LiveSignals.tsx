@@ -597,8 +597,12 @@ export default function LiveSignals() {
               const eq = summary?.equity
               const pnl = eq?.total_pnl
               const pct = eq?.total_pnl_pct
+              const day = eq?.day_pnl
+              const dd = eq?.dd_pct
               const color = pnl != null && pnl > 0 ? '#cf1322'
                 : pnl != null && pnl < 0 ? '#3f8600' : undefined
+              const dayColor = day != null && day > 0 ? '#cf1322'
+                : day != null && day < 0 ? '#3f8600' : undefined
               return <>
                 <Statistic title="持仓浮盈"
                   value={pnl != null
@@ -610,6 +614,13 @@ export default function LiveSignals() {
                   ｜{summary?.positions?.length ?? 0} 只｜
                   市值 {eq ? eq.market_value.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) : '-'}｜
                   权益 {eq ? fmtMoney(eq.equity) : '-'}｜空仓起始 {pool?.idle_start ?? '-'}
+                  <br />
+                  今日 <span style={{ color: dayColor, fontWeight: 500 }}>
+                    {day != null
+                      ? `${day >= 0 ? '+' : ''}${day.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
+                      : '-'}
+                  </span>
+                  ｜较峰值回撤 {dd != null ? `${dd.toFixed(2)}%` : '-'}
                 </Typography.Text>
               </>
             })()}

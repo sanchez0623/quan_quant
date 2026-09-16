@@ -322,13 +322,13 @@ def apply_template(body: ApplyTemplateBody, user: str = Depends(get_current_user
 
 
 def _positions_with_fresh_prices(
-        positions: list[dict]) -> tuple[list[dict], dict[str, float]]:
+        positions: list[dict]) -> tuple[list[dict], dict[str, float], dict]:
     """qt 实时报价刷新持仓现价（复用盘中分钟级节流落库），返回
-    (带最新现价的持仓列表, {code: 现价})；行情失败退库内快照。"""
+    (带最新现价的持仓列表, {code: 现价}, {code: qt报价})；行情失败退库内快照。"""
     prices = {p["code"]: float(p["last_price"]) for p in positions
               if p.get("last_price")}
     if not positions:
-        return positions, prices
+        return positions, prices, {}
     qt_map = quotes.realtime_quotes([p["code"] for p in positions])
     if qt_map:
         now = datetime.now()
@@ -339,7 +339,7 @@ def _positions_with_fresh_prices(
                 p["last_price"] = float(q["price"])
                 p["last_ts"] = now.isoformat(timespec="seconds")
                 prices[p["code"]] = float(q["price"])
-    return positions, prices
+    return positions, prices, qt_map or {}
 
 
 @router.get("/summary")
@@ -349,12 +349,36 @@ def live_summary(_user: str = Depends(get_current_user)):
     退库内快照——浮盈展示不至于长期停在旧价或空缺。"""
     pool = db.get_live_pool()
     cfg = {**premarket.DEFAULT_CFG, **db.get_live_config()}
-    positions, prices = _positions_with_fresh_prices(db.list_live_positions())
+    positions, prices, qt_map = _positions_with_fresh_prices(
+        db.list_live_positions())
     market_value = sum(int(p["volume"]) * prices.get(p["code"], float(p["cost_price"]))
                        for p in positions)
     total_cost = sum(int(p["volume"]) * float(p["cost_price"]) for p in positions)
     total_pnl = market_value - total_cost
     equity, cash = intraday._virtual_equity(cfg, positions, prices)
+    # 今日盈亏：今日建仓按成本价起算（昨收前的涨跌与本次建仓无关）；老仓按 qt
+    # 昨收（昨日收盘至今日的市值变动）。老仓行情失败缺昨收时宁缺勿错不计入。
+    today = datetime.now().strftime("%Y-%m-%d")
+    day_pnl: Optional[float] = None
+    if positions:
+        day_pnl = 0.0
+        for p in positions:
+            price = prices.get(p["code"])
+            if price is None:
+                continue
+            if (p.get("open_day") or today) >= today:
+                base = float(p["cost_price"])       # 今日新仓：成本口径
+            else:
+                pc = (qt_map.get(p["code"]) or {}).get("prev_close")
+                if not pc:
+                    continue                        # 老仓缺昨收：跳过不虚算
+                base = float(pc)
+            day_pnl += (price - base) * int(p["volume"])
+    # 峰值回撤：live_equity_peak 由盘中轮询的回撤熔断负责更新，此处只读；
+    # 权益创新高（equity>peak）时回撤记 0。
+    peak = float(db.get_meta("live_equity_peak") or 0)
+    dd_pct = (round(max(0.0, (1 - equity / max(peak, equity)) * 100), 2)
+              if peak > 0 and equity > 0 else None)
     return {
         "pool": pool,
         "positions": positions,
@@ -369,6 +393,8 @@ def live_summary(_user: str = Depends(get_current_user)):
             "total_pnl": round(total_pnl, 2),
             "total_pnl_pct": (round(total_pnl / total_cost * 100, 2)
                               if total_cost > 0 else None),
+            "day_pnl": (round(day_pnl, 2) if day_pnl is not None else None),
+            "dd_pct": dd_pct,
         },
     }
 

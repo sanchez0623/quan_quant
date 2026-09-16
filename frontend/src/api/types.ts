@@ -641,6 +641,10 @@ export interface LiveEquitySummary {
   total_pnl: number
   /** 浮动收益率（%）；无持仓为 null */
   total_pnl_pct: number | null
+  /** 今日盈亏：老仓按昨收、今日新仓按成本起算；行情缺昨收的票不计入；无持仓 null */
+  day_pnl: number | null
+  /** 虚拟权益较峰值回撤（%，≥0，与回撤熔断同源峰值）；峰值未建立为 null */
+  dd_pct: number | null
 }
 
 export interface LiveSummary {

@@ -241,7 +241,8 @@ def test_position_price_snapshot(tmp_path, monkeypatch):
 # ---------------- /summary 持仓盈亏聚合 ----------------
 
 def test_summary_equity_block(tmp_path, monkeypatch):
-    """/summary：qt 刷现价（落库+本次响应即新价）+ 总市值/总浮盈/现金/权益"""
+    """/summary：qt 刷现价（落库+本次响应即新价）+ 总市值/总浮盈/现金/权益
+    + 今日盈亏（老仓昨收口径）+ 峰值回撤"""
     from app.api import live as live_api
     db.upsert_live_position("600000", "股600000", 10000, 10.0,
                             open_day="2026-09-01")
@@ -260,6 +261,37 @@ def test_summary_equity_block(tmp_path, monkeypatch):
     # positions 本次响应即带新价，且现价快照已落库
     assert out["positions"][0]["last_price"] == 11.0
     assert db.list_live_positions()[0]["last_price"] == 11.0
+    # 今日盈亏（老仓昨收口径）：(11 − 10) × 10000；峰值未建立 dd_pct=None
+    assert out["equity"]["day_pnl"] == pytest.approx(10_000.0)
+    assert out["equity"]["dd_pct"] is None
+    # 峰值 320 万 > 当前权益 3,009,995 -> 回撤 ≈ 5.94%
+    db.set_meta("live_equity_peak", "3200000")
+    out2 = live_api.live_summary()
+    assert out2["equity"]["dd_pct"] == pytest.approx(
+        (1 - 3_009_995 / 3_200_000) * 100, abs=0.01)
+
+
+def test_summary_day_pnl_basis(monkeypatch):
+    """今日盈亏三口径：老仓按 qt 昨收 / 今日新仓按成本价 / 老仓缺昨收不计入"""
+    from datetime import datetime, timedelta
+    from app.api import live as live_api
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+    db.upsert_live_position("600000", "股600000", 10000, 10.0,
+                            open_day=yesterday)   # 老仓：昨收口径
+    db.upsert_live_position("000001", "股000001", 20000, 9.0,
+                            open_day=today)       # 今日新仓：成本口径
+    db.upsert_live_position("600036", "股600036", 5000, 40.0,
+                            open_day=yesterday)   # 老仓缺昨收：不计入
+    qt = {"600000": {"name": "股600000", "price": 11.0, "prev_close": 10.0},
+          "000001": {"name": "股000001", "price": 10.0, "prev_close": 8.0},
+          "600036": {"name": "股600036", "price": 42.0}}   # 无 prev_close
+    monkeypatch.setattr(live_api.quotes, "realtime_quotes",
+                        lambda codes, timeout=5.0: {c: qt[c] for c in codes})
+    out = live_api.live_summary()
+    # 老仓 (11−10)×10000 + 新仓 (10−9)×20000 = 30000；
+    # 新仓若错用昨收 8 会是 40000、缺昨收票若虚算会用成本价——断言区分口径
+    assert out["equity"]["day_pnl"] == pytest.approx(30_000.0)
 
 
 def test_summary_equity_no_position(monkeypatch):
@@ -275,6 +307,8 @@ def test_summary_equity_no_position(monkeypatch):
     assert out["equity"]["total_pnl"] == 0
     assert out["equity"]["total_pnl_pct"] is None
     assert out["equity"]["equity"] == pytest.approx(3_000_000.0)
+    assert out["equity"]["day_pnl"] is None
+    assert out["equity"]["dd_pct"] is None
 
 
 # ---------------- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT） ----------------
