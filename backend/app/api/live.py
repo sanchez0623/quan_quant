@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .. import db
 from ..auth import get_current_user
 from ..engine import momentum_core as mc
-from ..live import feishu, intraday, premarket, reports
+from ..live import feishu, intraday, premarket, quotes, reports
 from ..task_manager import manager
 
 router = APIRouter(prefix="/api/live", tags=["live"])
@@ -321,17 +321,55 @@ def apply_template(body: ApplyTemplateBody, user: str = Depends(get_current_user
     return preview
 
 
+def _positions_with_fresh_prices(
+        positions: list[dict]) -> tuple[list[dict], dict[str, float]]:
+    """qt 实时报价刷新持仓现价（复用盘中分钟级节流落库），返回
+    (带最新现价的持仓列表, {code: 现价})；行情失败退库内快照。"""
+    prices = {p["code"]: float(p["last_price"]) for p in positions
+              if p.get("last_price")}
+    if not positions:
+        return positions, prices
+    qt_map = quotes.realtime_quotes([p["code"] for p in positions])
+    if qt_map:
+        now = datetime.now()
+        intraday._persist_prices({p["code"]: p for p in positions}, qt_map, now)
+        for p in positions:
+            q = qt_map.get(p["code"])
+            if q and q.get("price"):
+                p["last_price"] = float(q["price"])
+                p["last_ts"] = now.isoformat(timespec="seconds")
+                prices[p["code"]] = float(q["price"])
+    return positions, prices
+
+
 @router.get("/summary")
 def live_summary(_user: str = Depends(get_current_user)):
-    """概览：池子/gate/持仓/最近信号/推送配置（前端首页）"""
+    """概览：池子/gate/持仓/最近信号/推送配置 + 持仓盈亏聚合（前端首页）。
+    每次调用顺带用 qt 实时价刷新持仓现价（分钟级节流落库），行情失败时
+    退库内快照——浮盈展示不至于长期停在旧价或空缺。"""
     pool = db.get_live_pool()
+    cfg = {**premarket.DEFAULT_CFG, **db.get_live_config()}
+    positions, prices = _positions_with_fresh_prices(db.list_live_positions())
+    market_value = sum(int(p["volume"]) * prices.get(p["code"], float(p["cost_price"]))
+                       for p in positions)
+    total_cost = sum(int(p["volume"]) * float(p["cost_price"]) for p in positions)
+    total_pnl = market_value - total_cost
+    equity, cash = intraday._virtual_equity(cfg, positions, prices)
     return {
         "pool": pool,
-        "positions": db.list_live_positions(),
+        "positions": positions,
         "signals": db.list_live_signals(limit=50),
         "fills": db.list_live_fills(limit=50),
         "feishu_configured": feishu.configured(),
-        "config": {**premarket.DEFAULT_CFG, **db.get_live_config()},
+        "config": cfg,
+        "equity": {
+            "cash": round(cash, 2),
+            "market_value": round(market_value, 2),
+            "equity": round(equity, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": (round(total_pnl / total_cost * 100, 2)
+                              if total_cost > 0 else None),
+        },
     }
 
 
