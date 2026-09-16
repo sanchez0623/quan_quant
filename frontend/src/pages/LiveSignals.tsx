@@ -493,12 +493,32 @@ export default function LiveSignals() {
     }
   ]
 
+  const posByCode = new Map((summary?.positions ?? []).map((p) => [p.code, p]))
   const intradayCols: ColumnsType<IntradayCodeStatus> = [
     { title: '代码', dataIndex: 'code', width: 90 },
     { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
     {
       title: '现价', dataIndex: 'price', width: 90, align: 'right',
       render: (v) => (v != null ? v.toFixed(3) : '-')
+    },
+    {
+      // 持仓行浮盈（盯盘一眼可见）：现价取盘中快照，无快照退持仓库内价
+      title: '浮盈', width: 130, align: 'right',
+      render: (_v, r) => {
+        const p = posByCode.get(r.code)
+        if (!r.held || !p) return <span style={{ color: '#999' }}>-</span>
+        const price = r.price ?? p.last_price
+        if (price == null) return <span style={{ color: '#999' }}>-</span>
+        const pnl = (price - p.cost_price) * p.volume
+        const pct = p.cost_price > 0 ? (price / p.cost_price - 1) * 100 : 0
+        const color = pnl > 0 ? '#cf1322' : pnl < 0 ? '#3f8600' : '#666'
+        return <span style={{ color, fontWeight: 500 }}>
+          {pnl >= 0 ? '+' : ''}{pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+          <span style={{ fontSize: 12, marginLeft: 4 }}>
+            ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)
+          </span>
+        </span>
+      }
     },
     {
       title: '来源', dataIndex: 'in_pool', width: 90,
@@ -573,11 +593,26 @@ export default function LiveSignals() {
         </Col>
         <Col span={6}>
           <Card size="small" loading={loading}>
-            <Statistic title="虚拟持仓" value={`${summary?.positions?.length ?? 0} 只`}
-              valueStyle={{ fontSize: 20 }} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              空仓起始 {pool?.idle_start ?? '-'}
-            </Typography.Text>
+            {(() => {
+              const eq = summary?.equity
+              const pnl = eq?.total_pnl
+              const pct = eq?.total_pnl_pct
+              const color = pnl != null && pnl > 0 ? '#cf1322'
+                : pnl != null && pnl < 0 ? '#3f8600' : undefined
+              return <>
+                <Statistic title="持仓浮盈"
+                  value={pnl != null
+                    ? `${pnl >= 0 ? '+' : ''}${pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
+                    : '-'}
+                  valueStyle={{ fontSize: 20, color }} />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '暂无持仓'}
+                  ｜{summary?.positions?.length ?? 0} 只｜
+                  市值 {eq ? eq.market_value.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) : '-'}｜
+                  权益 {eq ? fmtMoney(eq.equity) : '-'}｜空仓起始 {pool?.idle_start ?? '-'}
+                </Typography.Text>
+              </>
+            })()}
           </Card>
         </Col>
         <Col span={6}>

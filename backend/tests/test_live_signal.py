@@ -238,6 +238,45 @@ def test_position_price_snapshot(tmp_path, monkeypatch):
     assert pos["last_price"] == 10.8
 
 
+# ---------------- /summary 持仓盈亏聚合 ----------------
+
+def test_summary_equity_block(tmp_path, monkeypatch):
+    """/summary：qt 刷现价（落库+本次响应即新价）+ 总市值/总浮盈/现金/权益"""
+    from app.api import live as live_api
+    db.upsert_live_position("600000", "股600000", 10000, 10.0,
+                            open_day="2026-09-01")
+    db.add_live_fill(None, "600000", "buy", 10.0, 10000, fee=5.0)
+    monkeypatch.setattr(live_api.quotes, "realtime_quotes",
+                        lambda codes, timeout=5.0: {
+                            c: {"name": "股600000", "price": 11.0,
+                                "prev_close": 10.0} for c in codes})
+    out = live_api.live_summary()
+    assert out["equity"]["market_value"] == pytest.approx(110_000.0)
+    assert out["equity"]["total_pnl"] == pytest.approx(10_000.0)
+    assert out["equity"]["total_pnl_pct"] == pytest.approx(10.0)
+    # 现金 = 初始资金 300 万 − 买入 10 万 − 费用 5；权益 = 现金 + 市值
+    assert out["equity"]["cash"] == pytest.approx(3_000_000 - 100_000 - 5)
+    assert out["equity"]["equity"] == pytest.approx(2_899_995 + 110_000)
+    # positions 本次响应即带新价，且现价快照已落库
+    assert out["positions"][0]["last_price"] == 11.0
+    assert db.list_live_positions()[0]["last_price"] == 11.0
+
+
+def test_summary_equity_no_position(monkeypatch):
+    """空仓：浮盈聚合返回 0 值 + pct=None；无持仓时不请求行情"""
+    from app.api import live as live_api
+
+    def _boom(codes, timeout=5.0):
+        raise AssertionError("空仓不应请求行情")
+
+    monkeypatch.setattr(live_api.quotes, "realtime_quotes", _boom)
+    out = live_api.live_summary()
+    assert out["equity"]["market_value"] == 0
+    assert out["equity"]["total_pnl"] == 0
+    assert out["equity"]["total_pnl_pct"] is None
+    assert out["equity"]["equity"] == pytest.approx(3_000_000.0)
+
+
 # ---------------- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT） ----------------
 
 def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):

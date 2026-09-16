@@ -629,6 +629,20 @@ export interface LivePremarketResult {
   pushed: boolean
 }
 
+/** 持仓盈亏聚合（/summary 顺带 qt 刷现价后计算；行情失败退库内快照） */
+export interface LiveEquitySummary {
+  /** 可用现金 = 初始资金 + Σ卖出 − Σ买入 − 费用 */
+  cash: number
+  /** 总市值（无现价退成本价） */
+  market_value: number
+  /** 虚拟权益 = 现金 + 总市值 */
+  equity: number
+  /** 总浮盈 = 总市值 − 总成本（未扣卖出费用） */
+  total_pnl: number
+  /** 浮动收益率（%）；无持仓为 null */
+  total_pnl_pct: number | null
+}
+
 export interface LiveSummary {
   pool: LivePoolState
   positions: LivePosition[]
@@ -636,6 +650,7 @@ export interface LiveSummary {
   fills: LiveFill[]
   feishu_configured: boolean
   config: LiveConfig
+  equity: LiveEquitySummary
 }
 
 // ---- 盘中信号机（M2）----
