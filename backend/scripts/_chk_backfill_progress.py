@@ -14,8 +14,9 @@ if rows is None:
     con = sqlite3.connect(str(config.META_DB_PATH))
     con.row_factory = sqlite3.Row
     rows = [dict(r) for r in con.execute(
-        "select id, name, type, status, progress, message, created_at "
-        "from tasks where type='data_update' order by created_at desc limit 5")]
+        "select id, name, type, status, progress, message, created_at, "
+        "substr(error, 1, 300) as err from tasks where type='data_update' "
+        "order by created_at desc limit 5")]
 for r in rows:
-    print({k: r.get(k) for k in ("id", "name", "type", "status", "progress",
-                                 "message", "created_at")})
+    print({k: r.get(k) for k in ("name", "status", "progress",
+                                 "message", "created_at", "err")})
