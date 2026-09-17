@@ -53,6 +53,22 @@ function typeLabel(t: ScheduleTaskItem): string {
   return scope && SCOPE_LABEL[scope] ? `${base}·${SCOPE_LABEL[scope]}` : base
 }
 
+/**
+ * 从 message 解析「阶段 + 阶段内进度」。
+ * 任务级 progress 是硬编码区段（日线 5~75%、分钟线 78~95%），与真实耗时比例
+ * 严重失真；而 message 自带阶段内计数（如 "正在拉取分钟线: 000656 (70/2923)"），
+ * 用它算出的百分比才是阶段内真实进度。
+ */
+export function parseStage(msg?: string | null): { label: string; done?: number; total?: number } | null {
+  if (!msg) return null
+  const m = msg.match(/(日线|分钟线)[^()]*\((\d+)\/(\d+)\)/)
+  if (m) return { label: m[1], done: Number(m[2]), total: Number(m[3]) }
+  const f = msg.match(/分批落库\s*(\d+)\/(\d+)/)
+  if (f) return { label: '分批落库', done: Number(f[1]), total: Number(f[2]) }
+  if (msg.includes('健康检查')) return { label: '健康检查' }
+  return null
+}
+
 export default function ScheduleTasks() {
   const [data, setData] = useState<ScheduleStatus | null>(null)
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -103,17 +119,33 @@ export default function ScheduleTasks() {
       render: (s: TaskStatus) => <TaskStatusTag status={s} />
     },
     {
-      title: '进度',
+      title: '进度（阶段内）',
       dataIndex: 'progress',
-      width: 140,
-      render: (p: number, r) =>
-        r.status === 'running' ? (
-          <Tooltip title={r.message ?? ''}>
-            <Progress percent={Math.round(p)} size="small" status="active" />
-          </Tooltip>
-        ) : (
-          <span>{Math.round(p)}%</span>
+      width: 185,
+      render: (_: number, r) => {
+        if (r.status !== 'running') {
+          return <span>{Math.round(r.progress)}%</span>
+        }
+        const st = parseStage(r.message)
+        // 阶段内计数可得时用真实百分比；否则回退任务级 progress（趋势参考）
+        const percent =
+          st?.done != null && st.total
+            ? Math.round((st.done / st.total) * 100)
+            : Math.round(r.progress)
+        return (
+          <div>
+            {st && (
+              <Tag color="blue" style={{ marginInlineEnd: 0, marginBottom: 2 }}>
+                {st.label}
+                {st.done != null && st.total ? ` ${st.done}/${st.total}` : ''}
+              </Tag>
+            )}
+            <Tooltip title={r.message ?? ''}>
+              <Progress percent={percent} size="small" status="active" />
+            </Tooltip>
+          </div>
         )
+      }
     },
     {
       title: '当前消息',
