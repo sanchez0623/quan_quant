@@ -66,9 +66,9 @@ def _submit_task(kind: str, today: str, name: str) -> None:
         base = datetime.strptime(latest, "%Y-%m-%d") if latest else datetime.now()
         start = (base - timedelta(days=5)).strftime("%Y-%m-%d")
         db.create_task(task_id, name, "data_update",
-                       payload={"scope": "daily", "start_date": start,
+                       payload={"scope": "all", "start_date": start,
                                 "end_date": "2099-12-31", "auto": True})
-        manager.submit("data_update", task_id, scope="daily",
+        manager.submit("data_update", task_id, scope="all",
                        start_date=start, end_date="2099-12-31")
     else:
         db.create_task(task_id, name, "live_postclose",
