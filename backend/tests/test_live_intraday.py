@@ -432,6 +432,23 @@ def test_scheduler_tick_windows_and_idempotent(monkeypatch):
     assert r3["submitted"] == ["evening"]
     assert submitted[-1][0] == "data_update"
     assert scheduler.tick(dt.datetime(2026, 9, 3, 19, 0))["submitted"] == [], "evening 当日幂等"
+    # 日线任务未达终态（running）→ 分钟线跟随不提交（防 baostock 并发黑名单）
+    daily_id = scheduler.db.get_meta("auto_evening_daily_id")
+    assert daily_id, "evening 提交时应记录日线任务 id"
+    # 日线任务终态（成功）→ 下一 tick 错峰提交独立分钟线任务
+    monkeypatch.setattr(scheduler.db, "get_task",
+                        lambda tid, **kw: {"status": "success"})
+    r4 = scheduler.tick(dt.datetime(2026, 9, 3, 19, 30))
+    assert r4["submitted"] == ["minute5"]
+    assert submitted[-1][0] == "data_update"
+    assert scheduler.tick(dt.datetime(2026, 9, 3, 19, 40))["submitted"] == [], "minute5 当日幂等"
+    # 日线失败也照常提交分钟线（任务隔离：daily 失败不影响 minute5）
+    scheduler.db.set_meta("auto_minute5_date", "")
+    monkeypatch.setattr(scheduler.db, "get_task",
+                        lambda tid, **kw: {"status": "failed"})
+    r5 = scheduler.tick(dt.datetime(2026, 9, 3, 19, 50))
+    assert r5["submitted"] == ["minute5"]
+    scheduler.db.set_meta("auto_minute5_date", "2026-09-03")
     # 窗口外（07:00）不提交
     assert scheduler.tick(dt.datetime(2026, 9, 4, 7, 0))["submitted"] == []
     # auto_schedule=off 空转

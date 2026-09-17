@@ -66,9 +66,22 @@ def _submit_task(kind: str, today: str, name: str) -> None:
         base = datetime.strptime(latest, "%Y-%m-%d") if latest else datetime.now()
         start = (base - timedelta(days=5)).strftime("%Y-%m-%d")
         db.create_task(task_id, name, "data_update",
-                       payload={"scope": "all", "start_date": start,
+                       payload={"scope": "daily", "start_date": start,
                                 "end_date": "2099-12-31", "auto": True})
-        manager.submit("data_update", task_id, scope="all",
+        manager.submit("data_update", task_id, scope="daily",
+                       start_date=start, end_date="2099-12-31")
+        # 记录日线任务 id：供 tick 轮询终态后错峰提交分钟线任务
+        # （数据更新必须串行——baostock 并发连接触发黑名单）
+        db.set_meta("auto_evening_daily_id", task_id)
+    elif kind == "minute5":
+        # 与日线同窗口的分钟线增量；独立任务与日线互相隔离（日线失败不影响）
+        latest = store.daily_latest_date()
+        base = datetime.strptime(latest, "%Y-%m-%d") if latest else datetime.now()
+        start = (base - timedelta(days=5)).strftime("%Y-%m-%d")
+        db.create_task(task_id, name, "data_update",
+                       payload={"scope": "minute5", "start_date": start,
+                                "end_date": "2099-12-31", "auto": True})
+        manager.submit("data_update", task_id, scope="minute5",
                        start_date=start, end_date="2099-12-31")
     else:
         db.create_task(task_id, name, "live_postclose",
@@ -101,6 +114,17 @@ def tick(now: datetime | None = None) -> dict:
         if _in_window(now, EVENING_WINDOW) and not _submitted("evening", today):
             _submit_task("evening", today, f"实盘盘后数据更新（自动）{today}")
             out["submitted"].append("evening")
+        # 分钟线跟随提交（不受窗口限制，晚间随时可触发）：当日日线任务达
+        # 终态后错峰提交独立 minute5 任务——防 baostock 并发黑名单（必须
+        # 串行）；日线失败/取消不影响分钟线照跑（任务互相隔离）
+        if _submitted("evening", today) and not _submitted("minute5", today):
+            daily_id = db.get_meta("auto_evening_daily_id")
+            daily_task = db.get_task(daily_id) if daily_id else None
+            if daily_task and daily_task.get("status") in ("success", "failed",
+                                                           "cancelled"):
+                _submit_task("minute5", today,
+                             f"实盘盘后分钟线更新（自动）{today}")
+                out["submitted"].append("minute5")
     except Exception:
         out["error"] = traceback.format_exc(limit=3)
     return out
