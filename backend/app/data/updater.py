@@ -5,6 +5,7 @@
 import bisect
 import time
 import traceback
+from datetime import datetime
 from typing import Callable, Optional
 
 import polars as pl
@@ -464,6 +465,18 @@ def update_index_daily(data_dir: Optional[str] = None,
             "first": str(merged["date"].min()), "last": str(merged["date"].max())}
 
 
+def _effective_window_end(end_date: str, cal_dates: list[str]) -> str:
+    """拉取窗口的有效末日（RESUME_SKIP 跳过判定的基准）。
+
+    显式 end_date（非哨兵 2099）直接用；否则取日历中 <= 今天的最后交易日。
+    日历为空返回空串（跳过逻辑禁用，安全默认）。"""
+    if end_date and end_date < "2099-12-31":
+        return end_date
+    today = datetime.now().strftime("%Y-%m-%d")
+    past = [d for d in cal_dates if d <= today]
+    return past[-1] if past else ""
+
+
 def update(scope: str = "daily", codes: Optional[list[str]] = None,
            data_dir: Optional[str] = None,
            progress_cb: Optional[Callable[[float, str], None]] = None,
@@ -544,6 +557,14 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
         got_any = False
         cal = store.read_calendar(data_dir)
         cal_dates = cal["date"].to_list() if cal is not None else []
+        # ---- 断点续传（RESUME_SKIP）：全市场模式跳过库内已覆盖到窗口末日的票 ----
+        # 失败重跑场景：上一轮进程死亡但已分批落库 ~3400/5211，重跑只补缺失尾部，
+        # 耗时从 ~1 小时缩到 ~20 分钟。显式指定 codes = 强制拉取（数据修复），不跳过。
+        end_eff = _effective_window_end(end_date, cal_dates)
+        code_max: dict[str, str] = {}
+        if _norm_codes(codes) is None and end_eff:
+            code_max = store.daily_max_dates(data_dir)
+        skipped_fresh = 0
 
         def _flush_daily() -> None:
             """批内合并写回（含复权因子展开）。
@@ -587,6 +608,9 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
             frames = []
 
         for i, code in enumerate(update_codes):
+            if code_max.get(code, "") >= end_eff:
+                skipped_fresh += 1   # 库内已覆盖到窗口末日，跳过（断点续传）
+                continue
             report(5 + 70 * i / total, f"正在拉取日线: {code} ({i + 1}/{total})")
             df = None
             src_used = None
@@ -628,7 +652,8 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
         if adj_ok_codes == 0:
             report(76, "警告：未获取到任何复权因子，后复权将退化为恒等（除权日会有假跳空）")
         else:
-            report(76, f"日线更新完成（{daily_rows} 行，复权因子 {adj_rows} 行 / {adj_codes} 只）")
+            report(76, f"日线更新完成（{daily_rows} 行，复权因子 {adj_rows} 行 / "
+                       f"{adj_codes} 只，断点续传跳过已最新 {skipped_fresh} 只）")
         if adj_refetch:
             stats["adj_needs_refetch"] = adj_refetch
             report(76, f"警告：{len(adj_refetch)} 只股票复权因子拉取失败，"

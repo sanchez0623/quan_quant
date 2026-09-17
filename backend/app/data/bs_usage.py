@@ -226,13 +226,20 @@ class BsUsageTracker:
             return False
 
     def last_blacklist(self) -> dict | None:
-        """最近一次有释放时间的黑名单记录（供报错信息用）。"""
-        with db.conn() as c:
-            c.row_factory = sqlite3.Row
-            row = c.execute(
-                "SELECT * FROM bs_blacklist WHERE release_at IS NOT NULL "
-                "ORDER BY id DESC LIMIT 1").fetchone()
-            return dict(row) if row else None
+        """仍在限制期内的最近黑名单记录（供报错信息用）。
+
+        只认 release_at > now 的活跃记录：已过释放期的旧记录不能作为登录
+        失败的报错依据（09-16 事故：登录失败误报"预计 09-03 解除"的旧记录，
+        掩盖真实失败原因；过期的黑名单应由备源降级正常处理）。"""
+        row = self._blacklist_row()
+        if not row or not row.get("release_at"):
+            return None
+        try:
+            if datetime.now() < datetime.fromisoformat(row["release_at"]):
+                return row
+        except ValueError:
+            return None
+        return None
 
     def record_blacklist(self, ip: str = "") -> dict:
         """检测到被限制（错误码 10001011）：优先以 baostock 官方账本对账。

@@ -26,6 +26,9 @@ TICK_SEC = 30
 MORNING_WINDOW = (8 * 60 + 25, 11 * 60 + 30)     # 08:25~11:30
 POSTCLOSE_WINDOW = (15 * 60 + 25, 23 * 60 + 59)  # 15:25~23:59
 EVENING_WINDOW = (18 * 60 + 10, 23 * 60 + 59)    # 18:10~23:59（baostock 当日日线 17:30 后就绪）
+# 盘后失败重试（EVENING_RETRY）：每晚最多提交 2 次，失败后隔 30 分钟可重试
+EVENING_MAX_ATTEMPTS = 2
+EVENING_RETRY_GAP_SEC = 30 * 60
 
 _thread: threading.Thread | None = None
 
@@ -73,6 +76,10 @@ def _submit_task(kind: str, today: str, name: str) -> None:
         # 记录日线任务 id：供 tick 轮询终态后错峰提交分钟线任务
         # （数据更新必须串行——baostock 并发连接触发黑名单）
         db.set_meta("auto_evening_daily_id", task_id)
+        # 提交次数记账（EVENING_RETRY）：首提=1，失败重试=2，达上限当晚不再重试
+        prev_date, _, prev_n = (db.get_meta("auto_evening_attempt") or "").partition("|")
+        n = (int(prev_n) + 1) if (prev_date == today and prev_n) else 1
+        db.set_meta("auto_evening_attempt", f"{today}|{n}")
     elif kind == "minute5":
         # 与日线同窗口的分钟线增量；独立任务与日线互相隔离（日线失败不影响）
         latest = store.daily_latest_date()
@@ -88,6 +95,37 @@ def _submit_task(kind: str, today: str, name: str) -> None:
                        payload={"push": True, "auto": True})
         manager.submit("live_postclose", task_id, push=True)
     db.set_meta(f"auto_{kind}_date", today)
+
+
+def _evening_attempts(today: str) -> int:
+    """今日 evening 已提交次数（0=今日未提交过）"""
+    d, _, n = (db.get_meta("auto_evening_attempt") or "").partition("|")
+    return int(n) if (d == today and n) else 0
+
+
+def _evening_due(today: str, now: datetime) -> bool:
+    """evening 是否应提交（EVENING_RETRY）。
+
+    首次：今日未提交过即在窗口内提交。重试：上一任务 failed/cancelled、
+    次数未达上限、且距终态时间 >= 30 分钟（给分批落库/收尾留缓冲）。
+    pending/running/cancelling/success 一律不再提交。"""
+    if not _submitted("evening", today):
+        return True
+    tid = db.get_meta("auto_evening_daily_id")
+    if not tid:
+        return False
+    t = db.get_task(tid)
+    if t is None or t.get("status") in ("pending", "running", "cancelling",
+                                        "success"):
+        return False
+    if _evening_attempts(today) >= EVENING_MAX_ATTEMPTS:
+        return False
+    try:
+        fin = datetime.strptime(t.get("finished_at") or "",
+                                "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return (now - fin).total_seconds() >= EVENING_RETRY_GAP_SEC
 
 
 def tick(now: datetime | None = None) -> dict:
@@ -110,21 +148,29 @@ def tick(now: datetime | None = None) -> dict:
             _submit_task("postclose", today, f"实盘盘后流程（自动）{today}")
             out["submitted"].append("postclose")
         # 盘后数据更新（18:10 起，baostock 当日日线就绪后）：串行全市场增量，
-        # 供次日盘前信号直接使用（盘前不再耗时拉数）
-        if _in_window(now, EVENING_WINDOW) and not _submitted("evening", today):
+        # 供次日盘前信号直接使用（盘前不再耗时拉数）。失败自动重试（EVENING_RETRY）
+        submitted_evening = False
+        if _in_window(now, EVENING_WINDOW) and _evening_due(today, now):
             _submit_task("evening", today, f"实盘盘后数据更新（自动）{today}")
             out["submitted"].append("evening")
+            submitted_evening = True
         # 分钟线跟随提交（不受窗口限制，晚间随时可触发）：当日日线任务达
         # 终态后错峰提交独立 minute5 任务——防 baostock 并发黑名单（必须
-        # 串行）；日线失败/取消不影响分钟线照跑（任务互相隔离）
-        if _submitted("evening", today) and not _submitted("minute5", today):
+        # 串行）；日线失败不影响分钟线照跑（任务互相隔离），但需等 evening
+        # 重试额度用尽（否则重试的日线与分钟线并发抢 baostock）；本 tick 刚
+        # （重）提交过 evening 时也跳过，等新任务出终态
+        if (not submitted_evening and _submitted("evening", today)
+                and not _submitted("minute5", today)):
             daily_id = db.get_meta("auto_evening_daily_id")
             daily_task = db.get_task(daily_id) if daily_id else None
             if daily_task and daily_task.get("status") in ("success", "failed",
                                                            "cancelled"):
-                _submit_task("minute5", today,
-                             f"实盘盘后分钟线更新（自动）{today}")
-                out["submitted"].append("minute5")
+                done_retrying = (daily_task["status"] == "success"
+                                 or _evening_attempts(today) >= EVENING_MAX_ATTEMPTS)
+                if done_retrying:
+                    _submit_task("minute5", today,
+                                 f"实盘盘后分钟线更新（自动）{today}")
+                    out["submitted"].append("minute5")
     except Exception:
         out["error"] = traceback.format_exc(limit=3)
     return out

@@ -442,11 +442,14 @@ def test_scheduler_tick_windows_and_idempotent(monkeypatch):
     assert r4["submitted"] == ["minute5"]
     assert submitted[-1][0] == "data_update"
     assert scheduler.tick(dt.datetime(2026, 9, 3, 19, 40))["submitted"] == [], "minute5 当日幂等"
-    # 日线失败也照常提交分钟线（任务隔离：daily 失败不影响 minute5）
+    # 日线失败且重试额度未尽（attempt=1）-> 分钟线不抢跑（等 evening 重试，防 baostock 并发）
     scheduler.db.set_meta("auto_minute5_date", "")
     monkeypatch.setattr(scheduler.db, "get_task",
                         lambda tid, **kw: {"status": "failed"})
-    r5 = scheduler.tick(dt.datetime(2026, 9, 3, 19, 50))
+    assert scheduler.tick(dt.datetime(2026, 9, 3, 19, 50))["submitted"] == []
+    # 重试额度用尽（attempt=2 仍失败）-> 分钟线照跑（任务隔离）
+    scheduler.db.set_meta("auto_evening_attempt", "2026-09-03|2")
+    r5 = scheduler.tick(dt.datetime(2026, 9, 3, 19, 51))
     assert r5["submitted"] == ["minute5"]
     scheduler.db.set_meta("auto_minute5_date", "2026-09-03")
     # 窗口外（07:00）不提交

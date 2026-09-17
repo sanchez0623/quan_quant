@@ -391,6 +391,10 @@ _TASK_FUNCS = {
 }
 
 
+# D1：调度链任务类型（终态 failed 时推飞书；盘前/盘后流程 + 数据更新）
+_SCHEDULE_NOTIFY_KINDS = ("data_update", "live_premarket", "live_postclose")
+
+
 def run_task(kind: str, kwargs: dict) -> None:
     """进程池统一入口：捕获所有异常写 tasks.error。
 
@@ -415,6 +419,13 @@ def run_task(kind: str, kwargs: dict) -> None:
     except Exception as e:  # noqa: BLE001
         db.finish_task(task_id, "failed",
                        error=f"{e}\n{traceback.format_exc()[-1500:]}", db_path=db_path)
+    except BaseException as e:  # noqa: BLE001
+        # SystemExit/KeyboardInterrupt 不是 Exception 子类，会穿透上方防护导致
+        # worker 静默死亡（历史"任务进程异常终止: "空 error 的真凶）。就地转
+        # failed 并记录异常类型，worker 存活、进程池不受影响。
+        db.finish_task(task_id, "failed",
+                       error=f"BaseException {type(e).__name__}: {e}\n"
+                             f"{traceback.format_exc()[-1500:]}", db_path=db_path)
 
 
 # ---------------- 主进程 TaskManager ----------------
@@ -458,6 +469,28 @@ class TaskManager:
         ex = self.optimize_executor() if kind == "optimize" else self.executor()
         fut = ex.submit(run_task, kind, payload)
         fut.add_done_callback(lambda f, tid=task_id: self._on_done(f, tid))
+        fut.add_done_callback(lambda f, tid=task_id: self._notify_failed(tid))
+
+    def _notify_failed(self, task_id: str) -> None:
+        """调度类任务终态 failed -> 飞书推送（FEISHU_WEBHOOK_URL 未配置静默跳过）。
+
+        覆盖两条失败路径：run_task 内正常异常（future 无异常但任务已 failed）
+        与 worker 崩溃（_on_done 兜底标 failed）。主进程侧执行，子进程只写库。"""
+        try:
+            task = db.get_task(task_id, db_path=self.db_path)
+            if not task or task.get("type") not in _SCHEDULE_NOTIFY_KINDS:
+                return
+            if task.get("status") != "failed":
+                return
+            from .live import feishu
+            feishu.send_text(
+                f"[量化系统] 定时任务失败\n"
+                f"{task.get('name')}\n"
+                f"type={task.get('type')} 进度={task.get('progress')}%\n"
+                f"阶段: {task.get('message')}\n"
+                f"错误: {(task.get('error') or '')[:300]}")
+        except Exception:  # noqa: BLE001  推送绝不影响任务本身
+            pass
 
     def _on_done(self, fut, task_id: str) -> None:
         """worker 崩溃兜底：future 异常而任务未达终态 → 标记 failed"""

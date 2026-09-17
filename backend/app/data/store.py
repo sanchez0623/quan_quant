@@ -117,6 +117,21 @@ def daily_latest_date(data_dir: Optional[str] = None) -> Optional[str]:
     return str(df["date"].max())
 
 
+def daily_max_dates(data_dir: Optional[str] = None) -> dict[str, str]:
+    """code -> 库内日线最大日期（只扫 code/date 两列）。
+
+    断点续传跳过判定用：更新器逐票拉取前先查此表，库内已覆盖到窗口末日的票
+    直接跳过，失败重跑只补缺失尾部（RESUME_SKIP）。"""
+    p = data_root(data_dir) / "daily.parquet"
+    if not p.exists():
+        return {}
+    df = pl.read_parquet(p, columns=["code", "date"])
+    if df.height == 0:
+        return {}
+    g = df.group_by("code").agg(pl.col("date").max().alias("max_date"))
+    return dict(zip(g["code"].to_list(), g["max_date"].to_list()))
+
+
 # ---------------- index_daily（基准指数日线，BENCHMARK） ----------------
 
 def write_index_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
