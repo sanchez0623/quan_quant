@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Card, Checkbox, Col, Collapse, Form, Input, InputNumber, Modal,
-  Popconfirm, Progress, Row, Select, Space, Statistic, Switch, Table, Tag,
-  Typography, message
+  Alert, Button, Card, Checkbox, Col, Collapse, Drawer, FloatButton, Form, Input,
+  InputNumber, Modal, Popconfirm, Progress, Row, Select, Space, Statistic, Switch,
+  Table, Tag, Typography, message
 } from 'antd'
 import {
-  CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, NotificationOutlined,
-  PlayCircleOutlined, PlusOutlined, SaveOutlined, SyncOutlined, ThunderboltOutlined
+  CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, LineChartOutlined,
+  NotificationOutlined, PlayCircleOutlined, PlusOutlined, SaveOutlined,
+  SyncOutlined, ThunderboltOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type {
@@ -144,6 +145,13 @@ export default function LiveSignals() {
     if (key === 'ready') getReadiness().then(setReady).catch(() => {})
   }
 
+  // 影子/滑点强制刷新（不受懒加载去重限制）：回填后、浮动面板打开时调用，
+  // 保证统计口径与最近一次回填实时同步
+  const refreshShadowSlip = useCallback(() => {
+    getSlippage().then(setSlip).catch(() => {})
+    getShadowStats().then(setShadow).catch(() => {})
+  }, [])
+
   const onCollapseChange = (keys: string | string[]) => {
     const ks = Array.isArray(keys) ? keys : [keys]
     ks.forEach(loadReport)
@@ -214,6 +222,7 @@ export default function LiveSignals() {
         : '成交已回填，手续费已按费率自动计算并摊入成本')
       setFillTarget(null)
       await refresh()
+      refreshShadowSlip()   // 影子/滑点统计随回填实时刷新
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail || '回填失败')
@@ -494,6 +503,71 @@ export default function LiveSignals() {
   ]
 
   const posByCode = new Map((summary?.positions ?? []).map((p) => [p.code, p]))
+
+  // 影子/滑点统计渲染片段（底部 Collapse 与右下角浮动面板共用同一 state，
+  // 回填后 refreshShadowSlip() 刷新 → 两处同步更新）
+  const slipContent = slip ? (
+    <div>
+      <Space size="large" style={{ marginBottom: 8 }}>
+        <Statistic title="样本数" value={slip.summary.n} />
+        <Statistic title="平均滑点成本"
+          value={slip.summary.avg_slip_pct != null
+            ? `${slip.summary.avg_slip_pct}%` : '-'} />
+        <Statistic title="买入均值"
+          value={slip.summary.buy_avg_slip_pct != null
+            ? `${slip.summary.buy_avg_slip_pct}%` : '-'} />
+        <Statistic title="卖出均值"
+          value={slip.summary.sell_avg_slip_pct != null
+            ? `${slip.summary.sell_avg_slip_pct}%` : '-'} />
+      </Space>
+      <Table
+        rowKey="fill_id" size="small"
+        dataSource={slip.rows}
+        pagination={{ pageSize: 10 }}
+        columns={[
+          { title: '代码', dataIndex: 'code', width: 90 },
+          { title: '类型', dataIndex: 'stype', width: 80 },
+          { title: '方向', dataIndex: 'side', width: 70 },
+          { title: '参考价', dataIndex: 'ref_price', width: 90, align: 'right',
+            render: (v) => v?.toFixed(3) },
+          { title: '成交价', dataIndex: 'fill_price', width: 90, align: 'right',
+            render: (v) => v?.toFixed(3) },
+          { title: '滑点%', dataIndex: 'slip_pct', width: 90, align: 'right',
+            render: (v) => (
+              <Typography.Text type={v > 0 ? 'danger' : 'success'}>
+                {v}%
+              </Typography.Text>
+            ) },
+          { title: '时间', dataIndex: 'fill_time' }
+        ]}
+        locale={{ emptyText: '暂无回填成交——回填后自动积累滑点样本' }}
+      />
+    </div>
+  ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+
+  const shadowContent = shadow ? (
+    <Space size="large" wrap>
+      <Statistic title="信号数" value={shadow.n_signals} />
+      <Statistic title="已执行" value={shadow.n_filled}
+        suffix={`/ ${shadow.n_signals}`} />
+      <Statistic title="执行率"
+        value={shadow.fill_rate != null
+          ? `${(shadow.fill_rate * 100).toFixed(1)}%` : '-'} />
+      <Statistic title="影子已实现盈亏（按参考价）"
+        valueStyle={{ color: shadow.shadow_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+        value={fmtMoney(shadow.shadow_pnl)} />
+      <Statistic title="实际已实现盈亏（回填口径）"
+        valueStyle={{ color: shadow.actual_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+        value={fmtMoney(shadow.actual_pnl)} />
+      <Statistic title="执行差（实际-影子）"
+        valueStyle={{ color: shadow.gap_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+        value={fmtMoney(shadow.gap_pnl)} />
+      <Statistic title="影子天数" value={shadow.days} />
+    </Space>
+  ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+
+  const [statsOpen, setStatsOpen] = useState(false)
+
   const intradayCols: ColumnsType<IntradayCodeStatus> = [
     { title: '代码', dataIndex: 'code', width: 90 },
     { title: '名称', dataIndex: 'name', width: 110, ellipsis: true },
@@ -1116,68 +1190,12 @@ export default function LiveSignals() {
           {
             key: 'slip',
             label: '滑点统计（M3：实际成交价 vs 信号参考价，正=不利成本）',
-            children: slip ? (
-              <div>
-                <Space size="large" style={{ marginBottom: 8 }}>
-                  <Statistic title="样本数" value={slip.summary.n} />
-                  <Statistic title="平均滑点成本"
-                    value={slip.summary.avg_slip_pct != null
-                      ? `${slip.summary.avg_slip_pct}%` : '-'} />
-                  <Statistic title="买入均值"
-                    value={slip.summary.buy_avg_slip_pct != null
-                      ? `${slip.summary.buy_avg_slip_pct}%` : '-'} />
-                  <Statistic title="卖出均值"
-                    value={slip.summary.sell_avg_slip_pct != null
-                      ? `${slip.summary.sell_avg_slip_pct}%` : '-'} />
-                </Space>
-                <Table
-                  rowKey="fill_id" size="small"
-                  dataSource={slip.rows}
-                  pagination={{ pageSize: 10 }}
-                  columns={[
-                    { title: '代码', dataIndex: 'code', width: 90 },
-                    { title: '类型', dataIndex: 'stype', width: 80 },
-                    { title: '方向', dataIndex: 'side', width: 70 },
-                    { title: '参考价', dataIndex: 'ref_price', width: 90, align: 'right',
-                      render: (v) => v?.toFixed(3) },
-                    { title: '成交价', dataIndex: 'fill_price', width: 90, align: 'right',
-                      render: (v) => v?.toFixed(3) },
-                    { title: '滑点%', dataIndex: 'slip_pct', width: 90, align: 'right',
-                      render: (v) => (
-                        <Typography.Text type={v > 0 ? 'danger' : 'success'}>
-                          {v}%
-                        </Typography.Text>
-                      ) },
-                    { title: '时间', dataIndex: 'fill_time' }
-                  ]}
-                  locale={{ emptyText: '暂无回填成交——回填后自动积累滑点样本' }}
-                />
-              </div>
-            ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+            children: slipContent
           },
           {
             key: 'shadow',
             label: '影子运行（M3：假设每条信号都按参考价足额执行 vs 实际回填）',
-            children: shadow ? (
-              <Space size="large" wrap>
-                <Statistic title="信号数" value={shadow.n_signals} />
-                <Statistic title="已执行" value={shadow.n_filled}
-                  suffix={`/ ${shadow.n_signals}`} />
-                <Statistic title="执行率"
-                  value={shadow.fill_rate != null
-                    ? `${(shadow.fill_rate * 100).toFixed(1)}%` : '-'} />
-                <Statistic title="影子已实现盈亏（按参考价）"
-                  valueStyle={{ color: shadow.shadow_pnl >= 0 ? '#3f8600' : '#cf1322' }}
-                  value={fmtMoney(shadow.shadow_pnl)} />
-                <Statistic title="实际已实现盈亏（回填口径）"
-                  valueStyle={{ color: shadow.actual_pnl >= 0 ? '#3f8600' : '#cf1322' }}
-                  value={fmtMoney(shadow.actual_pnl)} />
-                <Statistic title="执行差（实际-影子）"
-                  valueStyle={{ color: shadow.gap_pnl >= 0 ? '#3f8600' : '#cf1322' }}
-                  value={fmtMoney(shadow.gap_pnl)} />
-                <Statistic title="影子天数" value={shadow.days} />
-              </Space>
-            ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+            children: shadowContent
           },
           {
             key: 'ready',
@@ -1269,6 +1287,40 @@ export default function LiveSignals() {
           </Typography.Text>
         </Space>
       </Modal>
+
+      {/* 浮动统计入口：影子运行 & 滑点统计（打开即强刷，回填后也实时同步） */}
+      <FloatButton
+        icon={<LineChartOutlined />}
+        type="primary"
+        tooltip="影子运行 & 滑点统计"
+        style={{ right: 24, bottom: 24 }}
+        onClick={() => { setStatsOpen(true); refreshShadowSlip() }}
+      />
+      <Drawer
+        title="影子运行 & 滑点统计"
+        placement="right"
+        width={560}
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+      >
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <div>
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              影子运行（M3：假设每条信号都按参考价足额执行 vs 实际回填）
+            </Typography.Title>
+            {shadowContent}
+          </div>
+          <div>
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              滑点统计（实际成交价 vs 信号参考价，正=不利成本）
+            </Typography.Title>
+            {slipContent}
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            随每次回填自动刷新；也可关闭后重新打开强制刷新。
+          </Typography.Text>
+        </Space>
+      </Drawer>
     </Space>
   )
 }
