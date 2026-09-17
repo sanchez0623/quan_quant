@@ -9,6 +9,7 @@ import type {
   BacktestListResponse,
   BacktestReport,
   BacktestTemplateItem,
+  ClosedTradeStats,
   BsCheckResult,
   BsMonitor,
   DataDemoRequest,
@@ -458,6 +459,11 @@ export async function getSlippage(): Promise<SlippageResult> {
 
 export async function getShadowStats(): Promise<ShadowStats> {
   const res = await api.get<ShadowStats>('/live/shadow')
+  return res.data
+}
+
+export async function getClosedTrades(): Promise<ClosedTradeStats> {
+  const res = await api.get<ClosedTradeStats>('/live/closed-trades')
   return res.data
 }
 

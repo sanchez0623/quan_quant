@@ -311,6 +311,61 @@ def test_summary_equity_no_position(monkeypatch):
     assert out["equity"]["dd_pct"] is None
 
 
+# ---------------- 平仓复盘（FIFO 配对 + 分类战绩 + 卖对率） ----------------
+
+def test_closed_trade_fifo_and_after(demo_env, monkeypatch):
+    """平仓复盘：FIFO 跨批次拆行/费用分摊/净盈亏 + 做T分类 +
+    持有天数 + 平仓后 T+5 走势（与日线库收盘一致）"""
+    from app.data import store as st
+    from app.live import reports
+    d, start, _end = demo_env
+    dates = st.read_daily(codes=["600000"], data_dir=d).sort("date")["date"].to_list()
+    d36 = st.read_daily(codes=["600036"], data_dir=d).sort("date")["date"].to_list()
+    s2 = db.add_live_signal("premarket", "清仓", "600000", "股600000",
+                            "槽位轮动(5日未新高+跌出候选)", None, 15.0)
+    # 两批买入（10@10 / 10@12），一笔卖出 15 股 @15 跨批吃进
+    db.add_live_fill(None, "600000", "buy", 10.0, 1000, fee=5.0,
+                     fill_time=f"{dates[10]} 09:35")
+    db.add_live_fill(None, "600000", "buy", 12.0, 1000, fee=5.0,
+                     fill_time=f"{dates[20]} 09:35")
+    db.add_live_fill(s2, "600000", "sell", 15.0, 1500, fee=6.0,
+                     fill_time=f"{dates[40]} 10:00")
+    # 做T（当日买卖）：600036 当天 9 买 9.5 卖
+    db.add_live_fill(None, "600036", "buy", 9.0, 1000, fee=0.0,
+                     fill_time=f"{d36[25]} 09:35")
+    db.add_live_fill(None, "600036", "sell", 9.5, 1000, fee=0.0,
+                     fill_time=f"{d36[25]} 14:00")
+
+    out = reports.closed_trade_stats(data_dir=d)
+    rows = out["rows"]
+    assert len(rows) == 3
+    # FIFO：批1 吃老买 10@10×1000；批2 吃 12@12×500（费用按股分摊）
+    r1, r2, rt = rows[0], rows[1], rows[2]
+    assert (r1["open_price"], r1["volume"]) == (10.0, 1000)
+    assert r1["pnl"] == pytest.approx((15 - 10) * 1000 - 5 - 6 * 1000 / 1500)
+    assert (r2["open_price"], r2["volume"]) == (12.0, 500)
+    assert r2["pnl"] == pytest.approx((15 - 12) * 500 - 5 * 0.5 - 6 * 500 / 1500)
+    assert r1["kind"] == r2["kind"] == "清仓" and rt["kind"] == "做T"
+    assert r1["hold_days"] == 30 and rt["hold_days"] == 0
+    # 平仓后 T+5 走势与日线库收盘一致（close_day=dates[40] -> 索引 45）
+    closes = st.read_daily(codes=["600000"], data_dir=d).sort("date")["close"].to_list()
+    assert r1["ret_after_5d"] == pytest.approx((closes[45] / 15 - 1) * 100, abs=1e-3)
+    # 汇总：3 批全盈 -> 胜率 100%
+    assert out["summary"]["n"] == 3
+    assert out["summary"]["win_rate"] == pytest.approx(1.0)
+    assert out["by_kind"]["清仓"]["n"] == 2 and out["by_kind"]["做T"]["n"] == 1
+
+
+def test_closed_trade_no_data():
+    """空流水：0 批次 + 各率 None（不报错）"""
+    from app.live import reports
+    out = reports.closed_trade_stats()
+    assert out["summary"]["n"] == 0
+    assert out["summary"]["win_rate"] is None
+    assert out["summary"]["sell_right_rate_5d"] is None
+    assert out["rows"] == []
+
+
 # ---------------- 回测模板 -> 实盘配置注入（TEMPLATE_INJECT） ----------------
 
 def test_apply_template_injects_pool_scope_and_mom_keys(tmp_path):

@@ -11,15 +11,15 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type {
-  BacktestTemplateItem, IntradayCodeStatus, IntradayRunResult, IntradayStatus,
-  LiveConfig, LivePosition, LiveSignalItem, ReadinessResult, ShadowStats,
-  SlippageResult, TaskStatus, TemplateApplyPreview
+  BacktestTemplateItem, ClosedTradeRow, ClosedTradeStats, IntradayCodeStatus,
+  IntradayRunResult, IntradayStatus, LiveConfig, LivePosition, LiveSignalItem,
+  ReadinessResult, ShadowStats, SlippageResult, TaskStatus, TemplateApplyPreview
 } from '../api/types'
 import {
-  addLiveFill, applyTemplateToLive, getIntradayStatus, getLiveSummary,
-  getReadiness, getShadowStats, getSlippage, getTemplates, resetLiveData,
-  runIntraday, runMorning, runPostclose, saveLiveConfig, setLiveSignalStatus,
-  syncLivePositions
+  addLiveFill, applyTemplateToLive, getClosedTrades, getIntradayStatus,
+  getLiveSummary, getReadiness, getShadowStats, getSlippage, getTemplates,
+  resetLiveData, runIntraday, runMorning, runPostclose, saveLiveConfig,
+  setLiveSignalStatus, syncLivePositions
 } from '../api/client'
 import { useTaskProgress } from '../hooks/useTaskProgress'
 import TaskStopButton from '../components/TaskStopButton'
@@ -112,6 +112,7 @@ export default function LiveSignals() {
   const [postcloseLoading, setPostcloseLoading] = useState(false)
   const [slip, setSlip] = useState<SlippageResult | null>(null)
   const [shadow, setShadow] = useState<ShadowStats | null>(null)
+  const [closed, setClosed] = useState<ClosedTradeStats | null>(null)
   const [ready, setReady] = useState<ReadinessResult | null>(null)
   const loadedReports = useRef<Set<string>>(new Set())
 
@@ -142,14 +143,16 @@ export default function LiveSignals() {
     loadedReports.current.add(key)
     if (key === 'slip') getSlippage().then(setSlip).catch(() => {})
     if (key === 'shadow') getShadowStats().then(setShadow).catch(() => {})
+    if (key === 'closed') getClosedTrades().then(setClosed).catch(() => {})
     if (key === 'ready') getReadiness().then(setReady).catch(() => {})
   }
 
-  // 影子/滑点强制刷新（不受懒加载去重限制）：回填后、浮动面板打开时调用，
-  // 保证统计口径与最近一次回填实时同步
-  const refreshShadowSlip = useCallback(() => {
+  // 影子/滑点/平仓复盘强制刷新（不受懒加载去重限制）：回填后、浮动面板打开时
+  // 调用，保证统计口径与最近一次回填实时同步
+  const refreshStats = useCallback(() => {
     getSlippage().then(setSlip).catch(() => {})
     getShadowStats().then(setShadow).catch(() => {})
+    getClosedTrades().then(setClosed).catch(() => {})
   }, [])
 
   const onCollapseChange = (keys: string | string[]) => {
@@ -222,7 +225,7 @@ export default function LiveSignals() {
         : '成交已回填，手续费已按费率自动计算并摊入成本')
       setFillTarget(null)
       await refresh()
-      refreshShadowSlip()   // 影子/滑点统计随回填实时刷新
+      refreshStats()   // 影子/滑点/平仓复盘随回填实时刷新
     } catch (err) {
       message.error((err as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail || '回填失败')
@@ -564,6 +567,97 @@ export default function LiveSignals() {
         value={fmtMoney(shadow.gap_pnl)} />
       <Statistic title="影子天数" value={shadow.days} />
     </Space>
+  ) : <Typography.Text type="secondary">加载中...</Typography.Text>
+
+  const closedContent = closed ? (
+    <div>
+      <Space size="large" style={{ marginBottom: 8 }} wrap>
+        <Statistic title="平仓批次" value={closed.summary.n} />
+        <Statistic title="累计净盈亏"
+          valueStyle={{ color: closed.summary.total_pnl >= 0 ? '#3f8600' : '#cf1322' }}
+          value={fmtMoney(closed.summary.total_pnl)} />
+        <Statistic title="胜率"
+          value={closed.summary.win_rate != null
+            ? `${(closed.summary.win_rate * 100).toFixed(0)}%` : '-'} />
+        <Statistic title="平均收益率"
+          value={closed.summary.avg_ret_pct != null
+            ? `${closed.summary.avg_ret_pct.toFixed(2)}%` : '-'} />
+        <Statistic title="卖对率(5日)"
+          value={closed.summary.sell_right_rate_5d != null
+            ? `${(closed.summary.sell_right_rate_5d * 100).toFixed(0)}%` : '-'} />
+        <Statistic title="卖对率(10日)"
+          value={closed.summary.sell_right_rate_10d != null
+            ? `${(closed.summary.sell_right_rate_10d * 100).toFixed(0)}%` : '-'} />
+      </Space>
+      {Object.keys(closed.by_kind).length > 0 && (
+        <Table
+          rowKey="kind" size="small" style={{ marginBottom: 8 }}
+          dataSource={Object.entries(closed.by_kind).map(([kind, v]) => ({ kind, ...v }))}
+          pagination={false}
+          columns={[
+            { title: '分类', dataIndex: 'kind', width: 100 },
+            { title: '次数', dataIndex: 'n', width: 70, align: 'right' },
+            { title: '胜率', dataIndex: 'win_rate', width: 80, align: 'right',
+              render: (v) => (v != null ? `${(v * 100).toFixed(0)}%` : '-') },
+            { title: '平均收益率', dataIndex: 'avg_ret_pct', width: 110, align: 'right',
+              render: (v) => (v != null ? `${v.toFixed(2)}%` : '-') },
+            { title: '累计盈亏', dataIndex: 'total_pnl', align: 'right',
+              render: (v) => (
+                <Typography.Text type={v >= 0 ? 'success' : 'danger'}>
+                  {fmtMoney(v)}
+                </Typography.Text>
+              ) }
+          ] as ColumnsType<{ kind: string; n: number; win_rate: number | null;
+            avg_ret_pct: number | null; total_pnl: number }>}
+        />
+      )}
+      <Table
+        rowKey={(r) => `${r.code}-${r.open_day}-${r.close_day}-${r.volume}`}
+        size="small"
+        dataSource={closed.rows}
+        pagination={{ pageSize: 10 }}
+        scroll={{ x: 640 }}
+        columns={[
+          { title: '代码', dataIndex: 'code', width: 70 },
+          { title: '持有（开→平）', width: 170,
+            render: (_v, r) => (
+              <span>
+                {r.open_day.slice(5)}→{r.close_day.slice(5)}
+                <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
+                  {r.hold_days != null ? `${r.hold_days}日` : ''}
+                </Typography.Text>
+              </span>
+            ) },
+          { title: '净盈亏', dataIndex: 'pnl', width: 90, align: 'right',
+            render: (v) => (
+              <Typography.Text type={v >= 0 ? 'success' : 'danger'}>
+                {v >= 0 ? '+' : ''}{v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+              </Typography.Text>
+            ) },
+          { title: '收益率', dataIndex: 'ret_pct', width: 85, align: 'right',
+            render: (v) => (v != null
+              ? <Typography.Text type={v >= 0 ? 'success' : 'danger'}>
+                  {v >= 0 ? '+' : ''}{v.toFixed(2)}%
+                </Typography.Text>
+              : '-') },
+          { title: '卖后5日', dataIndex: 'ret_after_5d', width: 85, align: 'right',
+            render: (v) => (v != null
+              ? <Typography.Text type={v < 0 ? 'success' : 'danger'}  // 负=卖对（绿）
+                  title="负=平仓后下跌（卖对）；正=卖飞">
+                  {v >= 0 ? '+' : ''}{v.toFixed(2)}%
+                </Typography.Text>
+              : '-') },
+          { title: '卖后10日', dataIndex: 'ret_after_10d', width: 85, align: 'right',
+            render: (v) => (v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '-') },
+          { title: '分类', dataIndex: 'kind', width: 80,
+            render: (v) => <Tag>{v}</Tag> }
+        ] as ColumnsType<ClosedTradeRow>}
+      />
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        FIFO 配对口径与回测引擎一致；一笔卖出跨多个买入批次时拆为多行。
+        卖后 N 日为平仓日之后第 N 个交易日收盘相对平仓价——负值（绿）=卖对。
+      </Typography.Text>
+    </div>
   ) : <Typography.Text type="secondary">加载中...</Typography.Text>
 
   const [statsOpen, setStatsOpen] = useState(false)
@@ -1198,6 +1292,11 @@ export default function LiveSignals() {
             children: shadowContent
           },
           {
+            key: 'closed',
+            label: '平仓复盘（FIFO 配对批次 + 分类战绩 + 卖对率）',
+            children: closedContent
+          },
+          {
             key: 'ready',
             label: 'M4 小资金实盘就绪检查',
             children: ready ? (
@@ -1288,25 +1387,25 @@ export default function LiveSignals() {
         </Space>
       </Modal>
 
-      {/* 浮动统计入口：影子运行 & 滑点统计（打开即强刷，回填后也实时同步） */}
+      {/* 浮动统计入口：实盘交易复盘（打开即强刷，回填后也实时同步） */}
       <FloatButton
         icon={<LineChartOutlined />}
         type="primary"
-        tooltip="影子运行 & 滑点统计"
+        tooltip="实盘交易复盘（影子/滑点/平仓）"
         style={{ right: 24, bottom: 24 }}
-        onClick={() => { setStatsOpen(true); refreshShadowSlip() }}
+        onClick={() => { setStatsOpen(true); refreshStats() }}
       />
       <Drawer
-        title="影子运行 & 滑点统计"
+        title="实盘交易复盘"
         placement="right"
-        width={560}
+        width={640}
         open={statsOpen}
         onClose={() => setStatsOpen(false)}
       >
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
           <div>
             <Typography.Title level={5} style={{ marginTop: 0 }}>
-              影子运行（M3：假设每条信号都按参考价足额执行 vs 实际回填）
+              影子运行（假设每条信号都按参考价足额执行 vs 实际回填）
             </Typography.Title>
             {shadowContent}
           </div>
@@ -1315,6 +1414,12 @@ export default function LiveSignals() {
               滑点统计（实际成交价 vs 信号参考价，正=不利成本）
             </Typography.Title>
             {slipContent}
+          </div>
+          <div>
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              平仓复盘（FIFO 配对批次 + 分类战绩 + 卖对率）
+            </Typography.Title>
+            {closedContent}
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             随每次回填自动刷新；也可关闭后重新打开强制刷新。

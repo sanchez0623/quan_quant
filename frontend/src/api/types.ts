@@ -742,6 +742,49 @@ export interface ShadowStats {
   days: number
 }
 
+// ---- 平仓复盘（A+B：FIFO 配对批次 + 分类战绩 + 平仓后走势） ----
+export interface ClosedTradeRow {
+  code: string
+  name: string
+  open_day: string
+  close_day: string
+  open_price: number
+  close_price: number
+  volume: number
+  /** 净盈亏（扣双边费用） */
+  pnl: number
+  /** 收益率（%，÷开仓成本） */
+  ret_pct: number | null
+  /** 持有交易日数（做T=0；日线缺失 null） */
+  hold_days: number | null
+  close_stype: string
+  close_reason: string
+  /** 平仓后第 5/10 交易日收盘相对平仓价（%，负=卖对/躲过下跌）；不足为 null */
+  ret_after_5d: number | null
+  ret_after_10d: number | null
+  /** 分类：做T（当日买卖）或卖出信号类型 */
+  kind: string
+}
+
+export interface ClosedTradeStats {
+  rows: ClosedTradeRow[]
+  summary: {
+    n: number
+    total_pnl: number
+    win_rate: number | null
+    avg_ret_pct: number | null
+    /** 卖对率：平仓后 5/10 日收盘低于平仓价的批次占比 */
+    sell_right_rate_5d: number | null
+    sell_right_rate_10d: number | null
+  }
+  by_kind: Record<string, {
+    n: number
+    total_pnl: number
+    win_rate: number | null
+    avg_ret_pct: number | null
+  }>
+}
+
 // ---- M4 就绪检查 ----
 export interface ReadinessItem {
   key: string

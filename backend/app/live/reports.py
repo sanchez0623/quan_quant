@@ -9,8 +9,10 @@
   影子账户做T信号不计（t_mode=off 起步）。
 - 就绪检查：M4 小资金跟单前的硬条件清单（数据/通道/影子时长/滑点样本）。
 """
+from bisect import bisect_left
 from collections import deque
 from datetime import datetime
+from typing import Optional
 
 from .. import db
 from ..data import sources, store
@@ -202,3 +204,125 @@ def readiness() -> dict:
          f"当前 {mh}——小资金阶段控制同时持仓只数")
 
     return {"ready": all(i["ok"] for i in items), "items": items}
+
+
+# ---------------- 平仓复盘（A+B：FIFO 配对批次 + 分类战绩 + 平仓后走势） ----------------
+
+def _daily_close_seq(codes: list[str], data_dir: Optional[str] = None
+                     ) -> dict[str, tuple[list[str], list[float]]]:
+    """{code: (日期升序表, 收盘升序表)}——持有天数与平仓后走势共用一份日线。"""
+    df = store.read_daily(codes=codes, data_dir=data_dir)
+    seq: dict[str, tuple[list[str], list[float]]] = {}
+    if df is None or not df.height:
+        return seq
+    for r in df.sort(["code", "date"]).iter_rows(named=True):
+        dates, closes = seq.setdefault(r["code"], ([], []))
+        dates.append(str(r["date"]))
+        closes.append(float(r["close"]))
+    return seq
+
+
+def closed_trade_stats(data_dir: Optional[str] = None) -> dict:
+    """平仓复盘（A+B）：回填流水 FIFO 配对 -> 已平仓批次 + 分类战绩 +
+    平仓后 T+5/T+10 走势（清仓后下跌 = 卖对）。
+
+    配对口径与回测 execute_sell 一致：一笔卖出从最老买入批次起 FIFO 吃进，
+    跨批次时拆成多条配对记录（各保留来源批次的开仓日/开仓价/费用分摊）。
+    当日买卖（做T）hold_days=0，自然单独成类。"""
+    fills = list(reversed(db.list_live_fills(limit=100_000)))  # id 升序 = 回填顺序
+    sig_map = {s["id"]: s for s in db.list_live_signals(limit=5000)}
+    buys: dict[str, deque] = {}
+    rows: list[dict] = []
+    for f in fills:
+        code = f["code"]
+        if f["side"] == "buy":
+            if int(f["fill_volume"]) > 0:
+                buys.setdefault(code, deque()).append(f)
+            continue
+        rem = int(f["fill_volume"])
+        if rem <= 0:
+            continue
+        sig = sig_map.get(f.get("signal_id")) or {}
+        close_time = f.get("fill_time") or f.get("created_at") or ""
+        close_day = close_time[:10]
+        sell_fee_each = float(f["fee"] or 0) / rem
+        while rem > 0 and buys.get(code):
+            b = buys[code][0]
+            b_vol = int(b["fill_volume"])
+            take = min(rem, b_vol)
+            buy_fee_part = float(b["fee"] or 0) * take / b_vol
+            open_time = b.get("fill_time") or b.get("created_at") or ""
+            cost = float(b["fill_price"]) * take
+            pnl = ((float(f["fill_price"]) - float(b["fill_price"])) * take
+                   - buy_fee_part - sell_fee_each * take)
+            rows.append({
+                "code": code,
+                "name": (sig_map.get(b.get("signal_id")) or {}).get("name") or code,
+                "open_day": open_time[:10], "close_day": close_day,
+                "open_price": float(b["fill_price"]),
+                "close_price": float(f["fill_price"]),
+                "volume": take,
+                "pnl": round(pnl, 2),
+                "ret_pct": round(pnl / cost * 100, 4) if cost else None,
+                "close_stype": sig.get("stype") or "",
+                "close_reason": sig.get("reason") or "",
+            })
+            rem -= take
+            b["fill_volume"] = b_vol - take
+            if b["fill_volume"] <= 0:
+                buys[code].popleft()
+
+    # ---- 持有天数 + 平仓后 T+5/T+10 走势（日线缺失退 None，宁缺勿错） ----
+    seq = _daily_close_seq(sorted({r["code"] for r in rows}), data_dir)
+    for r in rows:
+        dates, closes = seq.get(r["code"], ([], []))
+        r["hold_days"] = None
+        r["ret_after_5d"] = None
+        r["ret_after_10d"] = None
+        if not dates:
+            continue
+        i_open = bisect_left(dates, r["open_day"])
+        i_close = bisect_left(dates, r["close_day"])
+        if i_close >= len(dates) or dates[i_close] != r["close_day"]:
+            continue   # 平仓日无日线（未更新到当日）：走势无从算起
+        if i_open < len(dates):
+            r["hold_days"] = max(0, i_close - i_open)
+        for tag, n in (("ret_after_5d", 5), ("ret_after_10d", 10)):
+            j = i_close + n
+            if j < len(closes):
+                r[tag] = round((closes[j] / r["close_price"] - 1) * 100, 4)
+    rows.sort(key=lambda r: r["close_day"], reverse=True)
+
+    # ---- 分类（做T=当日买卖优先；其余按卖出信号类型）+ 战绩汇总 ----
+    for r in rows:
+        r["kind"] = "做T" if r["hold_days"] == 0 else (r["close_stype"] or "未分类")
+    by_kind: dict[str, dict] = {}
+    rets_all = [r["ret_pct"] for r in rows if r["ret_pct"] is not None]
+    t5 = [r["ret_after_5d"] for r in rows if r["ret_after_5d"] is not None]
+    t10 = [r["ret_after_10d"] for r in rows if r["ret_after_10d"] is not None]
+
+    def _pack(rs: list[dict]) -> dict:
+        rets = [r["ret_pct"] for r in rs if r["ret_pct"] is not None]
+        return {"n": len(rs),
+                "total_pnl": round(sum(r["pnl"] for r in rs), 2),
+                "win_rate": (round(sum(1 for r in rs if r["pnl"] > 0) / len(rs), 4)
+                             if rs else None),
+                "avg_ret_pct": (round(sum(rets) / len(rets), 4) if rets else None)}
+
+    for r in rows:
+        by_kind.setdefault(r["kind"], []).append(r)
+    return {
+        "rows": rows,
+        "summary": {"n": len(rows),
+                    "total_pnl": round(sum(r["pnl"] for r in rows), 2),
+                    "win_rate": (round(sum(1 for r in rows if r["pnl"] > 0) / len(rows), 4)
+                                 if rows else None),
+                    "avg_ret_pct": (round(sum(rets_all) / len(rets_all), 4)
+                                    if rets_all else None),
+                    # 卖对率：平仓后 5/10 日收盘低于平仓价的批次占比（跌=躲过下跌）
+                    "sell_right_rate_5d": (round(sum(1 for v in t5 if v < 0) / len(t5), 4)
+                                           if t5 else None),
+                    "sell_right_rate_10d": (round(sum(1 for v in t10 if v < 0) / len(t10), 4)
+                                            if t10 else None)},
+        "by_kind": {k: _pack(v) for k, v in sorted(by_kind.items())},
+    }

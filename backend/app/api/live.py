@@ -493,6 +493,13 @@ def shadow(_user: str = Depends(get_current_user)):
     return reports.shadow_stats()
 
 
+@router.get("/closed-trades")
+def closed_trades(_user: str = Depends(get_current_user)):
+    """平仓复盘（A+B）：回填流水 FIFO 配对批次（持有天数/净盈亏/收益率）
+    + 按清仓类型分类战绩 + 平仓后 T+5/T+10 走势（卖对率）"""
+    return reports.closed_trade_stats()
+
+
 @router.get("/readiness")
 def readiness(_user: str = Depends(get_current_user)):
     """M4 小资金实盘就绪检查清单（飞书/数据/行情源/影子时长/滑点样本/护栏）"""
