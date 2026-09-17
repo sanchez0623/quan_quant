@@ -1,6 +1,7 @@
 import { Layout, Dropdown, Avatar, Menu, MenuProps, Space } from 'antd'
 import {
   ApartmentOutlined,
+  ClockCircleOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   KeyOutlined,
@@ -29,6 +30,7 @@ export default function MainLayout() {
     { key: '/experiments', icon: <ApartmentOutlined />, label: '对比实验' },
     { key: '/ai', icon: <RobotOutlined />, label: 'AI 分析' },
     { key: '/data', icon: <DatabaseOutlined />, label: '数据管理' },
+    { key: '/schedule', icon: <ClockCircleOutlined />, label: '定时任务' },
     { key: '/keys', icon: <KeyOutlined />, label: 'Key 管理' },
     // 用户管理仅管理员可见
     ...(username === 'admin'

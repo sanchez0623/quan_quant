@@ -347,6 +347,35 @@ def test_data_update_no_source_friendly_error(monkeypatch):
         assert "demo" in (st["error"] or "") or "数据源" in (st["error"] or "")
 
 
+def test_schedule_status_endpoint():
+    """定时任务页端点：调度开关 + 今日提交标记 + 调度类任务列表聚合"""
+    from fastapi.testclient import TestClient
+    from app import config, db
+    from app.main import app
+    config.ensure_dirs()
+    db.init_db()
+
+    with TestClient(app) as client:
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        assert r.status_code == 200
+        h = {"Authorization": f"Bearer {r.json()['token']}"}
+
+        r = client.get("/api/tasks/schedule-status", headers=h)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["auto_schedule"], bool)
+        assert set(body["submitted_today"]) == {"morning", "postclose", "evening", "minute5"}
+        assert all(isinstance(v, bool) for v in body["submitted_today"].values())
+        assert isinstance(body["tasks"], list)
+        for t in body["tasks"]:
+            assert t["type"] in ("data_update", "live_premarket", "live_postclose")
+        # 落一条 data_update 任务后应出现在列表里
+        tid = "sched_test_001"
+        db.create_task(tid, "调度测试任务", "data_update", payload={"scope": "daily"})
+        r2 = client.get("/api/tasks/schedule-status", headers=h)
+        assert any(t["task_id"] == tid for t in r2.json()["tasks"])
+
+
 # ---------------- 对比实验（experiments） ----------------
 
 def test_experiment_attribution_logic():

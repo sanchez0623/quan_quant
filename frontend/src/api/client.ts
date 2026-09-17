@@ -25,6 +25,7 @@ import type {
   IntradayRunResult,
   IntradayStatus,
   ReadinessResult,
+  ScheduleStatus,
   ShadowStats,
   SlippageResult,
   ExperimentListItem,
@@ -428,6 +429,12 @@ export async function resetLiveData(keepConfig = true): Promise<void> {
 // ---- 任务通用操作 ----
 export async function cancelTask(taskId: string): Promise<void> {
   await api.post(`/tasks/${taskId}/cancel`)
+}
+
+// ---- 定时任务（调度可见性） ----
+export async function getScheduleStatus(): Promise<ScheduleStatus> {
+  const res = await api.get<ScheduleStatus>('/tasks/schedule-status')
+  return res.data
 }
 
 // ---- 盘中信号机（M2）----

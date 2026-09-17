@@ -470,10 +470,14 @@ def get_task(task_id: str, db_path: Optional[str] = None) -> Optional[dict]:
 
 
 def _task_where(task_type: Optional[str], search: Optional[str],
-                tag: Optional[str]) -> tuple[str, list]:
-    """tasks 表公共 WHERE 组装（type/search/tag）；tag 语义同 list_tasks。"""
+                tag: Optional[str], types: Optional[list] = None) -> tuple[str, list]:
+    """tasks 表公共 WHERE 组装（types 多类型 / type 单类型 / search / tag）；
+    tag 语义同 list_tasks；types 与 task_type 同时给出时 types 优先。"""
     conds, vals = [], []
-    if task_type:
+    if types:
+        conds.append(f"type IN ({','.join('?' * len(types))})")
+        vals.extend(types)
+    elif task_type:
         conds.append("type=?")
         vals.append(task_type)
     kw = (search or "").strip()
@@ -492,9 +496,10 @@ def _task_where(task_type: Optional[str], search: Optional[str],
 
 
 def count_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
-                search: Optional[str] = None, tag: Optional[str] = None) -> int:
+                search: Optional[str] = None, tag: Optional[str] = None,
+                types: Optional[list] = None) -> int:
     """与 list_tasks 同条件的轻量计数（分页 total 用，不解析 payload）"""
-    where, vals = _task_where(task_type, search, tag)
+    where, vals = _task_where(task_type, search, tag, types=types)
     with conn(db_path) as c:
         row = c.execute(f"SELECT COUNT(*) FROM tasks {where}", vals).fetchone()
     return int(row[0]) if row else 0
@@ -502,10 +507,12 @@ def count_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
 
 def list_tasks(task_type: Optional[str] = None, db_path: Optional[str] = None,
                search: Optional[str] = None, tag: Optional[str] = None,
-               limit: Optional[int] = None, offset: int = 0) -> list[dict]:
+               limit: Optional[int] = None, offset: int = 0,
+               types: Optional[list] = None) -> list[dict]:
     """tag 筛选：None=不过滤｜''（空串）=只看无标签｜其他值=精确匹配该标签。
+    types：多类型 IN 筛选（如调度类任务聚合），与 task_type 同给时优先。
     limit/offset 可选分页（None=全量，兼容既有遍历型调用方）"""
-    where, vals = _task_where(task_type, search, tag)
+    where, vals = _task_where(task_type, search, tag, types=types)
     page_sql = ""
     if limit is not None:
         page_sql = f"LIMIT {int(limit)} OFFSET {int(max(0, offset))}"

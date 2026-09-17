@@ -11,6 +11,7 @@ import ExperimentList from './pages/ExperimentList'
 import ExperimentResult from './pages/ExperimentResult'
 import AiAnalysis from './pages/AiAnalysis'
 import DataManagement from './pages/DataManagement'
+import ScheduleTasks from './pages/ScheduleTasks'
 import KeyManagement from './pages/KeyManagement'
 import UserManagement from './pages/UserManagement'
 import LiveSignals from './pages/LiveSignals'
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="experiments/:id" element={<ExperimentResult />} />
           <Route path="ai" element={<AiAnalysis />} />
           <Route path="data" element={<DataManagement />} />
+          <Route path="schedule" element={<ScheduleTasks />} />
           <Route path="keys" element={<KeyManagement />} />
           <Route
             path="users"

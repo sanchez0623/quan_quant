@@ -334,6 +334,30 @@ export interface TaskStatusResponse {
   error?: string | null
 }
 
+// ---- 定时任务（调度可见性） ----
+export interface ScheduleTaskItem {
+  task_id: string
+  name: string
+  type: string
+  status: TaskStatus
+  progress: number
+  message?: string | null
+  error?: string | null
+  created_at: string
+  finished_at?: string | null
+  payload: Record<string, unknown>
+  tag?: string
+}
+
+export interface ScheduleStatus {
+  auto_schedule: boolean
+  today: string
+  submitted_today: Record<'morning' | 'postclose' | 'evening' | 'minute5', boolean>
+  evening_daily_id?: string | null
+  evening_daily_status?: TaskStatus | null
+  tasks: ScheduleTaskItem[]
+}
+
 // ---- 回测报告 ----
 export interface Metrics {
   total_return: number
