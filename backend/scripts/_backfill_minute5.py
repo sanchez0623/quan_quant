@@ -34,7 +34,7 @@ import polars as pl
 from app import config, db
 from app.data import store
 
-BACKFILL_START_B = "2023-01-01"
+BACKFILL_START_B = "2024-01-01"  # 2026-09-17 用户拍板缩窗口：主验证 2024-2025 IS + 2026 OOS；2023 跨窗段退化为日线级验证
 STALL_SEC = 480        # 停滞判定：state/文件 8 分钟无变化（正常节奏 ~130s/票）
 RECYCLE_SEC = 900      # worker 生命周期上限 15 分钟（观察值：mootdx 连接 ~13 分钟被掐）
 POLL_SEC = 15
@@ -77,16 +77,17 @@ def _all_codes() -> list[str]:
 
 
 def _cancel_stuck_legacy() -> None:
-    """历史卡死任务收尾（21:14 事故遗留 running 态的旧任务，幂等）"""
+    """启动时收编遗留任务（幂等）：取消任何 running/pending 态的旧回补任务
+    （含窗口切换/看门狗重启场景），防止 UI 永久 running。"""
     import sqlite3
     con = sqlite3.connect(str(config.META_DB_PATH))
     rows = con.execute(
-        "select id from tasks where name='分钟线回补B：缺失票全窗口' "
+        "select id from tasks where name like '分钟线回补%' "
         "and status in ('running','pending','cancelling')").fetchall()
     con.close()
     for (tid,) in rows:
         db.finish_task(tid, "cancelled",
-                       error="拉取挂起（TCP CLOSE_WAIT+客户端死循环），看门狗版接管续跑")
+                       error="被新回补任务接管（窗口调整/看门狗重启）")
         print(f"[收尾] 旧任务 {tid} 已标记 cancelled", flush=True)
 
 
@@ -287,13 +288,14 @@ def run_a_tail() -> None:
 
 
 def _coverage_check(codes_done: list) -> int:
-    """B 步收尾：新文件日期覆盖抽查（起点晚于 2023-04 视为疑似截断）"""
+    """B 步收尾：新文件日期覆盖抽查（起点晚于 2024-02 视为疑似截断；
+    晚于此的也可能是 2024 后上市新股，软性警告仅供人工复核）"""
     n_bad = 0
     for c in codes_done:
         p = config.MINUTE5_DIR / f"{c}.parquet"
         try:
             dmin = pl.scan_parquet(p).select(pl.col("date").min()).collect().item()
-            if str(dmin)[:10] > "2023-04-01":
+            if str(dmin)[:10] > "2024-02-01":
                 n_bad += 1
         except Exception:
             n_bad += 1
