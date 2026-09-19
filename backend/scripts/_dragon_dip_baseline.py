@@ -20,7 +20,7 @@ from app import db
 from app.data import store
 from app.engine import runner
 
-REPORTS = Path(BACKEND).parents[1] / "data" / "reports"
+REPORTS = BACKEND.parent / "data" / "reports"
 
 
 def build_cfg() -> dict:
