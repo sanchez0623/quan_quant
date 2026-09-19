@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """策略注册表"""
+from .dragon_dip import DragonDipStrategy
 from .grid_t import GridTStrategy
 from .ma_cross import MaCrossStrategy
 from .momentum_slot import MomentumSlotStrategy
@@ -7,7 +8,7 @@ from .momentum_t import MomentumTStrategy
 
 REGISTRY: dict[str, object] = {
     s.id: s for s in [MaCrossStrategy(), GridTStrategy(), MomentumTStrategy(),
-                      MomentumSlotStrategy()]
+                      MomentumSlotStrategy(), DragonDipStrategy()]
 }
 
 
