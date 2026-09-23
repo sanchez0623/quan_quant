@@ -55,7 +55,8 @@ def _scan_jobs() -> tuple[list[dict], dict[str, set]]:
     inmarket = set(basic.filter(~pl.col("delisted"))["code"].to_list())
     daily = store.read_daily()
     daily_pairs = (daily.filter((pl.col("date") >= WIN_START)
-                                & (pl.col("date") <= "2099-12-31"))
+                                & (pl.col("date") <= "2099-12-31")
+                                & (pl.col("volume") > 0))
                    .select(["code", "date"]).unique())
     need: dict[str, set] = {}
     for c, d in daily_pairs.filter(pl.col("code").is_in(sorted(inmarket))).rows():
