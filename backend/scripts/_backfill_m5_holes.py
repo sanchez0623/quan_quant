@@ -251,6 +251,13 @@ def _have_days(code: str) -> set:
 
 
 def main() -> None:
+    # 开工前检查 baostock 黑名单（限制期内直接退出，子进程启动后才发现太晚）
+    from app.data.bs_usage import tracker as _bs_tracker
+    if _bs_tracker.is_blacklisted():
+        info = _bs_tracker.last_blacklist() or {}
+        release = info.get("release_at") or "稍后"
+        print(f"[阻断] baostock IP 黑名单限制中，预计 {release} 解除，退出", flush=True)
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     jobs, need = _scan_jobs()

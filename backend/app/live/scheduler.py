@@ -141,6 +141,13 @@ def tick(now: datetime | None = None) -> dict:
         if not _is_trading_day(today, now):
             return out
         out["trading_day"] = True
+        # baostock IP 黑名单限制期内：跳过一切依赖数据更新的任务
+        # （不写 auto_*_date 标记，让下个 tick 继续检查直到解除）
+        from ..data.bs_usage import tracker as _bs_tracker
+        if _bs_tracker.is_blacklisted():
+            info = _bs_tracker.last_blacklist() or {}
+            out["skipped"] = f"baostock 黑名单限制中，预计 {info.get('release_at')} 解除"
+            return out
         if _in_window(now, MORNING_WINDOW) and not _submitted("morning", today):
             _submit_task("morning", today, f"实盘盘前流程（自动）{today}")
             out["submitted"].append("morning")

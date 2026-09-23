@@ -34,8 +34,8 @@ FREEZE_HOURS_PER_HIT = 6
 BLACKLIST_CODE = "10001011"
 # 跨进程串行锁文件（放数据目录，避免与主库写锁互相影响）
 _LOCK_FILE = os.path.join(str(config.DATA_DIR), ".bs.lock")
-# 可选：查询间隔节流（秒），默认 0=不节流
-_MIN_INTERVAL = float(os.environ.get("BS_MIN_INTERVAL", "0"))
+# 可选：查询间隔节流（秒），默认 0.3=礼貌客户端（防止短时调用频率触发限流）
+_MIN_INTERVAL = float(os.environ.get("BS_MIN_INTERVAL", "0.3"))
 
 # 公网 IP echo 端点（轮询，返回纯 IPv4 或含 IP 文本均可；国内可达优先）
 _IP_ECHO_URLS = [
@@ -58,7 +58,9 @@ _BLACKLIST_STATS_URL = "https://www.baostock.com/helpdocs/api/wd-blacklist-stats
 def _fetch_official_blacklist(ip: str) -> dict | None:
     """拉取 baostock 官方黑名单账本。返回
     {"total": 今年限制次数, "latest_date": 最新事件日期(YYYY-MM-DD),
-     "latest_release": 官方释放时间原文}；接口不可达/结构变化返回 None。"""
+     "latest_release": 官方 releaseDate,
+     "pending_release": 官方 pendingReleaseDate（更可靠的释放时间，有则优先）}；
+    接口不可达/结构变化返回 None。"""
     if not ip:
         return None
     try:
@@ -73,9 +75,14 @@ def _fetch_official_blacklist(ip: str) -> dict | None:
         total = int(stats.get("total") or resp.get("yearlyRestrictCount")
                     or len(data) or 0)
         latest = data[0] if data else {}
+        # pendingReleaseDate 是官方"待释放时间"字段（有值时最可靠）
+        pending = _clean_release(
+            latest.get("pendingReleaseDate") or resp.get("pendingReleaseDate"))
+        release = _clean_release(latest.get("releaseDate"))
         return {"total": total,
                 "latest_date": str(latest.get("date") or "")[:10],
-                "latest_release": str(latest.get("releaseDate") or "")}
+                "latest_release": release,
+                "pending_release": pending}
     except Exception:
         return None
 
@@ -246,9 +253,11 @@ class BsUsageTracker:
 
         官方接口 wd-blacklist-stats 是唯一事实源：
         - 官方最新记录日期 == 本地最近一条检测日 => 同一次限制事件：
-          不累加计数，仅用官方 releaseDate 校准本地释放时间
-          （本地按"次数×6h"估算的释放期会早于/晚于官方，提前判定
-          "已解除"会把限制期内后续被拒误判为新事件而虚增计数）。
+          不累加计数，仅用官方释放时间校准本地 release_at
+          （pendingReleaseDate 是官方"待释放时间"，最可靠；
+          没有时才退到 releaseDate；本地按"次数×6h"估算的释放期
+          会早于/晚于官方，提前判定"已解除"会把限制期内后续被拒
+          误判为新事件而虚增计数）。
         - 新事件：freeze_count 直接采用官方 yearlyRestrictCount。
         - 官方接口不可达：回退本地估算（同限制期内重复探测不累加）。
         每次黑名单事件才调用，频率极低。"""
@@ -260,7 +269,9 @@ class BsUsageTracker:
                                 if row else "")
             same_event = bool(official["latest_date"]) and \
                 official["latest_date"] == latest_local_day
-            release = _clean_release(official["latest_release"])
+            # pending_release 是官方"待释放时间"字段（有值时最可靠）
+            release = official.get("pending_release") or \
+                _clean_release(official.get("latest_release"))
             with db.conn() as c:
                 if same_event and row:
                     c.execute(

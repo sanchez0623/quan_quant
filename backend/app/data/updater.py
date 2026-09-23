@@ -710,7 +710,15 @@ def update_task(task_id: str, scope: str, codes: Optional[list[str]] = None,
                 start_date: str = "1990-01-01", end_date: str = "2099-12-31") -> dict:
     """任务入口（子进程调用）：包装进度写库"""
     from .. import db
+    from .bs_usage import tracker
     try:
+        # 开工前检查 baostock 黑名单（限制期内直接跳过，避免紧循环硬撞 TCP 触发限流）
+        if tracker.is_blacklisted():
+            info = tracker.last_blacklist() or {}
+            release = info.get("release_at") or "稍后"
+            msg = f"baostock IP 黑名单限制中，预计 {release} 解除，跳过本轮更新"
+            db.finish_task(task_id, "cancelled", error=msg, db_path=db_path)
+            return {"skipped": "blacklisted", "release_at": release}
         db.update_task(task_id, db_path=db_path, status="running")
         stats = update(scope, codes=codes, data_dir=data_dir,
                        start_date=start_date, end_date=end_date,

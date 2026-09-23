@@ -182,6 +182,13 @@ class BaostockSource(DataSource):
     _bs_lock = threading.RLock()
     _bs_logged_in = False
 
+    # 连续失败冷却退避：避免 TCP 不可达时紧循环硬撞（触发服务端限流 + 刷屏）
+    _bs_fail_count = 0          # 连续 login 失败次数
+    _bs_last_fail_ts = 0.0      # 上次 login 失败时间戳（monotonic）
+    _COOLDOWN_BASE = 30.0       # 首次失败冷却 30s
+    _COOLDOWN_MAX = 300.0       # 最长冷却 5min
+    _COOLDOWN_GAP = 2.0         # 冷却期过了也至少等 2s 再试
+
     def __init__(self):
         try:
             import baostock as bs  # noqa: F401
@@ -194,23 +201,56 @@ class BaostockSource(DataSource):
     def available(self) -> bool:
         return self._ok
 
-    def _ensure_login(self) -> bool:
+    @classmethod
+    def _cooldown_remaining(cls) -> float:
+        """返回距离下次允许 login 还需等待的秒数（0=可立即尝试）。"""
+        if cls._bs_fail_count <= 0:
+            return 0.0
+        # 指数退避：30s, 60s, 120s, ... 上限 300s
+        cooldown = min(cls._COOLDOWN_BASE * (2 ** (cls._bs_fail_count - 1)),
+                       cls._COOLDOWN_MAX)
+        elapsed = time.monotonic() - cls._bs_last_fail_ts
+        return max(0.0, cooldown - elapsed)
+
+    @classmethod
+    def _record_fail(cls) -> None:
+        cls._bs_fail_count = min(cls._bs_fail_count + 1, 10)
+        cls._bs_last_fail_ts = time.monotonic()
+
+    @classmethod
+    def _reset_fail(cls) -> None:
+        cls._bs_fail_count = 0
+
+    def _ensure_login(self, allow_cooldown: bool = True) -> bool:
         """确保已登录（登录态跨查询复用，仅首次真正 login）。
 
-        黑名单检测：baostock 对受限 IP 在 login 返回错误码 10001011，
-        这里记录黑名单（今年累计次数+1、算预计解除时间），由 _run_query 抛明确错误。"""
+        - 冷却退避：连续 login 失败后指数退避（30s→5min），冷却期内直接
+          返回 False、不调 bs.login() —— 避免 TCP 不可达时紧循环硬撞触发
+          服务端限流 + 刷屏（WinError 10057）。
+          设 allow_cooldown=False 可跳过冷却（供 _run_query 内部重登重试用，
+          外部调用不受影响 —— 外部紧循环才是刷屏主因）。
+        - 黑名单检测：错误码 10001011 记录官方账本，由 _run_query 抛明确错误。"""
         with self._bs_lock:
             if self._bs_logged_in:
                 return True
+            # 冷却期内：直接跳过 bs.login()，baostock 内部不会打日志
+            if allow_cooldown:
+                remaining = self._cooldown_remaining()
+                if remaining > 0:
+                    return False
             try:
                 rs = self._bs.login()
                 if rs.error_code == BLACKLIST_CODE:
                     tracker.record_blacklist(tracker.public_ip())
                     self._bs_logged_in = False
+                    self._record_fail()
                     return False
                 ok = rs.error_code == "0"
                 if ok:
-                    tracker.mark_released()  # 登录成功 -> 不在黑名单期，解除旧记录
+                    tracker.mark_released()  # 登录成功 -> 不在黑名单期
+                    self._reset_fail()
+                else:
+                    self._record_fail()
                 self._bs_logged_in = ok
                 if not ok:
                     try:
@@ -220,6 +260,7 @@ class BaostockSource(DataSource):
                 return ok
             except Exception:
                 self._bs_logged_in = False
+                self._record_fail()
                 return False
 
     def _force_logout(self) -> None:
@@ -239,6 +280,9 @@ class BaostockSource(DataSource):
         - 串行锁：同一时刻仅 1 个 baostock 连接（禁止并发访问）
         - 日上限：每日请求 <= 50000，超限抛 BsDailyCapExceeded 拒绝
         - 黑名单：错误码 10001011 抛 BsBlacklisted（含预计解除时间）
+        - 失败冷却：仅 TCP/网络级异常计入冷却（指数退避 30s→5min），
+          查询 error_code 不计入（可能是行情/会话丢失，非 TCP 级问题）；
+          内部重登重试跳过冷却（已经限定只重试 1 次，不是紧循环）
         """
         with self._bs_lock:
             try:
@@ -257,6 +301,7 @@ class BaostockSource(DataSource):
                         return None
                     rs, rows = qfn()
                     if rs.error_code == "0":
+                        self._reset_fail()  # 查询成功 -> 清冷却计数
                         return rows
                     # 查询级失败：可能是黑名单或会话被服务端断开
                     if rs.error_code == BLACKLIST_CODE:
@@ -264,14 +309,20 @@ class BaostockSource(DataSource):
                         raise BsBlacklisted(
                             f"baostock IP 已被黑名单限制（今年第 {info['freeze_count']} 次），"
                             f"预计 {info['release_at']} 自动解除")
+                    # 查询 error_code 不计冷却（非 TCP 级问题），直接登出重登重试
                     self._force_logout()
-                    if not self._ensure_login():
+                    if not self._ensure_login(allow_cooldown=False):
                         return None
                     rs, rows = qfn()
-                    return rows if rs.error_code == "0" else None
+                    if rs.error_code == "0":
+                        self._reset_fail()
+                        return rows
+                    return None
             except (BsDailyCapExceeded, BsBlacklisted, BsLockTimeout):
                 raise
             except Exception:
+                # 网络级异常（WinError 10057 等）：计入冷却
+                self._record_fail()
                 self._force_logout()
                 return None
 

@@ -22,6 +22,13 @@ from app.data import sources, store
 
 
 def main() -> None:
+    # 开工前检查 baostock 黑名单
+    from app.data.bs_usage import tracker as _bs_tracker
+    if _bs_tracker.is_blacklisted():
+        info = _bs_tracker.last_blacklist() or {}
+        release = info.get("release_at") or "稍后"
+        print(f"[阻断] baostock IP 黑名单限制中，预计 {release} 解除，退出", flush=True)
+        return
     jobs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     state = Path(sys.argv[2])
     n = len(jobs)
