@@ -30,7 +30,7 @@ def main() -> None:
         "end_date": "2026-09-24",
         "initial_capital": 1_000_000.0,
         "params": {"dban_fill": fill},
-        "risk_config": {"stop_loss_pct": 5.0, "max_holdings": 2,
+        "risk_config": {"stop_loss_pct": 5.0, "max_holdings": 5,
                         "max_position_pct_per_stock": 60,
                         "max_total_position_pct": 100,
                         "max_drawdown_breaker": 30},

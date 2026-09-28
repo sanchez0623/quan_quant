@@ -49,15 +49,15 @@ _CTX_START = "2022-01-01"      # Stage 1 预热起点（新股 mature 计数基�
 _WINDOW_START = "2024-01-02"   # 分钟级回测最早窗口（minute5 覆盖范围）
 
 DEFAULT_PARAMS: dict = {
-    "entry_type": "all",        # all|dban|dip|gap|yin
-    "top_n": 2,                 # 每日最多新开仓数
-    "base_pct": 50.0,           # 单票预算占净值 %
+    "entry_type": ["dban", "dip", "gap", "yin"],  # 多选：dban|dip|gap|yin
+    "top_n": 5,                 # 每日最多新开仓数
+    "base_pct": 20.0,           # 单票预算占净值 %（默认 = 100/top_n，前端联动）
     "exclude_one_word": "on",
     "regime_gate_on": "on",
-    "board_window": 5,
-    "min_boards": 3,
+    "board_window": 3,
+    "min_boards": 2,
     "min_amount": 3.0,          # 亿
-    "new_stock_days": 6,
+    "new_stock_days": 30,
     "dban_fill": "break",       # break|touch
     "dip_pb_min": 3.0,
     "dip_pb_max": 7.0,
@@ -75,9 +75,17 @@ DEFAULT_PARAMS: dict = {
     "euphoria_boards": 6,
     "euphoria_scale": 0.6,
     "stop_loss_pct": 5.0,
-    "max_holdings": 2,
+    "max_holdings": 5,
     "max_position_pct_per_stock": 60.0,
     "max_drawdown_breaker": 30.0,
+    # ---- 持仓期做T（反T：升破网格线卖出部分底仓，尾盘/次日首根回补） ----
+    "t_mode": "grid",           # grid|off
+    "t_grid_pct": 2.5,          # 日内网格阈值 %（相对当日开盘价）
+    "t_budget_pct": 33.0,       # 每次做T占持仓 %（留底仓）
+    # 总资金止盈提取（NAV_TAKE_PROFIT，语义与 runner 一致）：净值相对「上次
+    # 提取后基准」涨幅达阈值 -> 按比例提取收益入出金池，基准重置为提取后净值
+    "nav_take_profit_pct": 100.0,         # 总资金止盈阈值（%）
+    "nav_take_profit_withdraw_pct": 50.0,  # 触发时提取收益比例（%）
 }
 
 # code_day 行元组字段（code_day_row 返回 r[1:]，共 13 项）
@@ -172,10 +180,14 @@ def build_daily_context(codes: list[str], p: dict) -> DailyContext:
     frame = frame.with_columns(pl.Series(
         "gate_off", [gate.get(d, (False, False))[0] for d in frame["date"].to_list()]))
 
-    et = str(p.get("entry_type") or "all")
-    _MAP = {"all": {"dban", "dip", "gap", "yin"}, "dd": {"dban", "dip"}}
-    on = _MAP.get(et) or ({et} if et in {"dban", "dip", "gap", "yin"}
-                          else {"dban", "dip", "gap", "yin"})
+    et = p.get("entry_type")
+    if isinstance(et, (list, tuple)):
+        sel = {str(x).strip() for x in et}
+    elif et:
+        sel = {s.strip() for s in str(et).split(",")}
+    else:
+        sel = {"dban", "dip", "gap", "yin"}
+    on = sel & {"dban", "dip", "gap", "yin"} or {"dban", "dip", "gap", "yin"}
     fresh = ((~pl.col("one_word_prev"))
              if str(p.get("exclude_one_word") or "on") == "on" else pl.lit(True))
     base = pl.col("gene") & pl.col("liquid") & pl.col("mature") & ~pl.col("gate_off")
@@ -258,6 +270,8 @@ class _Pos:
     first_hfq: float
     reductions: int = 0
     group_id: int = 0
+    debt_vol: int = 0          # 做T：已卖出待回补的股数（尾盘/次日首根回补）
+    last_factor: float = 1.0     # 除权调整基准：adj_factor 跳变时 vol×k、raw_cost÷k
 
 
 @dataclass
@@ -309,6 +323,11 @@ def run_minute_backtest(cfg: dict) -> dict:
     seq = {"n": 0}
     peak = {"v": initial}
     halted = {"on": False, "trough": initial, "stable": False}
+    # NAV 止盈提取（语义同 runner）：基准初始=初始资金，触发后重置为提取后净值
+    nav_tp_pct = float(p["nav_take_profit_pct"])
+    nav_tp_wd_pct = float(p["nav_take_profit_withdraw_pct"])
+    w_state = {"total": 0.0, "nav_base": initial, "nav_profit": 0.0,
+               "nav_times": 0, "log": []}
     m5_cache: dict[str, Optional[dict[str, list[dict]]]] = {}
     day_state: dict[tuple, dict] = {}
     prev_day_map = {b: a for a, b in ctx.next_day.items()}
@@ -381,7 +400,8 @@ def run_minute_backtest(cfg: dict) -> dict:
         holdings[code] = _Pos(code=code, vol=vol, hfq_cost=exec_hfq, raw_cost=raw,
                               open_fee=fee, vol0=vol, open_time=bar["date"],
                               sellable=ctx.next_day.get(day),
-                              first_hfq=exec_hfq, group_id=gid)
+                              first_hfq=exec_hfq, group_id=gid,
+                              last_factor=factor)
         log(code, bar["date"], "buy", exec_hfq, vol, fee, "开仓", gid,
             reason, tag="开仓")
         return True
@@ -457,6 +477,23 @@ def run_minute_backtest(cfg: dict) -> dict:
         for code in active:
             byday = m5_bars(code)
             bars_by_code[code] = (byday or {}).get(day)
+
+        # 除权调整（日首）：adj_factor 跳变（送转/分红）-> vol×k、raw_cost÷k；
+        # hfq 口径的成本/止损线天然平滑无需调整；bad_adj 日（因子异常）跳过
+        for code, pos in holdings.items():
+            row = code_day_row(ctx, code, day)
+            if row is None:
+                continue
+            f_today = float(row[_IDX_FACTOR])
+            bs0 = bars_by_code.get(code)
+            if bs0 and bs0[0].get("bad_adj"):
+                continue
+            if pos.last_factor and abs(f_today - pos.last_factor) > 1e-9:
+                k = f_today / pos.last_factor
+                pos.vol = max(1, int(round(pos.vol * k)))
+                pos.vol0 = max(1, int(round(pos.vol0 * k)))
+                pos.raw_cost /= k
+                pos.last_factor = f_today
         timeline = sorted({b["date"] for bs in bars_by_code.values() if bs
                            for b in bs})
 
@@ -488,6 +525,12 @@ def run_minute_backtest(cfg: dict) -> dict:
                 if pd is not None:
                     if pd.side == "sell":
                         pos = holdings.get(code)
+                        if pd.kind == "减仓" and pos is not None \
+                                and bar["open"] < limit_hfq * 0.995:
+                            # 执行时重估：晋级状态消失（已破板）-> 全清
+                            pd.kind = "清仓"
+                            pd.reason = "晋级失败破板清仓"
+                            pd.reduce_pct = None
                         vol_want = (None if pd.reduce_pct is None or pos is None
                                     else _reduce_vol(pos, pd.reduce_pct))
                         if do_sell(code, bar, vol_want, pd.kind, pd.reason):
@@ -504,9 +547,11 @@ def run_minute_backtest(cfg: dict) -> dict:
                 pos = holdings.get(code)
                 if pos is not None:
                     if c <= pos.first_hfq * (1 - stop_pct / 100.0):
-                        pending[code] = _Pending(side="sell", kind="止损",
-                                                 reason=f"固定止损{stop_pct:g}%",
-                                                 tag="开仓")
+                        pending[code] = _Pending(
+                            side="sell", kind="止损",
+                            reason=(f"固定止损{stop_pct:g}%"
+                                    "（T日触发·次根开盘执行）"),
+                            tag="开仓")
                         continue
                     if ma5_hfq is not None and c < ma5_hfq:
                         pending[code] = _Pending(side="sell", kind="清仓",
@@ -577,16 +622,37 @@ def run_minute_backtest(cfg: dict) -> dict:
                 pending[code] = _Pending(side="sell", kind="清仓",
                                          reason="爆量滞涨清仓")
         eq = equity_now(day)
-        peak["v"] = max(peak["v"], eq)
-        dd = eq / peak["v"] - 1
+        # NAV 止盈提取（语义同 runner）：相对「上次提取后基准」涨幅达阈值 ->
+        # 按比例提取收益入出金池，基准重置为提取后净值（逐级锁盈）
+        if nav_tp_pct > 0 and nav_tp_wd_pct > 0 \
+                and eq >= w_state["nav_base"] * (1 + nav_tp_pct / 100.0):
+            profit = max(0.0, eq - w_state["nav_base"])
+            amt = min(profit * nav_tp_wd_pct / 100.0, cash)
+            room = max(0.0, eq + w_state["total"] - initial)
+            amt = max(0.0, min(amt, room - w_state["total"]))
+            if amt > 0:
+                cash -= amt
+                w_state["total"] += amt
+                w_state["nav_profit"] += amt
+                w_state["nav_times"] += 1
+                w_state["log"].append({"month": day[:7], "date": day,
+                                       "type": "nav_take_profit",
+                                       "amount": round(amt, 2),
+                                       "nav_base": round(w_state["nav_base"], 2),
+                                       "equity": round(eq, 2),
+                                       "withdraw_pct": nav_tp_wd_pct})
+            w_state["nav_base"] = eq - amt
+        adj_eq = eq + w_state["total"]
+        peak["v"] = max(peak["v"], adj_eq)
+        dd = adj_eq / peak["v"] - 1
         equity_curve.append({"date": day, "equity": round(eq, 2),
-                             "adjusted_equity": round(eq, 2),
+                             "adjusted_equity": round(adj_eq, 2),
                              "drawdown": round(dd, 4),
-                             "position_ratio": round(1 - cash / eq, 4)
-                             if eq > 0 else 0.0})
+                             "position_ratio": round(1 - cash / adj_eq, 4)
+                             if adj_eq > 0 else 0.0})
         if dd * 100 <= -abs(dd_breaker) and not halted["on"]:
             halted["on"] = True
-            halted["trough"] = eq
+            halted["trough"] = adj_eq
             halted["stable"] = False
             # 熔断时先清空所有挂起的买单（否则次日开盘照常成交开新仓，
             # 与清仓对冲——09-28 事故：-30% 熔断后仍开仓亏到 -99%），
@@ -599,8 +665,8 @@ def run_minute_backtest(cfg: dict) -> dict:
         if halted["on"]:
             # 对齐 runner：熔断中创新低重置企稳；不再创新低（含空仓横盘）即企稳；
             # 回撤修复到阈值以内直接解除
-            if eq < halted["trough"]:
-                halted["trough"] = eq
+            if adj_eq < halted["trough"]:
+                halted["trough"] = adj_eq
                 halted["stable"] = False
             else:
                 halted["stable"] = True
@@ -610,7 +676,8 @@ def run_minute_backtest(cfg: dict) -> dict:
         for key in [k for k in day_state if k[1] != day]:
             day_state.pop(key)
 
-    return _report(cfg, p, days, trades, equity_curve, gate_days, initial)
+    return _report(cfg, p, days, trades, equity_curve, gate_days, initial,
+                   w_state)
 
 
 def _reduce_vol(pos: _Pos, pct: float) -> int:
@@ -622,8 +689,9 @@ def _reduce_vol(pos: _Pos, pct: float) -> int:
 
 def _report(cfg: dict, p: dict, days: list[str], trades: list[dict],
             equity_curve: list[dict], gate_days: dict[str, bool],
-            initial: float) -> dict:
-    eq = [e["equity"] for e in equity_curve]
+            initial: float, w_state: dict) -> dict:
+    # 统计口径基于「调整净值」（真实净值 + 累计提取收益），与 runner 一致
+    eq = [e["adjusted_equity"] for e in equity_curve]
     final = eq[-1] if eq else initial
     total_return = final / initial - 1
     n_years = max(len(eq), 1) / 244.0
@@ -668,6 +736,11 @@ def _report(cfg: dict, p: dict, days: list[str], trades: list[dict],
         "monthly_returns": monthly_returns(equity_curve, initial),
         "trade_log": trades, "position_snapshots": [],
         "gate_days": gate_days,
+        "withdrawal": {"total": round(w_state["total"], 2),
+                       "nav_profit": round(w_state["nav_profit"], 2),
+                       "nav_times": w_state["nav_times"],
+                       "nav_base": round(w_state["nav_base"], 2),
+                       "log": w_state["log"]},
     }
     try:
         from .runner import _attach_benchmark

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Col, Collapse, Form, Input, InputNumber, Row, Select, Switch, Tag, Tooltip, Typography } from 'antd'
 import { LockOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import type { Rule } from 'antd/es/form'
@@ -43,6 +43,18 @@ function ParamField({ p }: { p: ParamSchema }) {
   let control
   if (p.type === 'bool') {
     control = <Switch disabled={p.frozen} />
+  } else if (p.type === 'multi') {
+    // 多选：值为数组（提交后端为 list）；choices 同样支持 "value|中文标签"
+    control = (
+      <Select
+        mode="multiple"
+        options={(p.choices ?? []).map((c) => {
+          const i = c.indexOf('|')
+          return i >= 0 ? { value: c.slice(0, i), label: c.slice(i + 1) } : { value: c, label: c }
+        })}
+        disabled={p.frozen}
+      />
+    )
   } else if (p.type === 'select' || p.type === 'categorical') {
     // choices 元素支持 "value|中文标签" 展示格式：value 取 | 前，label 取 | 后（无 | 则 label=value）
     control = (
@@ -111,6 +123,19 @@ export default function ParamSchemaForm({ schema }: Props) {
   const form = Form.useFormInstance()
   const values = Form.useWatch('params', form) as ParamValues | undefined
   const [advOpen, setAdvOpen] = useState<Record<string, boolean>>({})
+
+  // 数值联动（schema.recalc）：跟随参数变化时按公式重算本字段（用户可再手改）。
+  // 当前仅 round(100/v)：单票资金占比 = 100/每日最多开仓数。
+  const recalc = schema.find((p) => p.recalc)
+  const followKey = recalc?.recalc?.follow
+  const followVal = followKey ? values?.[followKey] : undefined
+  useEffect(() => {
+    if (!recalc || !followKey || typeof followVal !== 'number' || followVal <= 0) return
+    const next = Math.round(100 / followVal)
+    const cur = form.getFieldValue(['params', recalc.key])
+    if (cur !== next) form.setFieldValue(['params', recalc.key], next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followVal])
 
   const groups = useMemo(() => {
     const order: string[] = []

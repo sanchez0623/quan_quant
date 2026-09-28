@@ -21,7 +21,7 @@ export interface LoginResponse {
 export interface ParamSchema {
   key: string
   label: string
-  type: 'int' | 'float' | 'str' | 'bool' | 'select' | 'categorical'
+  type: 'int' | 'float' | 'str' | 'bool' | 'select' | 'categorical' | 'multi'
   default?: ParamValue
   min?: number
   max?: number
@@ -38,6 +38,9 @@ export interface ParamSchema {
   frozen?: boolean
   /** 条件显示：{ 依赖参数key: 允许的值数组 }，全部满足才显示；依赖值未设置时不隐藏 */
   show_if?: Record<string, (string | number)[]>
+  /** 数值联动：跟随参数 follow 变化时按 formula（v=follow 值）重算本字段，
+   *  用户仍可手动覆盖；当前仅支持 round(100/v)（单票资金占比联动开仓数） */
+  recalc?: { follow: string; formula: 'round(100/v)' }
 }
 
 export interface Strategy {

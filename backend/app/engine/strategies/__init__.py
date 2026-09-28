@@ -54,6 +54,15 @@ def validate_params(strategy_id: str, params: dict) -> tuple[bool, str]:
                 choices = [c.split("|")[0] for c in (s.get("choices") or [])]
                 if choices and v not in choices:
                     return False, f"参数 {k}={v} 不在可选值 {choices} 中"
+            elif t == "multi":
+                # 多选：值为列表（或逗号分隔串），每个元素须在 choices 内
+                choices = [c.split("|")[0] for c in (s.get("choices") or [])]
+                vals = (v if isinstance(v, list)
+                        else str(v).split(",") if v else [])
+                bad = [x for x in (str(x).strip() for x in vals)
+                       if choices and x not in choices]
+                if bad:
+                    return False, f"参数 {k} 含非法选项 {bad}"
         except (TypeError, ValueError):
             return False, f"参数 {k} 类型错误，期望 {t}"
     return True, ""

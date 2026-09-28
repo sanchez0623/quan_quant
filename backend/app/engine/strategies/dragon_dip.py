@@ -373,20 +373,23 @@ class DragonDipMinuteStrategy(Strategy):
 
     param_schema = [
         # ---- G1 核心开关 ----
-        {"key": "entry_type", "label": "买点类型", "type": "categorical",
+        {"key": "entry_type", "label": "买点类型", "type": "multi",
          "group": "核心开关",
-         "choices": ["all|四买点全开", "dban|打板", "dip|分时低吸",
+         "choices": ["dban|打板", "dip|分时低吸",
                      "gap|竞价收复", "yin|首阴次日"],
-         "default": "yin",
-         "description": "首阴次日为分买点单测最优（-14.9% vs 打板 -99%）；"
-                        "dban/dip/gap 的专属参数已从表单收起（引擎默认值兜底）"},
-        {"key": "top_n", "label": "每日最多开仓数", "type": "int", "default": 2,
-         "min": 1, "max": 5, "group": "核心开关",
-         "description": "同日多信号按（连板高度,成交额）降序取前 top_n"},
-        {"key": "base_pct", "label": "单票资金占比", "type": "float", "default": 50,
-         "min": 10, "max": 90, "step": 1, "unit": "%", "group": "核心开关",
-         "description": "开仓预算占组合净值 %；高潮期按 euphoria_scale 缩放；"
-                        "实际仍受风控个股/总仓上限约束"},
+         "default": ["dban", "dip", "gap", "yin"],
+         "description": "多选组合；dban/dip/gap 的专属参数已从表单收起"
+                        "（引擎默认值兜底）"},
+        {"key": "top_n", "label": "每日最多开仓数", "type": "int", "default": 5,
+         "min": 1, "max": 10, "group": "核心开关",
+         "description": "同日多信号按（连板高度,成交额）降序取前 top_n；"
+                        "改动时单票资金占比自动联动为 100/该值（可再手改）"},
+        {"key": "base_pct", "label": "单票资金占比", "type": "float", "default": 20,
+         "min": 1, "max": 90, "step": 1, "unit": "%", "group": "核心开关",
+         "recalc": {"follow": "top_n", "formula": "round(100/v)"},
+         "description": "开仓预算占组合净值 %，默认=100/每日最多开仓数"
+                        "（top_n 变更时自动联动，可手动覆盖）；"
+                        "高潮期按 euphoria_scale 缩放"},
         {"key": "regime_gate_on", "label": "情绪门控", "type": "categorical",
          "choices": ["on|开启", "off|关闭"], "default": "on",
          "group": "核心开关",
@@ -397,17 +400,17 @@ class DragonDipMinuteStrategy(Strategy):
          "group": "核心开关",
          "description": "参照日一字板（无换手纯情绪票）不开仓"},
         # ---- G2 候选池 ----
-        {"key": "board_window", "label": "涨停基因窗口", "type": "int", "default": 5,
+        {"key": "board_window", "label": "涨停基因窗口", "type": "int", "default": 3,
          "min": 3, "max": 10, "unit": "日", "group": "候选池",
          "description": "近 N 个交易日出现过涨停（触板即算）才有资格"},
-        {"key": "min_boards", "label": "首阴最低连板数", "type": "int", "default": 3,
+        {"key": "min_boards", "label": "首阴最低连板数", "type": "int", "default": 2,
          "min": 2, "max": 6, "group": "候选池",
          "description": "首阴低吸要求此前连续涨停板数"},
         {"key": "min_amount", "label": "最低成交额", "type": "float", "default": 3.0,
          "min": 0.5, "max": 50, "step": 0.5, "unit": "亿", "group": "候选池",
          "description": "流动性门槛，保证进出"},
-        {"key": "new_stock_days", "label": "新股保护期", "type": "int", "default": 6,
-         "min": 0, "max": 20, "unit": "交易日", "group": "候选池",
+        {"key": "new_stock_days", "label": "新股保护期", "type": "int", "default": 30,
+         "min": 0, "max": 60, "unit": "交易日", "group": "候选池",
          "description": "上市未满 N 根 bar 不参与（无涨跌幅限制期）"},
         # ---- G4 买点·首阴次日 ----
         {"key": "yin_min", "label": "首阴跌幅下限", "type": "float", "default": 3.0,
@@ -458,7 +461,7 @@ class DragonDipMinuteStrategy(Strategy):
          "min": 1, "max": 20, "step": 0.5, "unit": "%", "group": "风控",
          "description": "收盘跌破开仓价此比例 -> 次根bar卖出；"
                         "risk_config.stop_loss_pct 优先"},
-        {"key": "max_holdings", "label": "最大并发持仓", "type": "int", "default": 2,
+        {"key": "max_holdings", "label": "最大并发持仓", "type": "int", "default": 5,
          "min": 1, "max": 10, "group": "风控",
          "description": "同时持仓只数上限；risk_config.max_holdings 优先"},
         {"key": "max_position_pct_per_stock", "label": "单票仓位上限",
@@ -471,6 +474,17 @@ class DragonDipMinuteStrategy(Strategy):
          "group": "风控",
          "description": "净值回撤达此值清仓停开仓，企稳后恢复；"
                         "risk_config.max_drawdown_breaker 优先"},
+        # ---- G11 出金（总资金止盈提取，语义与 runner 一致） ----
+        {"key": "nav_take_profit_pct", "label": "总资金止盈阈值",
+         "type": "float", "default": 100.0, "min": 0, "max": 500, "step": 10,
+         "unit": "%", "group": "出金",
+         "description": "净值相对「上次提取后基准」涨幅达此值触发止盈提取"
+                        "（0=关闭）；触发后基准重置，逐级锁盈"},
+        {"key": "nav_take_profit_withdraw_pct", "label": "止盈提取收益",
+         "type": "float", "default": 50.0, "min": 0, "max": 100, "step": 5,
+         "unit": "%", "group": "出金",
+         "description": "触发时提取「相对基准收益」的比例（0=关闭）；"
+                        "提取计入出金池，统计基于调整净值"},
     ]
 
     def prepare(self, data: dict[str, pl.DataFrame], params: dict,
