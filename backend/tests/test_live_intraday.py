@@ -466,6 +466,68 @@ def test_intraday_backfill_day_no_slot_rotation(tmp_path, monkeypatch):
             f"外置开仓应自愈新高基准且保持置位: {code} {st}"
 
 
+def test_t1_block_rolls_back_state_until_next_day(tmp_path, monkeypatch):
+    """T+1 拦截回滚：当日买入的票盘中触发 ATR 硬止损 -> 卖信号拦截且该 bar
+    状态变更回滚（状态机保持持仓、不与真实仓位脱钩，每票只提示一次）；
+    次日 T+1 解除 -> 退出信号正常发出、状态机复位"""
+    dates = _write_market(tmp_path)
+    db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
+                         "auto_boards": [], "exit_need": 2,
+                         "max_holdings": 2, "t_mode": "off"})
+    monkeypatch.setattr(db, "_now", lambda: "2026-09-03 10:00:00")
+    premarket.run_premarket(data_dir=str(tmp_path), push=False)
+    daily = store.read_daily(None, str(tmp_path))
+    from app.api import live as live_api
+    # 600000 长期下跌组：as_of 收盘深蹲 MA20 下方（bias<-3）-> 首 bar 必触发
+    # ATR 硬止损；fill_time 显式当日 -> T+1 生效
+    base = float(daily.filter((pl.col("code") == "600000")
+                              & (pl.col("date") == dates[-1]))["close"][0])
+    live_api.add_fill(live_api.FillBody(
+        code="600000", side="buy", fill_price=round(base, 2),
+        fill_volume=1000, fill_time=f"{TODAY} 09:35:00"))
+
+    def fake_fetch(code, day):
+        b = base if code == "600000" else float(
+            daily.filter((pl.col("code") == code)
+                         & (pl.col("date") == dates[-1]))["close"][0])
+        return pl.DataFrame([
+            {"code": code, "date": f"{day} 09:35", "open": b,
+             "high": b * 1.01, "low": b * 0.99, "close": b * 1.005,
+             "volume": 1e5, "amount": 1e8},
+            {"code": code, "date": f"{day} 09:40", "open": b * 1.005,
+             "high": b * 1.02, "low": b, "close": b * 1.012,
+             "volume": 1e5, "amount": 1e8},
+            {"code": code, "date": f"{day} 09:45", "open": b * 1.012,
+             "high": b * 1.03, "low": b, "close": b * 1.02,
+             "volume": 1e5, "amount": 1e8}])
+
+    monkeypatch.setattr(quotes, "fetch_minute5", fake_fetch)
+    monkeypatch.setattr(quotes, "realtime_quotes",
+                        lambda codes, timeout=5.0: {})
+
+    # 当日：止损被 T+1 拦截且回滚——无卖出信号、单条提示、状态机保持持仓
+    out = intraday.run_intraday(data_dir=str(tmp_path), push=False,
+                                now=dt.datetime(2026, 9, 3, 10, 0))
+    assert not any(s["code"] == "600000" for s in out["signals"]), \
+        f"当日买入的票不得发出卖出信号: {out['signals']}"
+    t1 = [w for w in out["suspended"]
+          if w["code"] == "600000" and "T+1" in w["reason"]]
+    assert len(t1) == 1, f"T+1 拦截应恰好提示一次: {out['suspended']}"
+    st = db.get_strategy_states()["600000"]["st"]
+    assert st["opened"] == 1, f"拦截后状态机必须保持持仓（不得脱钩）: {st}"
+    assert db.get_strategy_states()["600000"]["last_bar"] == f"{TODAY} 09:45", \
+        "回滚不得影响喂 bar 游标推进"
+
+    # 次日：T+1 解除 -> 止损重新表达并正常发出，状态机复位
+    out2 = intraday.run_intraday(data_dir=str(tmp_path), push=False,
+                                 now=dt.datetime(2026, 9, 4, 10, 0))
+    stops = [s for s in out2["signals"]
+             if s["code"] == "600000" and s["stype"] == "止损"]
+    assert stops, f"次日 T+1 解除，退出信号应重新表达: {out2['signals']}"
+    assert db.get_strategy_states()["600000"]["st"]["opened"] == 0, \
+        "卖出信号正常发出后状态机应复位"
+
+
 # ---------------- 盘后：分钟线合并落库（write_minute5 为整文件覆盖） ----------------
 
 def test_postclose_merges_minute5(tmp_path, monkeypatch):

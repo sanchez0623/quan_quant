@@ -16,7 +16,9 @@
    对齐回测 top_days 单一事实来源（曾用全市场动量分前 pool_n 作榜单：
    与池子两把尺子，按池子座次买入的票天然"跌出"，刚建仓即误触发槽位轮动）。
 
-风控前置（§9）：T+1 提示过滤（当日买入不发当日卖出）、max_holdings 槽位、
+风控前置（§9）：T+1 提示过滤（当日买入不发当日卖出——拦截时回滚该 bar 的
+状态变更，状态机保持持仓与真实仓位同步，退出意图次日 T+1 解除后重新表达）、
+max_holdings 槽位、
 buy_budget 预算上限（对齐 risk.py 默认 max_position_pct_per_stock=40）、
 数据断流熔断（盘中全源失败 >10 分钟推送告警）。
 """
@@ -207,6 +209,12 @@ def _stype_of(sig: dict) -> str:
     return "清仓" if sig["signal"] < 0 else "加仓"
 
 
+def _t1_hit(pos: Optional[dict], today: str) -> bool:
+    """T+1：当日买入的持仓当日不可卖（open_day 缺失/更早 -> 不拦）。
+    _make_signal 的拦截判定与步进循环的回滚判定共用此单一定义"""
+    return bool(pos and (pos.get("open_day") or "") >= today)
+
+
 _intraday_lock = threading.Lock()
 
 
@@ -351,8 +359,11 @@ def _run_intraday_impl(data_dir=None, push: bool = True,
         new_bars = (done.filter(pl.col("date") > last_bar)
                     if last_bar else done)
 
+        pos = positions.get(code)
         sigs_code: list[tuple[str, dict, float]] = []
+        t1_notice: tuple | None = None
         for br in new_bars.iter_rows(named=True):
+            pre = stepper.state()
             sig = stepper.step(br["date"], float(br["close"]),
                                feats_row["atr_pct"], feats_row["bias"],
                                feats_row["vol_pos"], feats_row["breakout"],
@@ -361,8 +372,23 @@ def _run_intraday_impl(data_dir=None, push: bool = True,
                                feats_row["score"], feats_row["day_idx"],
                                bool(gate_state),
                                br["date"][11:16] == "15:00")
+            if sig is not None and sig["signal"] < 0 and _t1_hit(pos, today):
+                # T+1：当日买入不可卖 -> 回滚该 bar 状态变更（退出不生效，
+                # 状态机保持持仓、与真实仓位同步，不落"已退出"的脏状态；
+                # 退出意图次日 T+1 解除后由状态机重新表达），每票只提示一次
+                stepper.restore(pre)
+                if t1_notice is None:
+                    t1_notice = (sig, br["date"], float(br["close"]))
+                continue
             if sig is not None:
                 sigs_code.append((br["date"], sig, float(br["close"])))
+
+        if t1_notice is not None:
+            sig, bar_ts, close = t1_notice
+            item = _make_signal(sig, code, name_map.get(code, code), bar_ts, close,
+                                cfg, positions, equity, cash, today,
+                                entry_allowed=entry_allowed)
+            suspended.append({"code": code, "reason": item["blocked"]})
 
         for bar_ts, sig, close in sigs_code:
             item = _make_signal(sig, code, name_map.get(code, code), bar_ts, close,
@@ -413,7 +439,7 @@ def _make_signal(sig: dict, code: str, name: str, bar_ts: str, close: float,
 
     if sell_side:
         # T+1（§9）：当日买入的票不发当日卖出信号
-        if pos and (pos.get("open_day") or "") >= today:
+        if _t1_hit(pos, today):
             blocked = f"{code} T+1：当日买入不可卖，卖出信号已拦截"
         elif stype == "减仓" and pos:
             amount = round(pos["volume"] * close * float(sig.get("reduce_pct") or 0) / 100, 0)
