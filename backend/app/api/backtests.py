@@ -582,7 +582,8 @@ def backtest_kline(task_id: str, code: str = Query(...),
              "high": round(r["high"] / r["adj_factor"], 4),
              "low": round(r["low"] / r["adj_factor"], 4),
              "close": round(r["raw_close"], 4),
-             "volume": int(r["volume"] or 0)}
+             "volume": int(r["volume"] or 0),
+             "suspended": r["volume"] is None}
             for r in df.to_dicts()
         ]
     from ..data import store

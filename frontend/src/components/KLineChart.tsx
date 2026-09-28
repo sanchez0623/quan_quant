@@ -118,8 +118,10 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ChartInstance>(null)
   const markPointsRef = useRef<TradeMarkPoint[]>([])
+  const barsRef = useRef<KLineBar[]>([])
   const lastDataIndexRef = useRef<number | null>(null)
   const [hoverInfo, setHoverInfo] = useState<string | null>(null)
+  const [hoverSuspended, setHoverSuspended] = useState(false)
 
   useEffect(() => {
     const el = containerRef.current
@@ -141,6 +143,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
         const di = p?.data?.dataIndex ?? p?.dataIndex ?? null
         lastDataIndexRef.current = di
         const ms = di === null ? [] : markPointsRef.current.filter((x) => x.dataIndex === di)
+        setHoverSuspended(di !== null && !!barsRef.current[di]?.suspended)
         if (ms.length === 0) {
           setHoverInfo(null)
           return
@@ -176,6 +179,7 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    barsRef.current = bars
     const dataList = bars.map((b) => ({
       timestamp: parseTs(b.date),
       open: b.open,
@@ -247,12 +251,14 @@ export default function KLineChart({ bars, marks, height = 480 }: Props) {
           minHeight: 22,
           marginTop: 4,
           fontSize: 12,
-          color: hoverInfo ? '#1f4e79' : '#999'
+          color: hoverInfo ? '#1f4e79' : hoverSuspended ? '#d46b08' : '#999'
         }}
       >
         {hoverInfo
           ? `交易标记：${hoverInfo}（点击查看详情）`
-          : '提示：▲买入标记在K线下方、▼卖出标记在上方，按类型着色（开仓红/加仓橙/做T紫/止损深绿）；悬停或点击标记查看详情'}
+          : hoverSuspended
+            ? '⚠ 停牌日：无成交，价格冻结为停牌前收盘价'
+            : '提示：▲买入标记在K线下方、▼卖出标记在上方，按类型着色（开仓红/加仓橙/做T紫/止损深绿）；悬停或点击标记查看详情'}
       </div>
     </div>
   )

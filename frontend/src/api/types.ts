@@ -852,6 +852,7 @@ export interface KLineBar {
   low: number
   close: number
   volume: number
+  suspended?: boolean
 }
 
 export interface KLineMark {
