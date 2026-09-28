@@ -59,8 +59,35 @@ def _cfg() -> dict:
     return {**DEFAULT_CFG, **db.get_live_config()}
 
 
+def _stale_by_calendar(data_dir, as_of: str,
+                       now: datetime) -> tuple[bool, str, int]:
+    """数据滞后判定（交易日历口径）：as_of 落后于上一交易日才告警，
+    缺失天数按日历数开市日；日历缺失/未覆盖今天退化自然日>4 兜底（旧口径）。
+    自然日口径跨长假误报（中秋休市 4 天/国庆 8 天，数据完整也告警）。"""
+    today = now.strftime("%Y-%m-%d")
+    try:
+        cal = store.read_calendar(data_dir)
+        if cal is not None and cal.height:
+            prev = cal.filter((pl.col("date") < today)
+                              & (pl.col("is_open").cast(pl.Int8) == 1)
+                              ).sort("date")
+            covered = cal.filter(pl.col("date") >= today).height
+            if covered and prev.height:
+                expected = str(prev["date"][-1])
+                missed = int(cal.filter(
+                    (pl.col("date") > as_of) & (pl.col("date") < today)
+                    & (pl.col("is_open").cast(pl.Int8) == 1)).height)
+                return (as_of < expected,
+                        f"较上一交易日 {expected} 缺 {missed} 个交易日", missed)
+    except Exception:  # noqa: BLE001  日历缺失/异常走自然日兜底
+        pass
+    days = (now - datetime.strptime(as_of, "%Y-%m-%d")).days
+    return days > 4, f"滞后 {days} 天（自然日，日历缺失）", days
+
+
 def run_premarket(data_dir: Optional[str] = None,
-                  push: bool = True) -> dict:
+                  push: bool = True,
+                  now: Optional[datetime] = None) -> dict:
     """执行盘前信号流程并推送。返回结果摘要（供 API/前端展示）。
 
     注意：本流程只读现有日线库、不拉数据——数据滞后时会在结果中警示
@@ -98,9 +125,9 @@ def run_premarket(data_dir: Optional[str] = None,
     except Exception:
         pass
 
-    # 数据滞后检测：数据截止日距今天 > 4 个自然日（跨长假）→ 警示
-    stale_days = (datetime.now() - datetime.strptime(as_of, "%Y-%m-%d")).days
-    stale = stale_days > 4
+    # 数据滞后检测（交易日历口径）：as_of 落后上一交易日才告警，跨长假不误报
+    stale, stale_detail, stale_days = _stale_by_calendar(
+        data_dir, as_of, now or datetime.now())
 
     pool_state = db.get_live_pool()
     pool = [p for p in (pool_state.get("pool") or [])]
@@ -287,7 +314,7 @@ def run_premarket(data_dir: Optional[str] = None,
         for r in list(by_code.values())[:int(cfg["pool_n"])]:
             pass  # M1：名单在池子消息里展示即可，不逐票产生开仓信号
     header = (f"【盘前信号 {as_of}】\n"
-              + (f"⚠ 数据截至 {as_of}（滞后 {stale_days} 天）——选股基于不完整数据，"
+              + (f"⚠ 数据截至 {as_of}（{stale_detail}）——选股基于不完整数据，"
                  f"请先在数据管理页更新日线\n" if stale else "")
               + f"池级 gate：{'停开仓' if gate_state else '正常'}"
               f"（健康度 {health}）\n"

@@ -75,8 +75,8 @@ def test_data_guard_normal_merge_ok(tmp_path):
 
 # ---------------- 盘前流程（M1） ----------------
 
-def _write_market(tmp_path):
-    dates = synthetic.trade_dates(N_DAYS, end_date=_TODAY)
+def _write_market(tmp_path, end_date=None):
+    dates = synthetic.trade_dates(N_DAYS, end_date=end_date or _TODAY)
     plans = {
         "600000": [(0, 210, 0.003), (210, N_DAYS, -0.006)],
         "600036": [(0, 210, 0.003), (210, N_DAYS, -0.006)],
@@ -127,6 +127,37 @@ def test_premarket_rebalance(tmp_path):
     sigs = db.list_live_signals()
     assert any(s["stype"] == "开仓" for s in sigs)
     assert any(s["stype"] == "池子" for s in sigs)
+
+
+def test_premarket_stale_by_trading_calendar(tmp_path):
+    """数据滞后判定=交易日历口径：09-25（中秋）休市，09-28 周一盘前数据
+    截至 09-24 = 正确 T-1，不告警（自然日口径会误报滞后 4 天）；
+    真缺最近交易日（截至 09-23）才告警缺 1 个交易日"""
+    cal_rows = []
+    d = dt.date(2026, 8, 31)
+    while d <= dt.date(2026, 9, 30):
+        cal_rows.append({"date": d.isoformat(),
+                         "is_open": int(d.weekday() < 5
+                                        and d != dt.date(2026, 9, 25))})
+        d += dt.timedelta(days=1)
+    store.write_calendar(pl.DataFrame(cal_rows), str(tmp_path))
+    db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
+                         "auto_boards": [], "exit_need": 2})
+
+    # 场景1：数据截至 09-24（09-25 中秋休市）——数据完整，不告警
+    _write_market(tmp_path, end_date=dt.date(2026, 9, 24))
+    r = premarket.run_premarket(data_dir=str(tmp_path), push=False,
+                                now=dt.datetime(2026, 9, 28, 8, 30))
+    assert r["as_of"] == "2026-09-24" and r["stale"] is False
+    assert "数据截至" not in r["message"]
+
+    # 场景2：数据截至 09-23（真缺 09-24 一个交易日）——告警缺 1 个交易日
+    _write_market(tmp_path, end_date=dt.date(2026, 9, 23))
+    r2 = premarket.run_premarket(data_dir=str(tmp_path), push=False,
+                                 now=dt.datetime(2026, 9, 28, 8, 30))
+    assert r2["as_of"] == "2026-09-23" and r2["stale"] is True
+    assert r2["stale_days"] == 1
+    assert "缺 1 个交易日" in r2["message"]
 
 
 def test_premarket_exit_warning(tmp_path):
