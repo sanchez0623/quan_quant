@@ -176,6 +176,11 @@ def run_backtest(config: dict, data_dir: Optional[str] = None,
     """config: 契约 POST /api/backtests 请求体（params 已填默认值）。返回完整 report dict。"""
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in (config or {}).items() if v is not None})
+    if cfg.get("strategy_id") == "dragon_dip_minute":
+        # 分钟级独立引擎（两阶段流水线），不走 bar-by-bar 管线：
+        # Stage1 全市场日线上下文 + Stage2 候选/持仓票分钟事件模拟
+        from . import dragon_dip_minute
+        return dragon_dip_minute.run_minute_backtest(cfg)
     if cfg.get("universe_auto"):
         return _run_auto_segments(cfg, data_dir, progress_cb)
     return _run_one(cfg, data_dir, progress_cb)

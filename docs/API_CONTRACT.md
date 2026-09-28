@@ -63,6 +63,16 @@ M2 新增持久化：`sig_strategy_state`（SlotStepper 状态快照 + 喂 bar �
 
 param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/min/max/step/choices/unit，均可选（除 key/label/type/default）。
 
+**已注册策略**（periods 决定前端周期选项）：
+
+| strategy\_id | 名称 | periods | 说明 |
+|---|---|---|---|
+| ma\_cross | 双均线策略 | daily, minute5 | 教学基线 |
+| grid\_t | 网格做T | daily | — |
+| momentum\_t / momentum\_slot | 动量T / 动量槽位 | daily, minute5 | 唯二支持 universe\_auto 动态选股 |
+| dragon\_dip | 龙头低吸 | daily | 日线近似版：炸板/首阴/竞价三合一，尾盘确认语义 |
+| dragon\_dip\_minute | 龙头低吸·分钟级 | minute5 | **二期分钟级引擎**（两阶段流水线：全市场日线上下文 + 候选票分钟事件模拟，不经 runner bar-by-bar 管线，runner 按 strategy\_id 分流到 `run_minute_backtest`）。四买点 dban/dip/gap/yin，dban\_fill 控制打板成交假设（break=保守仅炸板bar成交 / touch=乐观触板即成交），entry\_cutoff 尾盘不接刀；情绪门控/金字塔减仓/爆量滞涨/回撤熔断齐备。**数据要求：候选票 minute5 覆盖（引擎窗口 2024-01-02 起，缺数据的票自动跳过）——先在数据管理页对候选范围拉取分钟线**；风控四参数以 risk\_config 优先 |
+
 ## 3. 股票查询
 
 ### GET /api/stocks?keyword=600\&limit=20

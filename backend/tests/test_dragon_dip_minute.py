@@ -187,3 +187,32 @@ def test_t1_same_day_sell_blocked(patched_store, monkeypatch):
     rep = run(dict(BASE_CFG), ctx, bars, monkeypatch)
     sells = [t for t in rep["trade_log"] if t["side"] == "sell"]
     assert not sells  # 当日买入不可卖，且 01-05 后无 bars -> 挂单自然消失
+
+
+# ---------------- 策略注册元数据 + runner 分流（放出到回测系统） ----------------
+
+def test_minute_strategy_registered():
+    """注册进 REGISTRY：periods 仅 minute5；param_schema 覆盖引擎全部默认参数"""
+    from app.engine.strategies import REGISTRY, validate_params
+    s = REGISTRY.get("dragon_dip_minute")
+    assert s is not None and s.periods == ["minute5"]
+    schema_keys = {p["key"] for p in s.param_schema}
+    assert set(ddm.DEFAULT_PARAMS) <= schema_keys, "param_schema 必须覆盖引擎参数"
+    ok, _ = validate_params("dragon_dip_minute", {"entry_type": "dip"})
+    assert ok
+    bad, _ = validate_params("dragon_dip_minute", {"entry_type": "nope"})
+    assert not bad
+
+
+def test_runner_dispatch_to_minute_engine(monkeypatch):
+    """run_backtest 按 strategy_id 分流到 run_minute_backtest（不走 bar-by-bar）"""
+    from app.engine import runner
+    sentinel = {"engine_version": "dragon_dip_minute_v1"}
+    called = {}
+    monkeypatch.setattr(
+        "app.engine.dragon_dip_minute.run_minute_backtest",
+        lambda cfg: called.update(cfg=cfg) or sentinel)
+    rep = runner.run_backtest({"strategy_id": "dragon_dip_minute",
+                               "params": {"top_n": 1}})
+    assert rep is sentinel
+    assert called["cfg"]["strategy_id"] == "dragon_dip_minute"

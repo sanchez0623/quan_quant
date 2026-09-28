@@ -347,3 +347,162 @@ class DragonDipStrategy(Strategy):
             pl.Series("t_ratio", t_ratios, dtype=pl.Float64),
             pl.Series("reduce_pct", reduces, dtype=pl.Float64),
         ])
+
+
+class DragonDipMinuteStrategy(Strategy):
+    """龙头低吸·分钟级（dragon_dip_minute）：二期引擎的注册元数据。
+
+    真实执行入口是 engine/dragon_dip_minute.run_minute_backtest（两阶段流水线：
+    Stage1 全市场日线上下文 -> Stage2 候选/持仓票分钟级事件模拟），不走
+    runner 的 bar-by-bar 管线；runner.run_backtest 按 strategy_id 分流。
+    因此 prepare 永不应被调用（防误用直接抛错）。
+
+    相比日线版（dragon_dip）的增量：dban 打板买点（封板瞬间成交假设由
+    dban_fill 控制乐观/保守）、dip 分时低吸（盘中回落至均价带的次根 bar
+    开盘买，日线版只能尾盘确认）、gap 竞价收复（盘中收复当日开盘价的瞬间
+    介入）、entry_cutoff 尾盘不接刀。数据要求：候选票的 minute5 覆盖
+    （2024-01-02 起），缺失票自动跳过。"""
+    id = "dragon_dip_minute"
+    name = "龙头低吸·分钟级"
+    description = ("二期分钟级引擎：打板/分时低吸/竞价收复/首阴次日四买点，"
+                   "涨停晋级金字塔减仓、破5日线/爆量滞涨清仓、情绪周期门控、"
+                   "回撤熔断。需候选票 minute5 数据（约 2024 起）；"
+                   "建议全市场静态池 + minute5 周期。")
+    periods = ["minute5"]
+    warmup_days = 0   # Stage1 自 _CTX_START 全量预热，与日线加载窗口无关
+
+    param_schema = [
+        # ---- G1 核心开关 ----
+        {"key": "entry_type", "label": "买点类型", "type": "categorical",
+         "group": "核心开关",
+         "choices": ["all|四买点全开", "dban|打板", "dip|分时低吸",
+                     "gap|竞价收复", "yin|首阴次日"],
+         "default": "all",
+         "description": "dban=触板按涨停价买（打板）；dip=日内自高点回落至"
+                        "指定区间次根bar买；gap=低开收复当日开盘价介入；"
+                        "yin=首阴次日首根bar买"},
+        {"key": "top_n", "label": "每日最多开仓数", "type": "int", "default": 2,
+         "min": 1, "max": 5, "group": "核心开关",
+         "description": "同日多信号按（连板高度,成交额）降序取前 top_n"},
+        {"key": "base_pct", "label": "单票资金占比", "type": "float", "default": 50,
+         "min": 10, "max": 90, "step": 1, "unit": "%", "group": "核心开关",
+         "description": "开仓预算占组合净值 %；高潮期按 euphoria_scale 缩放；"
+                        "实际仍受风控个股/总仓上限约束"},
+        {"key": "regime_gate_on", "label": "情绪门控", "type": "categorical",
+         "choices": ["on|开启", "off|关闭"], "default": "on",
+         "group": "核心开关",
+         "description": "退潮/冰点期停开仓，高潮期预算缩放（策略内情绪真值，"
+                        "独立于引擎级池/指数门控）"},
+        {"key": "exclude_one_word", "label": "排除一字票", "type": "categorical",
+         "choices": ["on|开启", "off|关闭"], "default": "on",
+         "group": "核心开关",
+         "description": "参照日一字板（无换手纯情绪票）不开仓"},
+        {"key": "entry_cutoff", "label": "开仓截止时间", "type": "categorical",
+         "group": "核心开关",
+         "choices": ["11:00|午前", "13:30|午后", "14:00|尾盘前", "14:30|尾盘"],
+         "default": "14:30",
+         "description": "此后不再新开仓（避免尾盘接刀）；持仓退出不受限"},
+        # ---- G2 候选池 ----
+        {"key": "board_window", "label": "涨停基因窗口", "type": "int", "default": 5,
+         "min": 3, "max": 10, "unit": "日", "group": "候选池",
+         "description": "近 N 个交易日出现过涨停（触板即算）才有资格"},
+        {"key": "min_boards", "label": "首阴最低连板数", "type": "int", "default": 3,
+         "min": 2, "max": 6, "group": "候选池",
+         "description": "首阴低吸要求此前连续涨停板数"},
+        {"key": "min_amount", "label": "最低成交额", "type": "float", "default": 3.0,
+         "min": 0.5, "max": 50, "step": 0.5, "unit": "亿", "group": "候选池",
+         "description": "流动性门槛，保证进出"},
+        {"key": "new_stock_days", "label": "新股保护期", "type": "int", "default": 6,
+         "min": 0, "max": 20, "unit": "交易日", "group": "候选池",
+         "description": "上市未满 N 根 bar 不参与（无涨跌幅限制期）"},
+        # ---- G3 买点·打板 ----
+        {"key": "dban_fill", "label": "打板成交假设", "type": "categorical",
+         "group": "买点·打板",
+         "choices": ["break|仅炸板bar成交（保守）", "touch|触板即成交（乐观）"],
+         "default": "break",
+         "description": "打板单实际常排不到队：break=该 bar 收盘已离板才成交"
+                        "（保守）；touch=触及涨停价即成交（乐观，会高估收益）"},
+        # ---- G4 买点·分时低吸 ----
+        {"key": "dip_pb_min", "label": "低吸回落下限", "type": "float",
+         "default": 3.0, "min": 0.5, "max": 10, "step": 0.5, "unit": "%",
+         "group": "买点·分时低吸",
+         "description": "日内曾触板，现价自日内高点回落下限（太小无安全垫）"},
+        {"key": "dip_pb_max", "label": "低吸回落上限", "type": "float",
+         "default": 7.0, "min": 1, "max": 15, "step": 0.5, "unit": "%",
+         "group": "买点·分时低吸",
+         "description": "回落上限（太大说明真弱），次根 bar 开盘买入"},
+        # ---- G5 买点·竞价收复 ----
+        {"key": "gap_down_min", "label": "竞价低开阈值", "type": "float",
+         "default": 5.0, "min": 2, "max": 9.8, "step": 0.5, "unit": "%",
+         "group": "买点·竞价收复",
+         "description": "昨收涨停后今日低开幅度下限；盘中收复当日开盘价"
+                        "（承接确认）瞬间介入"},
+        # ---- G6 买点·首阴次日 ----
+        {"key": "yin_min", "label": "首阴跌幅下限", "type": "float", "default": 3.0,
+         "min": 1, "max": 8, "step": 0.5, "unit": "%", "group": "买点·首阴次日",
+         "description": "首阴跌幅下限（太小不算分歧）"},
+        {"key": "yin_max", "label": "首阴跌幅上限", "type": "float", "default": 5.0,
+         "min": 1, "max": 10, "step": 0.5, "unit": "%", "group": "买点·首阴次日",
+         "description": "首阴跌幅上限（太大疑似出货）"},
+        # ---- G7 卖出·金字塔 ----
+        {"key": "pyr_step", "label": "晋级减仓比例", "type": "float", "default": 30,
+         "min": 10, "max": 50, "step": 5, "unit": "%", "group": "卖出·金字塔",
+         "description": "持仓期每晋级一个涨停减仓比例（越涨越卖）"},
+        {"key": "pyr_max", "label": "最多减仓次数", "type": "int", "default": 3,
+         "min": 1, "max": 5, "group": "卖出·金字塔",
+         "description": "金字塔减仓上限次数，剩余底仓博傻"},
+        # ---- G8 卖出·走弱 ----
+        {"key": "vol_burst_max", "label": "爆量倍数", "type": "float", "default": 3.0,
+         "min": 1.5, "max": 8, "step": 0.5, "unit": "×20日均量",
+         "group": "卖出·走弱", "advanced": True,
+         "description": "买点侧：放量超此倍数视为爆量禁止入场；"
+                        "卖侧：爆量且滞涨触发次日清仓"},
+        {"key": "stall_gain_max", "label": "滞涨涨幅上限", "type": "float",
+         "default": 2.0, "min": 0, "max": 5, "step": 0.5, "unit": "%",
+         "group": "卖出·走弱", "advanced": True,
+         "description": "爆量且日涨幅低于此值 -> 放量滞涨清仓（日终判定）"},
+        # ---- G9 情绪门控参数 ----
+        {"key": "broken_rate_th", "label": "退潮炸板率阈值", "type": "float",
+         "default": 0.40, "min": 0.1, "max": 0.8, "step": 0.05,
+         "group": "情绪门控", "advanced": True,
+         "description": "炸板率（炸板/触板）超此值且最高板回落 -> 退潮停开仓"},
+        {"key": "n_limit_floor", "label": "冰点涨停家数", "type": "int",
+         "default": 20, "min": 0, "max": 100, "step": 5,
+         "group": "情绪门控", "advanced": True,
+         "description": "涨停家数低于此值 -> 冰点期停开仓"},
+        {"key": "regime_ma_n", "label": "最高板均线窗口", "type": "int",
+         "default": 10, "min": 5, "max": 30, "unit": "日",
+         "group": "情绪门控", "advanced": True,
+         "description": "最高连板高度低于其 N 日均值视为高度回落"},
+        {"key": "euphoria_boards", "label": "高潮最高板数", "type": "int",
+         "default": 6, "min": 3, "max": 10, "group": "情绪门控", "advanced": True,
+         "description": "市场最高连板达到此值视为情绪高潮"},
+        {"key": "euphoria_scale", "label": "高潮仓位系数", "type": "float",
+         "default": 0.6, "min": 0.1, "max": 1.0, "step": 0.1, "unit": "×",
+         "group": "情绪门控", "advanced": True,
+         "description": "高潮期开仓预算乘数"},
+        # ---- G10 风控（risk_config 优先） ----
+        {"key": "stop_loss_pct", "label": "固定止损", "type": "float", "default": 5.0,
+         "min": 1, "max": 20, "step": 0.5, "unit": "%", "group": "风控",
+         "description": "收盘跌破开仓价此比例 -> 次根bar卖出；"
+                        "risk_config.stop_loss_pct 优先"},
+        {"key": "max_holdings", "label": "最大并发持仓", "type": "int", "default": 2,
+         "min": 1, "max": 10, "group": "风控",
+         "description": "同时持仓只数上限；risk_config.max_holdings 优先"},
+        {"key": "max_position_pct_per_stock", "label": "单票仓位上限",
+         "type": "float", "default": 60.0, "min": 10, "max": 100, "step": 5,
+         "unit": "%", "group": "风控",
+         "description": "开仓预算再取净值此比例封顶；"
+                        "risk_config.max_position_pct_per_stock 优先"},
+        {"key": "max_drawdown_breaker", "label": "回撤熔断", "type": "float",
+         "default": 30.0, "min": 10, "max": 60, "step": 5, "unit": "%",
+         "group": "风控",
+         "description": "净值回撤达此值清仓停开仓，企稳后恢复；"
+                        "risk_config.max_drawdown_breaker 优先"},
+    ]
+
+    def prepare(self, data: dict[str, pl.DataFrame], params: dict,
+                start_date: str | None = None) -> dict[str, pl.DataFrame]:
+        raise RuntimeError(
+            "dragon_dip_minute 为分钟级独立引擎（run_minute_backtest），"
+            "不支持 runner bar-by-bar 管线——请通过回测任务分流执行")
