@@ -35,8 +35,9 @@ def test_run_task_captures_base_exception():
 
 # ---------------- A2: 黑名单报错只认活跃记录 ----------------
 
-def test_last_blacklist_only_active():
-    """过释放期的旧记录不能作为登录失败的报错依据（09-16 误报事故）"""
+def test_last_blacklist_only_active(monkeypatch):
+    """过释放期的旧记录不能作为登录失败的报错依据（09-16 误报事故）；
+    黑名单按当前公网 IP 过滤——换 IP 后旧 IP 记录不生效（09-28 事故）"""
     from app import db
     from app.data.bs_usage import tracker
 
@@ -50,12 +51,19 @@ def test_last_blacklist_only_active():
              (now - timedelta(hours=1)).isoformat(timespec="seconds"),
              now.isoformat(timespec="seconds")))
     try:
+        # 测试视角固定公网 IP（public_ip 有 10 分钟缓存，必须 monkeypatch）
+        monkeypatch.setattr(tracker, "public_ip", lambda: "1.2.3.4")
         assert tracker.last_blacklist() is None, "已过释放期的记录应返回 None"
         with db.conn() as c:
             c.execute("UPDATE bs_blacklist SET release_at=?",
                       ((now + timedelta(hours=1)).isoformat(timespec="seconds"),))
         row = tracker.last_blacklist()
         assert row is not None and row["ip"] == "1.2.3.4", "限制期内的记录应返回"
+        assert tracker.is_blacklisted() is True
+        # 换 IP：新公网 IP 查不到记录 -> 不受旧 IP 限制期影响
+        monkeypatch.setattr(tracker, "public_ip", lambda: "5.6.7.8")
+        assert tracker.last_blacklist() is None, "换 IP 后旧记录不应生效"
+        assert tracker.is_blacklisted() is False
     finally:
         with db.conn() as c:
             c.execute("DELETE FROM bs_blacklist")

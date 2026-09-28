@@ -216,15 +216,25 @@ class BsUsageTracker:
                 pass
 
     # ---- 黑名单状态（跨进程） ----
-    def _blacklist_row(self) -> dict | None:
+    def _blacklist_row(self, ip: str = "") -> dict | None:
+        """黑名单记录，默认按当前公网 IP 过滤。
+
+        服务端按 IP 限制：换 IP（拨号重连/换网络/代理切换）后旧 IP 的限制期
+        不应拦截新 IP（09-28 事故：换 IP 后仍被旧记录拦到 23:00，任务秒取消）。
+        ip 显式传空字符串时退回旧行为（最近一条，仅对账兜底用）。"""
         with db.conn() as c:
             c.row_factory = sqlite3.Row
-            row = c.execute(
-                "SELECT * FROM bs_blacklist ORDER BY id DESC LIMIT 1").fetchone()
+            if ip:
+                row = c.execute(
+                    "SELECT * FROM bs_blacklist WHERE ip=? ORDER BY id DESC LIMIT 1",
+                    (ip,)).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT * FROM bs_blacklist ORDER BY id DESC LIMIT 1").fetchone()
             return dict(row) if row else None
 
     def is_blacklisted(self) -> bool:
-        row = self._blacklist_row()
+        row = self._blacklist_row(self.public_ip())
         if not row or not row.get("release_at"):
             return False
         try:
@@ -233,12 +243,13 @@ class BsUsageTracker:
             return False
 
     def last_blacklist(self) -> dict | None:
-        """仍在限制期内的最近黑名单记录（供报错信息用）。
+        """当前 IP 仍在限制期内的最近黑名单记录（供报错信息用）。
 
         只认 release_at > now 的活跃记录：已过释放期的旧记录不能作为登录
         失败的报错依据（09-16 事故：登录失败误报"预计 09-03 解除"的旧记录，
-        掩盖真实失败原因；过期的黑名单应由备源降级正常处理）。"""
-        row = self._blacklist_row()
+        掩盖真实失败原因；过期的黑名单应由备源降级正常处理）。
+        按当前公网 IP 过滤：换 IP 后旧 IP 记录不再生效（09-28 事故）。"""
+        row = self._blacklist_row(self.public_ip())
         if not row or not row.get("release_at"):
             return None
         try:
@@ -262,7 +273,7 @@ class BsUsageTracker:
         - 官方接口不可达：回退本地估算（同限制期内重复探测不累加）。
         每次黑名单事件才调用，频率极低。"""
         now = datetime.now()
-        row = self._blacklist_row()
+        row = self._blacklist_row(ip or self.public_ip())
         official = _fetch_official_blacklist(ip or self.public_ip())
         if official is not None:
             latest_local_day = (str(row.get("detected_at") or "")[:10]
@@ -392,7 +403,8 @@ class BsUsageTracker:
 
     # ---- 监控快照（API 用） ----
     def get_monitor(self) -> dict:
-        row = self._blacklist_row() or {}
+        ip = self.public_ip()
+        row = self._blacklist_row(ip) or {}
         now = datetime.now()
         freeze_count = int(row.get("freeze_count") or 0)
         release_at = row.get("release_at")
@@ -403,7 +415,7 @@ class BsUsageTracker:
             except ValueError:
                 blacklisted = False
         return {
-            "ip": self.public_ip(),
+            "ip": ip,
             "today_count": self.daily_count(),
             "cap": DAILY_CAP,
             "concurrency": self.in_flight(),
