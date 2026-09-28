@@ -66,13 +66,20 @@ def _sync_state_on_fill(code: str, opened: bool) -> None:
     """回填联动状态机（堵源头）：买入建仓 -> opened/full 置位（策略大脑
     知道真实持仓，衰退退出/做T/加仓信号恢复正常）；清仓 -> 状态机复位。
     无记录的票买入时创建状态（last_bar 空，盘中首喂从当日完成 bar 起步）；
-    last_bar 游标原样保留，不动盘中喂 bar 进度。"""
+    last_bar 游标原样保留，不动盘中喂 bar 进度。
+    建仓置位同时复位持仓周期字段并对齐回测开仓口径：last_new_high_idx=-1
+    为外置开仓标记，SlotStepper.step 首喂 bar 自愈新高基准/加仓冷却——
+    否则 day_idx-(-1)>=5 恒真，槽位轮动「5日未新高」当天误触发（9·25 事故：
+    当天回填建仓、13:03 全部槽位轮动清仓）。"""
     saved = db.get_strategy_states().get(code) or {"st": {}, "last_bar": None}
     st = dict(saved.get("st") or {})
     if opened:
         if st.get("opened"):
             return
-        st.update({"opened": 1, "full": 1})
+        st.update({"opened": 1, "full": 1, "adds_done": 0,
+                   "last_add_idx": -10**9, "exit_stage": 0, "has_reduced": 0,
+                   "fade_streak": 0, "mom_state": "cruise", "fade_today": 0,
+                   "last_new_high_idx": -1, "high_since_open": None})
     else:
         if not st.get("opened"):
             return
@@ -98,9 +105,12 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
     cfg = {**premarket.DEFAULT_CFG, **db.get_live_config()}
     amount = body.fill_price * body.fill_volume
     fee = body.fee if body.fee is not None else _fill_fee(cfg, body.side, amount)
+    # fill_time 缺省=回填时刻（前端不传该字段）：流水可追溯，且 open_day
+    # 有值——否则 T+1 拦截（当日买入不发当日卖出）对 open_day 判空恒 False
+    fill_time = body.fill_time or datetime.now().isoformat(timespec="seconds")
     fid = db.add_live_fill(body.signal_id, body.code, body.side,
                            body.fill_price, body.fill_volume, fee,
-                           body.fill_time, body.note)
+                           fill_time, body.note)
     pos = {p["code"]: p for p in db.list_live_positions()}
     if body.side == "buy":
         old = pos.get(body.code)
@@ -112,13 +122,12 @@ def add_fill(body: FillBody, _user: str = Depends(get_current_user)):
                                     round(cost, 4), old.get("open_day"),
                                     old.get("group_id"))
         else:
-            name = (db.list_live_signals(limit=500) and
-                    next((s["name"] for s in db.list_live_signals(limit=500)
-                          if s["code"] == body.code and s["name"]), body.code))
+            name = next((s["name"] for s in db.list_live_signals(limit=500)
+                         if s["code"] == body.code and s["name"]), body.code)
             db.upsert_live_position(body.code, name, body.fill_volume,
                                     round((body.fill_price * body.fill_volume
                                            + fee) / body.fill_volume, 4),
-                                    (body.fill_time or "")[:10] or None)
+                                    fill_time[:10])
     else:
         old = pos.get(body.code)
         if old:

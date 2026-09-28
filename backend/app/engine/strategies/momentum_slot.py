@@ -703,7 +703,11 @@ class SlotStepper:
              is_eod: bool, shadow_z=None) -> dict | None:
         """喂一根 bar，返回信号 dict 或 None（is_eod：当日末 bar，daily 时钟用）。
 
-        shadow_z：影线不对称 z 值（FACTOR_EXT，尾部可选参数——实盘旧调用不传=第四票恒关）"""
+        shadow_z：影线不对称 z 值（FACTOR_EXT，尾部可选参数——实盘旧调用不传=第四票恒关）
+        外置建仓自愈：opened 且 last_new_high_idx<0（回填联动置位、无新高基准
+        标记）时，首喂 bar 以当日为新高基准/加仓冷却起点——对齐回测开仓口径
+        （基准自开仓日起算），防老化判定回溯开仓前历史（回测开仓即置位，不触发）。
+        """
         day = date[:10]
         if day != self.cur_day:
             self.cur_day = day
@@ -723,6 +727,14 @@ class SlotStepper:
             else:
                 self.fade_streak = 0
             self.fade_today = False
+
+        if self.opened and self.last_new_high_idx < 0:
+            self.last_new_high_idx = day_idx
+            if self.high_since_open is None:
+                self.high_since_open = close
+            if self.last_add_idx < -10**8:
+                self.last_add_idx = day_idx
+
         trend_ok = (self.trend_clock != "daily") or is_eod
 
         # P1：滚动维护开仓以来最高收盘。prev_high=截至上一根 bar 的最高

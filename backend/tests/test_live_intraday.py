@@ -321,14 +321,15 @@ def test_intraday_state_restore_add_signal(tmp_path, monkeypatch):
     db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
                          "auto_boards": [], "exit_need": 2,
                          "max_holdings": 3, "t_mode": "off"})
-    premarket.run_premarket(data_dir=str(tmp_path), push=False)
-    # 000001 属上升组：用真实收盘做 bar 基准（高于 MA20 -> 跌破均线信号恒假，
-    # 退化为至多 1 个衰退信号 < exit_need=2，不会触发退出分支）
+    r = premarket.run_premarket(data_dir=str(tmp_path), push=False)
+    # 用池内座次第 1 的票（榜单尺=池内座次：非池票会多计「跌出榜单」衰退信号）。
+    # 池内票高于 MA20 -> 跌破均线信号恒假，退化为至多 1 个衰退信号 < exit_need=2
+    code = r["pool"][0]["code"]
     daily = store.read_daily(None, str(tmp_path))
-    row00 = daily.filter((pl.col("code") == "000001")
+    row00 = daily.filter((pl.col("code") == code)
                          & (pl.col("date") == dates[-1]))
     base = float(row00["close"][0])
-    db.save_strategy_state("000001", {"opened": 1, "full": 0}, None)
+    db.save_strategy_state(code, {"opened": 1, "full": 0}, None)
 
     def fake_fetch(code, day):
         return pl.DataFrame([
@@ -342,12 +343,127 @@ def test_intraday_state_restore_add_signal(tmp_path, monkeypatch):
                         lambda codes, timeout=5.0: {})
     out = intraday.run_intraday(data_dir=str(tmp_path), push=False,
                                 now=dt.datetime(2026, 9, 3, 10, 0))
-    adds = [s for s in out["signals"] if s["code"] == "000001"
+    adds = [s for s in out["signals"] if s["code"] == code
             and s["stype"] == "加仓"]
     assert adds, f"恢复态 + 斜率向上应产生试仓升级加仓: {out['signals']}"
     assert adds[0]["suggest_amount"] and adds[0]["suggest_amount"] > 0
     # 试仓升级预算 = base_max(50) - base_min(10) = 40% 权益
     assert adds[0]["suggest_amount"] == pytest.approx(3_000_000 * 0.4, rel=0.01)
+
+
+# ---------------- 9·25 事故回归：外置建仓 + 槽位轮动当天误清仓 ----------------
+
+def _slot_on_params() -> dict:
+    p = {k["key"]: k["default"] for k in MomentumSlotStrategy.param_schema}
+    p["slot_rotation_on"] = "on"
+    return p
+
+
+def test_stepper_external_open_no_same_day_slot_rotation():
+    """外置建仓（回填联动 opened=1 无新高基准）：首喂 bar 自愈基准=当日，
+    开仓日起 5 个交易日内不得槽位轮动清仓；满 slot_stale_days 未新高+跌出
+    榜单才轮动（对齐回测「新高基准自开仓日起算」）"""
+    p = _slot_on_params()
+    days = synthetic.trade_dates(8, end_date=dt.date.fromisoformat(TODAY))[-6:]
+    st = SlotStepper(p, set())   # top_days 空集 = 持续跌出榜单
+    st.restore({"opened": 1, "full": 1, "last_new_high_idx": -1})
+    sigs = []
+    for i, d in enumerate(days):
+        sig = st.step(f"{d} 09:35", 10.0, 2.0, 1.0, 0.5, False,
+                      0.2, 0.1, 9.0, 0.1, 1.0, 100 + i, False, True)
+        if sig:
+            sigs.append((i, sig["signal"], sig["reason"]))
+    assert st.last_new_high_idx == 100, "首喂 bar 应把新高基准自愈为当日 day_idx"
+    early = [s for s in sigs if s[0] < 5]
+    assert not early, f"开仓日起 5 个交易日内不得有任何卖出信号: {early}"
+    assert len(sigs) == 1 and sigs[0][1] == -1 and "槽位轮动" in sigs[0][2], \
+        f"满 5 日未新高+跌出榜单应恰好触发一次槽位轮动: {sigs}"
+
+
+def test_stepper_external_open_in_rank_keeps_holding():
+    """同场景但持续在榜：即便 5+ 日未新高，在榜票不得槽位轮动清仓"""
+    p = _slot_on_params()
+    days = synthetic.trade_dates(8, end_date=dt.date.fromisoformat(TODAY))[-6:]
+    st = SlotStepper(p, set(days))
+    st.restore({"opened": 1, "full": 1, "last_new_high_idx": -1})
+    for i, d in enumerate(days):
+        sig = st.step(f"{d} 09:35", 10.0, 2.0, 1.0, 0.5, False,
+                      0.2, 0.1, 9.0, 0.1, 1.0, 100 + i, False, True)
+        assert not (sig and sig["signal"] == -1), f"在榜票不得清仓: bar{i} {sig}"
+
+
+def test_fill_without_fill_time_defaults_today_and_blocks_t1():
+    """回填不带 fill_time（前端现状）：流水补回填时刻、open_day=当日、
+    状态机带外置开仓标记 —— 当日清仓信号必须被 T+1 拦截"""
+    from app.api import live as live_api
+    today = dt.date.today().isoformat()
+    live_api.add_fill(live_api.FillBody(
+        code="600001", side="buy", fill_price=10.0, fill_volume=1000))
+    fill = db.list_live_fills()[0]
+    assert (fill["fill_time"] or "")[:10] == today, "fill_time 缺省应为回填时刻"
+    pos = {p["code"]: p for p in db.list_live_positions()}
+    assert pos["600001"]["open_day"] == today, "open_day 缺省应为当日（T+1 依据）"
+    st = db.get_strategy_states()["600001"]["st"]
+    assert st["opened"] == 1 and st["last_new_high_idx"] == -1, \
+        "建仓置位应带外置开仓标记（step 首喂自愈新高基准）"
+    item = intraday._make_signal(
+        {"signal": -1, "tag": "", "reason": "槽位轮动(5日未新高+跌出候选)"},
+        "600001", "股600001", f"{today} 13:03", 10.0,
+        {**premarket.DEFAULT_CFG}, pos, 3_000_000.0, 3_000_000.0, today)
+    assert "T+1" in (item["blocked"] or ""), f"当日买入当日清仓必须拦截: {item}"
+
+
+def test_intraday_backfill_day_no_slot_rotation(tmp_path, monkeypatch):
+    """9·25 事故全链路回归：盘前重选 -> 回填建仓（无 fill_time）-> 当天盘中
+    轮询。非池持仓票（跌出榜单/候选，top_days 空集）旧逻辑当天即槽位轮动
+    清仓（新高基准缺失 -> day_idx-(-1)>=5 恒真）；修复后首喂自愈基准，
+    零卖出信号且状态机保持置位。exit_need=3 隔离衰退退出（非池票
+    死叉+跌出榜单仅 2 命中），保证只有槽位轮动可能触发"""
+    dates = _write_market(tmp_path)
+    db.save_live_config({"auto_idle_days": 5, "top_x": 2, "auto_index": [],
+                         "auto_boards": [], "exit_need": 3,
+                         "max_holdings": 2, "pool_n": 1,
+                         "slot_rotation_on": "on", "t_mode": "off"})
+    monkeypatch.setattr(db, "_now", lambda: "2026-09-03 10:00:00")
+    r = premarket.run_premarket(data_dir=str(tmp_path), push=False)
+    assert r["rebalanced"] and r["pool"]
+    daily = store.read_daily(None, str(tmp_path))
+    from app.api import live as live_api
+    # 池内票（座次第 1，在榜单内）+ 非池票 000001（跌出榜单，事故形态）
+    fill_codes = [r["pool"][0]["code"], "000001"]
+    for code in fill_codes:
+        base = float(daily.filter((pl.col("code") == code)
+                                  & (pl.col("date") == r["as_of"]))["close"][0])
+        live_api.add_fill(live_api.FillBody(
+            code=code, side="buy", fill_price=round(base, 2), fill_volume=1000))
+
+    def fake_fetch(code, day):
+        row = daily.filter((pl.col("code") == code)
+                           & (pl.col("date") == r["as_of"]))
+        base = float(row["close"][0])
+        return pl.DataFrame([
+            {"code": code, "date": f"{TODAY} 09:35", "open": base,
+             "high": base * 1.01, "low": base * 0.99, "close": base * 1.005,
+             "volume": 1e5, "amount": 1e8},
+            {"code": code, "date": f"{TODAY} 09:40", "open": base * 1.005,
+             "high": base * 1.02, "low": base, "close": base * 1.012,
+             "volume": 1e5, "amount": 1e8}])
+
+    monkeypatch.setattr(quotes, "fetch_minute5", fake_fetch)
+    monkeypatch.setattr(quotes, "realtime_quotes",
+                        lambda codes, timeout=5.0: {})
+    out = intraday.run_intraday(data_dir=str(tmp_path), push=False,
+                                now=dt.datetime(2026, 9, 3, 10, 0))
+    sells = [s for s in out["signals"]
+             if s["stype"] in ("清仓", "减仓", "止损", "做T")]
+    assert not sells, f"回填建仓当天不得产生任何卖出信号: {sells}"
+    assert not any("槽位轮动" in w["reason"] for w in out["suspended"]), \
+        f"不得出现槽位轮动误报: {out['suspended']}"
+    states = db.get_strategy_states()
+    for code in fill_codes:
+        st = states[code]["st"]
+        assert st["opened"] == 1 and st["last_new_high_idx"] >= 0, \
+            f"外置开仓应自愈新高基准且保持置位: {code} {st}"
 
 
 # ---------------- 盘后：分钟线合并落库（write_minute5 为整文件覆盖） ----------------

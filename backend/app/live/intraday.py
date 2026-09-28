@@ -11,8 +11,10 @@
    ÷ as_of 复权因子换回原始空间。MACD/均线/斜率对价格线性缩放，所有比较
    （金叉/站上均线/阈值）与后复权空间逐项等价；atr_pct/bias/score/breakout
    本身缩放不变。
-3. entry_allowed（今日可建仓名单）= as_of 日全市场动量分前 pool_n
-   （rank_days 的 T-1 语义：昨日排名决定今日可建仓），不施加选股门槛。
+3. entry_allowed（今日可建仓名单 = stepper 榜单）= 池内座次前 pool_n
+   （池子 = 盘前流程按模板 rank_key 选出）——建仓准入与「跌出榜单」同尺，
+   对齐回测 top_days 单一事实来源（曾用全市场动量分前 pool_n 作榜单：
+   与池子两把尺子，按池子座次买入的票天然"跌出"，刚建仓即误触发槽位轮动）。
 
 风控前置（§9）：T+1 提示过滤（当日买入不发当日卖出）、max_holdings 槽位、
 buy_budget 预算上限（对齐 risk.py 默认 max_position_pct_per_stock=40）、
@@ -118,13 +120,11 @@ def _code_features(code: str, p: dict, data_dir=None):
     return out
 
 
-def _entry_allowed(mf: mc.MarketFeatures, as_of: str, pool_n: int) -> set:
-    """榜单（as_of 全市场动量分前 pool_n）——供 stepper 的「入榜/跌出榜单」
-    衰退判定与建仓准入；持仓票的相对强度衰退以此为准。"""
-    d = mf.feats.filter((pl.col("day") == as_of) & pl.col("score").is_not_null())
-    if not d.height:
-        return set()
-    return set(d.sort("score", descending=True).head(max(1, pool_n))["code"].to_list())
+def _entry_allowed(pool_codes: list[str], pool_n: int) -> set:
+    """榜单（stepper 的「入榜/跌出榜单」衰退判定 + 建仓准入）= 池内座次
+    （池子顺序 = 盘前 rank_key 排序）前 pool_n——与回测 top_days 同构：
+    同一把尺既管准入又管跌出，按池子座次买入的票不会立刻被判"跌出候选"。"""
+    return set(pool_codes[:max(1, int(pool_n))])
 
 
 def _virtual_equity(cfg: dict, positions: list[dict],
@@ -247,11 +247,10 @@ def _run_intraday_impl(data_dir=None, push: bool = True,
     if as_of not in set(mf.calendar):
         as_of = mf.calendar[-1]
     gate_state = int(pool_state.get("gate_state") or 0)
-    # 榜单（stepper 的「入榜/跌出榜单」衰退判定与建仓准入）：全市场动量分前 pool_n
-    rank_set = _entry_allowed(mf, as_of, int(cfg["pool_n"]))
-    # 开仓准入（今日可建仓名单）= 池内座次（池子顺序 = 盘前 rank_key 排序）
-    # 前 pool_n——限定"回测策略模板参数选出的池子范围"，与盘前开仓名单同源。
-    entry_allowed = set(pool_codes[:max(1, int(cfg["pool_n"]))])
+    # 榜单（stepper 的「入榜/跌出榜单」衰退判定）与开仓准入同一把尺 = 池内
+    # 座次（池子顺序 = 盘前 rank_key 排序）前 pool_n——对齐回测 top_days
+    # 单一事实来源，与盘前开仓名单同源
+    entry_allowed = _entry_allowed(pool_codes, int(cfg["pool_n"]))
 
     name_map: dict[str, str] = {}
     try:
@@ -330,7 +329,8 @@ def _run_intraday_impl(data_dir=None, push: bool = True,
                      "day_idx": int(r.get("day_idx") or 0)}
 
         saved = states.get(code) or {}
-        stepper = SlotStepper(p_stepper, {today} if code in rank_set else set())
+        stepper = SlotStepper(p_stepper,
+                              {today} if code in entry_allowed else set())
         stepper.restore(saved.get("st") or {})
         last_bar = saved.get("last_bar")
 
