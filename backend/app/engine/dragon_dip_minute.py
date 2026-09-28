@@ -49,7 +49,8 @@ _CTX_START = "2022-01-01"      # Stage 1 预热起点（新股 mature 计数基�
 _WINDOW_START = "2024-01-02"   # 分钟级回测最早窗口（minute5 覆盖范围）
 
 DEFAULT_PARAMS: dict = {
-    "entry_type": ["dban", "dip", "gap", "yin"],  # 多选：dban|dip|gap|yin
+    "entry_type": ["yin", "dip"],   # 多选：dban|dip|gap|yin
+    "dban_exit": "stop",        # 打板退出纪律：stop=固定止损等通用退出 | break=破板清仓
     "top_n": 5,                 # 每日最多新开仓数
     "base_pct": 20.0,           # 单票预算占净值 %（默认 = 100/top_n，前端联动）
     "exclude_one_word": "on",
@@ -272,6 +273,7 @@ class _Pos:
     group_id: int = 0
     debt_vol: int = 0          # 做T：已卖出待回补的股数（尾盘/次日首根回补）
     last_factor: float = 1.0     # 除权调整基准：adj_factor 跳变时 vol×k、raw_cost÷k
+    entry_kind: str = ""         # 开仓买点：dban|dip|gap|yin（打板退出纪律按此分流）
 
 
 @dataclass
@@ -401,7 +403,7 @@ def run_minute_backtest(cfg: dict) -> dict:
                               open_fee=fee, vol0=vol, open_time=bar["date"],
                               sellable=ctx.next_day.get(day),
                               first_hfq=exec_hfq, group_id=gid,
-                              last_factor=factor)
+                              last_factor=factor, entry_kind=kind)
         log(code, bar["date"], "buy", exec_hfq, vol, fee, "开仓", gid,
             reason, tag="开仓")
         return True
@@ -546,14 +548,21 @@ def run_minute_backtest(cfg: dict) -> dict:
 
                 pos = holdings.get(code)
                 if pos is not None:
-                    if c <= pos.first_hfq * (1 - stop_pct / 100.0):
+                    # 打板退出纪律=break 时，打板票跳过盘中止损/破5日线挂单：
+                    # 退出统一由日终「收盘未封板 -> 破板清仓」判定（盘中破位
+                    # 后尾盘回封的票不再被止损单抢先卖飞）
+                    is_dban_break = (str(p.get("dban_exit") or "stop") == "break"
+                                     and pos.entry_kind == "dban")
+                    if not is_dban_break \
+                            and c <= pos.first_hfq * (1 - stop_pct / 100.0):
                         pending[code] = _Pending(
                             side="sell", kind="止损",
                             reason=(f"固定止损{stop_pct:g}%"
                                     "（T日触发·次根开盘执行）"),
                             tag="开仓")
                         continue
-                    if ma5_hfq is not None and c < ma5_hfq:
+                    if not is_dban_break \
+                            and ma5_hfq is not None and c < ma5_hfq:
                         pending[code] = _Pending(side="sell", kind="清仓",
                                                  reason="跌破5日线清仓")
                         continue
@@ -569,11 +578,14 @@ def run_minute_backtest(cfg: dict) -> dict:
 
                 if halted["on"]:
                     # 熔断语义对齐 runner：净值企稳（回撤不再扩大）后，
-                    # 首个开仓信号解除熔断；未企稳继续拦截
+                    # 首个开仓信号解除熔断；解除时重置回撤基准（解除点为新峰，
+                    # 防「解除→开仓→当日再熔断」的逐日震荡循环——09-28 实测
+                    # 663 天熔断 679 次的根因）
                     if not halted["stable"]:
                         continue
                     halted["on"] = False
                     halted["stable"] = False
+                    peak["v"] = equity_now(day)
                 if gate_off or opens_today >= top_n or len(holdings) >= max_hold:
                     continue
                 kinds = cand_map.get(code)
@@ -608,7 +620,19 @@ def run_minute_backtest(cfg: dict) -> dict:
                                                  budget=budget)
                         opens_today += 1
 
-        # ---- 日终：爆量滞涨 / 熔断 / 净值 ----
+        # ---- 日终：打板破板清仓 / 爆量滞涨 / 熔断 / 净值 ----
+        if str(p.get("dban_exit") or "stop") == "break":
+            # 打板退出纪律：持仓的打板票当日收盘未封住涨停（晋级失败）->
+            # 次根 bar 清仓；封板收盘则由晋级减仓（pyr）逻辑接管
+            for code, pos in list(holdings.items()):
+                if pos.entry_kind != "dban" or code in pending:
+                    continue
+                row = code_day_row(ctx, code, day)
+                if row is None or not row[_IDX_LIMIT]:
+                    continue
+                if float(row[7]) < float(row[_IDX_LIMIT]) - _LIMIT_TOL:
+                    pending[code] = _Pending(side="sell", kind="清仓",
+                                             reason="打板破板清仓")
         for code, pos in list(holdings.items()):
             row = code_day_row(ctx, code, day)
             if row is None or code in pending:
@@ -664,7 +688,7 @@ def run_minute_backtest(cfg: dict) -> dict:
                                          reason="回撤熔断清仓")
         if halted["on"]:
             # 对齐 runner：熔断中创新低重置企稳；不再创新低（含空仓横盘）即企稳；
-            # 回撤修复到阈值以内直接解除
+            # 回撤修复到阈值以内直接解除（解除时同样重置回撤基准，防震荡循环）
             if adj_eq < halted["trough"]:
                 halted["trough"] = adj_eq
                 halted["stable"] = False
@@ -673,6 +697,7 @@ def run_minute_backtest(cfg: dict) -> dict:
             if dd * 100 < abs(dd_breaker):
                 halted["on"] = False
                 halted["stable"] = False
+                peak["v"] = adj_eq
         for key in [k for k in day_state if k[1] != day]:
             day_state.pop(key)
 

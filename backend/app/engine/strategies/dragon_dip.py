@@ -377,7 +377,7 @@ class DragonDipMinuteStrategy(Strategy):
          "group": "核心开关",
          "choices": ["dban|打板", "dip|分时低吸",
                      "gap|竞价收复", "yin|首阴次日"],
-         "default": ["dban", "dip", "gap", "yin"],
+         "default": ["yin", "dip"],
          "description": "多选组合；dban/dip/gap 的专属参数已从表单收起"
                         "（引擎默认值兜底）"},
         {"key": "top_n", "label": "每日最多开仓数", "type": "int", "default": 5,
@@ -413,6 +413,12 @@ class DragonDipMinuteStrategy(Strategy):
          "min": 0, "max": 60, "unit": "交易日", "group": "候选池",
          "description": "上市未满 N 根 bar 不参与（无涨跌幅限制期）"},
         # ---- G4 买点·首阴次日 ----
+        {"key": "dban_exit", "label": "打板退出纪律", "type": "categorical",
+         "choices": ["stop|固定止损等通用退出", "break|破板清仓"],
+         "default": "stop", "group": "卖出·走弱", "advanced": True,
+         "description": "仅对打板开仓的持仓生效：break=当日收盘未封住涨停"
+                        "（晋级失败）-> 次根清仓，封板收盘则由晋级减仓接管；"
+                        "stop=固定止损/破5日线等通用退出"},
         {"key": "yin_min", "label": "首阴跌幅下限", "type": "float", "default": 3.0,
          "min": 1, "max": 8, "step": 0.5, "unit": "%", "group": "买点·首阴次日",
          "description": "首阴跌幅下限（太小不算分歧）"},
