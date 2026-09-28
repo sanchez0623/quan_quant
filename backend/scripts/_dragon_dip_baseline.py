@@ -51,7 +51,14 @@ def build_cfg() -> dict:
 def main() -> None:
     REPORTS.mkdir(parents=True, exist_ok=True)
     cfg = build_cfg()
-    print(f"universe {len(cfg['universe'])} 只，开始回测…", flush=True)
+    if len(sys.argv) > 1:
+        cfg["start_date"] = sys.argv[1]
+    if len(sys.argv) > 2:
+        cfg["end_date"] = sys.argv[2]
+    if len(sys.argv) > 3:
+        cfg["name"] = sys.argv[3]
+    print(f"universe {len(cfg['universe'])} 只，区间 {cfg['start_date']}~"
+          f"{cfg['end_date']}，开始回测…", flush=True)
     rep = runner.run_backtest(cfg)
     tid = "bt_" + uuid.uuid4().hex[:12]
     path = REPORTS / f"{tid}.json"
