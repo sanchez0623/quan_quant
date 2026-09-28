@@ -288,4 +288,12 @@
   拉到上市前自然空→全失败；修复：ipoDate 直接查 baostock query_stock_basic，且 ipo>=2022-01-04 直接排除。
   最终全库 5,261 码 2022 口径复验：**日K起点不合法 0、缺行 0、因子 0、5分钟K 0——三层全清零**。
   当前库规模：日K ~619 万行（多轮累计）、因子 ~619 万行、5分钟K 5261 文件。
+- **✅ 股票列表/基准指数体检+更新（2026-09-28）**：用户问"补的时候包括股票列表和基准指数日线吗"——实测：
+  index_daily（000300/000905）已到 2026-09-24 与个股同步、trade_calendar 到 2026-12-31，均无需更新；
+  stock_basic 缺 10 只 9 月新上市股票（沈鼓集团/马矿股份/天博智能/燧原科技/信诺维/中塑股份/格林生物/
+  电科思仪/贝特利/洛轴股份）且 list_date 全空。执行：①scope=stock_basic 刷新——**发现官方 update_stock_basic
+  以本地 basic 为主键 left join，设计上不新增缺失码**（且今天非交易日 query_all_stock 为空需 monkeypatch
+  time.strftime 指到最近交易日）；②10 只新股东拉日K+因子+分钟（updater scope=all codes=NEW10 start=1990）全齐；
+  ③10 只手动 append 进 stock_basic（官方不新增→自写脚本）；④list_date 用 ipo_map 全量回填 5549/5549 非空。
+  全库 stock_basic 现 5,559 行。
 
