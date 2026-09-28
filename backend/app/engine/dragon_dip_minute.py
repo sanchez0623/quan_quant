@@ -173,7 +173,9 @@ def build_daily_context(codes: list[str], p: dict) -> DailyContext:
         "gate_off", [gate.get(d, (False, False))[0] for d in frame["date"].to_list()]))
 
     et = str(p.get("entry_type") or "all")
-    on = ({"dban", "dip", "gap", "yin"} if et == "all" else {et})
+    _MAP = {"all": {"dban", "dip", "gap", "yin"}, "dd": {"dban", "dip"}}
+    on = _MAP.get(et) or ({et} if et in {"dban", "dip", "gap", "yin"}
+                          else {"dban", "dip", "gap", "yin"})
     fresh = ((~pl.col("one_word_prev"))
              if str(p.get("exclude_one_word") or "on") == "on" else pl.lit(True))
     base = pl.col("gene") & pl.col("liquid") & pl.col("mature") & ~pl.col("gate_off")
@@ -207,8 +209,11 @@ def build_daily_context(codes: list[str], p: dict) -> DailyContext:
     for day, code, te, ge in cand.select(["date", "code", "_touch_elig",
                                           "_gap_elig"]).iter_rows():
         kinds = set()
-        if te and ("dban" in on or "dip" in on):
-            kinds |= {"dban", "dip"}
+        if te:
+            if "dban" in on:
+                kinds.add("dban")
+            if "dip" in on:
+                kinds.add("dip")
         if ge and "gap" in on:
             kinds.add("gap")
         if kinds:
@@ -583,9 +588,14 @@ def run_minute_backtest(cfg: dict) -> dict:
             halted["on"] = True
             halted["trough"] = eq
             halted["stable"] = False
+            # 熔断时先清空所有挂起的买单（否则次日开盘照常成交开新仓，
+            # 与清仓对冲——09-28 事故：-30% 熔断后仍开仓亏到 -99%），
+            # 再对持仓直接赋值清仓单（setdefault 不会覆盖同票已有买单）
+            for k in [k for k, v in pending.items() if v.side == "buy"]:
+                del pending[k]
             for code in holdings:
-                pending.setdefault(code, _Pending(side="sell", kind="清仓",
-                                                  reason="回撤熔断清仓"))
+                pending[code] = _Pending(side="sell", kind="清仓",
+                                         reason="回撤熔断清仓")
         if halted["on"]:
             # 对齐 runner：熔断中创新低重置企稳；不再创新低（含空仓横盘）即企稳；
             # 回撤修复到阈值以内直接解除

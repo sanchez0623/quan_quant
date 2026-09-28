@@ -1026,14 +1026,21 @@ export default function BacktestList() {
             <Col span={12}>
               <Form.Item
                 name="universe"
-                label={universeAuto ? '股票池（动态选股：留空，自动生成）' : '股票池（手动选择 / 条件选股 / 动量趋势）'}
-                rules={[{ required: !universeAuto, message: '请选择股票，或开启动态选股' }]}
+                label={
+                  strategyId === 'dragon_dip_minute'
+                    ? '股票池（分钟级引擎自动全市场扫描，无需选择）'
+                    : universeAuto ? '股票池（动态选股：留空，自动生成）' : '股票池（手动选择 / 条件选股 / 动量趋势）'
+                }
+                rules={[{
+                  required: !universeAuto && strategyId !== 'dragon_dip_minute',
+                  message: '请选择股票，或开启动态选股',
+                }]}
               >
                 <StockPicker
                   meta={universeMeta}
                   onMetaChange={(m) => setUniverseMeta(m ?? null)}
                   startDate={startDate}
-                  disabled={universeAuto}
+                  disabled={universeAuto || strategyId === 'dragon_dip_minute'}
                 />
               </Form.Item>
               <Form.Item name="universe_auto" valuePropName="checked" style={{ marginBottom: 8 }}>

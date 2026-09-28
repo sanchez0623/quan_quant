@@ -377,10 +377,9 @@ class DragonDipMinuteStrategy(Strategy):
          "group": "核心开关",
          "choices": ["all|四买点全开", "dban|打板", "dip|分时低吸",
                      "gap|竞价收复", "yin|首阴次日"],
-         "default": "all",
-         "description": "dban=触板按涨停价买（打板）；dip=日内自高点回落至"
-                        "指定区间次根bar买；gap=低开收复当日开盘价介入；"
-                        "yin=首阴次日首根bar买"},
+         "default": "yin",
+         "description": "首阴次日为分买点单测最优（-14.9% vs 打板 -99%）；"
+                        "dban/dip/gap 的专属参数已从表单收起（引擎默认值兜底）"},
         {"key": "top_n", "label": "每日最多开仓数", "type": "int", "default": 2,
          "min": 1, "max": 5, "group": "核心开关",
          "description": "同日多信号按（连板高度,成交额）降序取前 top_n"},
@@ -397,11 +396,6 @@ class DragonDipMinuteStrategy(Strategy):
          "choices": ["on|开启", "off|关闭"], "default": "on",
          "group": "核心开关",
          "description": "参照日一字板（无换手纯情绪票）不开仓"},
-        {"key": "entry_cutoff", "label": "开仓截止时间", "type": "categorical",
-         "group": "核心开关",
-         "choices": ["11:00|午前", "13:30|午后", "14:00|尾盘前", "14:30|尾盘"],
-         "default": "14:30",
-         "description": "此后不再新开仓（避免尾盘接刀）；持仓退出不受限"},
         # ---- G2 候选池 ----
         {"key": "board_window", "label": "涨停基因窗口", "type": "int", "default": 5,
          "min": 3, "max": 10, "unit": "日", "group": "候选池",
@@ -415,29 +409,7 @@ class DragonDipMinuteStrategy(Strategy):
         {"key": "new_stock_days", "label": "新股保护期", "type": "int", "default": 6,
          "min": 0, "max": 20, "unit": "交易日", "group": "候选池",
          "description": "上市未满 N 根 bar 不参与（无涨跌幅限制期）"},
-        # ---- G3 买点·打板 ----
-        {"key": "dban_fill", "label": "打板成交假设", "type": "categorical",
-         "group": "买点·打板",
-         "choices": ["break|仅炸板bar成交（保守）", "touch|触板即成交（乐观）"],
-         "default": "break",
-         "description": "打板单实际常排不到队：break=该 bar 收盘已离板才成交"
-                        "（保守）；touch=触及涨停价即成交（乐观，会高估收益）"},
-        # ---- G4 买点·分时低吸 ----
-        {"key": "dip_pb_min", "label": "低吸回落下限", "type": "float",
-         "default": 3.0, "min": 0.5, "max": 10, "step": 0.5, "unit": "%",
-         "group": "买点·分时低吸",
-         "description": "日内曾触板，现价自日内高点回落下限（太小无安全垫）"},
-        {"key": "dip_pb_max", "label": "低吸回落上限", "type": "float",
-         "default": 7.0, "min": 1, "max": 15, "step": 0.5, "unit": "%",
-         "group": "买点·分时低吸",
-         "description": "回落上限（太大说明真弱），次根 bar 开盘买入"},
-        # ---- G5 买点·竞价收复 ----
-        {"key": "gap_down_min", "label": "竞价低开阈值", "type": "float",
-         "default": 5.0, "min": 2, "max": 9.8, "step": 0.5, "unit": "%",
-         "group": "买点·竞价收复",
-         "description": "昨收涨停后今日低开幅度下限；盘中收复当日开盘价"
-                        "（承接确认）瞬间介入"},
-        # ---- G6 买点·首阴次日 ----
+        # ---- G4 买点·首阴次日 ----
         {"key": "yin_min", "label": "首阴跌幅下限", "type": "float", "default": 3.0,
          "min": 1, "max": 8, "step": 0.5, "unit": "%", "group": "买点·首阴次日",
          "description": "首阴跌幅下限（太小不算分歧）"},

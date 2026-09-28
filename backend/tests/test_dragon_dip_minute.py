@@ -192,12 +192,19 @@ def test_t1_same_day_sell_blocked(patched_store, monkeypatch):
 # ---------------- 策略注册元数据 + runner 分流（放出到回测系统） ----------------
 
 def test_minute_strategy_registered():
-    """注册进 REGISTRY：periods 仅 minute5；param_schema 覆盖引擎全部默认参数"""
+    """注册进 REGISTRY：periods 仅 minute5；schema 覆盖 yin 深挖关键参数
+    （dban/dip/gap 专属参数已从表单收起——引擎 DEFAULT_PARAMS 兜底）"""
     from app.engine.strategies import REGISTRY, validate_params
     s = REGISTRY.get("dragon_dip_minute")
     assert s is not None and s.periods == ["minute5"]
     schema_keys = {p["key"] for p in s.param_schema}
-    assert set(ddm.DEFAULT_PARAMS) <= schema_keys, "param_schema 必须覆盖引擎参数"
+    assert schema_keys <= set(ddm.DEFAULT_PARAMS), "schema 不得引入引擎未知键"
+    for key in ("yin_min", "yin_max", "min_boards", "vol_burst_max",
+                "top_n", "base_pct", "stop_loss_pct", "max_drawdown_breaker"):
+        assert key in schema_keys, f"yin 深挖关键参数 {key} 不应在表单缺失"
+    for key in ("dban_fill", "dip_pb_min", "dip_pb_max", "gap_down_min",
+                "entry_cutoff"):
+        assert key not in schema_keys, f"非 yin 参数 {key} 应从表单收起"
     ok, _ = validate_params("dragon_dip_minute", {"entry_type": "dip"})
     assert ok
     bad, _ = validate_params("dragon_dip_minute", {"entry_type": "nope"})
