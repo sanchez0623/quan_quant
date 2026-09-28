@@ -254,7 +254,11 @@ def validate_backtest_config(cfg: dict) -> dict:
         if cfg.get("strategy_id") not in ("momentum_t", "momentum_slot"):
             raise HTTPException(status_code=400,
                                 detail="大盘趋势闸门仅支持 momentum_t / momentum_slot")
-    if not auto_mode and not universe:
+    if not auto_mode and not universe \
+            and cfg.get("strategy_id") != "dragon_dip_minute":
+        # dragon_dip_minute 引擎自取全市场日线上下文（universe 硬编码），
+        # 静态池参数不参与候选挖掘（候选=全市场触板票，任何静态池必漏），
+        # 故允许 universe 留空
         raise HTTPException(status_code=400, detail="universe 不能为空")
     cfg = dict(cfg)
     cfg["universe"] = universe
@@ -578,7 +582,7 @@ def backtest_kline(task_id: str, code: str = Query(...),
              "high": round(r["high"] / r["adj_factor"], 4),
              "low": round(r["low"] / r["adj_factor"], 4),
              "close": round(r["raw_close"], 4),
-             "volume": int(r["volume"])}
+             "volume": int(r["volume"] or 0)}
             for r in df.to_dicts()
         ]
     from ..data import store
