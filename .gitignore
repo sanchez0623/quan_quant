@@ -32,3 +32,6 @@ logs/
 .DS_Store
 Thumbs.db
 .trae-browser-screenshots/
+
+# ---- AI agent 本地工作区（一次性脚本与中间产物，不入库）----
+.workbuddy/
