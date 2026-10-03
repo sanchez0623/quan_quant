@@ -2,8 +2,6 @@
 """给重点有效任务打 🏷️ 标签（命名前缀），并核对落库完整性。"""
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1])) if False else None
-import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
