@@ -157,3 +157,21 @@ def test_notify_failed_pushes_feishu(monkeypatch):
     db.finish_task(tid3, "failed", error="x")
     mgr._notify_failed(tid3)
     assert len(pushed) == n, "非调度类型不推送"
+
+
+# ---------------- E1: 进程池强制 spawn（Linux fork + polars 死锁） ----------------
+
+def test_task_pool_forces_spawn_start_method():
+    """Linux 下 ProcessPoolExecutor 默认 fork，父进程用过 polars/numpy 后
+    fork 出的子进程首次并行计算会永久死锁（CI 上 /api/data/demo 任务进度停在 0、
+    任务日志只有「任务开始」无异常）；任务池与寻优池必须显式使用 spawn 上下文，
+    与 Windows 行为一致。"""
+    from app import task_manager
+
+    assert task_manager._MP_CTX.get_start_method() == "spawn"
+    mgr = task_manager.TaskManager()
+    try:
+        assert mgr.executor()._mp_context.get_start_method() == "spawn"
+        assert mgr.optimize_executor()._mp_context.get_start_method() == "spawn"
+    finally:
+        mgr.shutdown()

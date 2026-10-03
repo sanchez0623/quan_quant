@@ -4,6 +4,7 @@ Windows spawn 兼容：任务函数均为模块级可 pickle；executor 惰性�
 """
 import json
 import logging
+import multiprocessing
 import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor
@@ -14,6 +15,13 @@ from typing import Optional
 from . import config, db, logging_setup
 
 logger = logging.getLogger(__name__)
+
+# 进程池强制 spawn：Linux 下 ProcessPoolExecutor 默认 fork，而父进程（uvicorn/pytest）
+# 只要用过 polars/numpy，fork 出的子进程首次做并行计算就会死锁（CI 上表现为
+# /api/data/demo 任务进度永远 0、任务日志停在「任务开始」无异常）。spawn 不继承父进程
+# 线程状态，与 Windows 行为一致（Windows 本就是 spawn，本地全套测试通过），
+# 子进程自行 import 所需模块。
+_MP_CTX = multiprocessing.get_context("spawn")
 
 
 # ---------------- 模块级任务函数（可 pickle，子进程执行） ----------------
@@ -458,10 +466,10 @@ class TaskManager:
         self._lock = threading.Lock()
 
     def executor(self) -> ProcessPoolExecutor:
-        # 惰性创建（Windows spawn：避免模块导入期副作用）
+        # 惰性创建（spawn：避免模块导入期副作用）
         with self._lock:
             if self._executor is None:
-                self._executor = ProcessPoolExecutor(max_workers=3)
+                self._executor = ProcessPoolExecutor(max_workers=3, mp_context=_MP_CTX)
             return self._executor
 
     def optimize_executor(self) -> ProcessPoolExecutor:
@@ -474,7 +482,7 @@ class TaskManager:
         with self._lock:
             if self._optimize_executor is None:
                 self._optimize_executor = ProcessPoolExecutor(
-                    max_workers=1, max_tasks_per_child=1)
+                    max_workers=1, max_tasks_per_child=1, mp_context=_MP_CTX)
             return self._optimize_executor
 
     def submit(self, kind: str, task_id: str, **kwargs) -> None:

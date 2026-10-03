@@ -8,6 +8,7 @@
 - 向后兼容：旧格式（平铺 param_space + n_trials + metric）由 API 层包装为单组单窗
 """
 import math
+import multiprocessing
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -23,6 +24,10 @@ from . import logging_setup
 
 
 logger = logging.getLogger(__name__)
+
+# 见 task_manager._MP_CTX：Linux 默认 fork + 父进程已初始化 polars 会让子进程死锁，
+# 寻优波次子进程池同样强制 spawn。
+_MP_CTX = multiprocessing.get_context("spawn")
 
 # risk_config 中的键（param_space 允许搜索这些键，落位到 risk_config）
 RISK_KEYS = {
@@ -629,7 +634,8 @@ def run_optimize(task_id: str, config: dict, *,
                     # max_tasks_per_child=1：每个 worker 任务独占全新进程，
                     # 任务结束进程退出、内存由 OS 彻底回收（P0-3）
                     with ProcessPoolExecutor(max_workers=len(payloads),
-                                             max_tasks_per_child=1) as ex:
+                                             max_tasks_per_child=1,
+                                             mp_context=_MP_CTX) as ex:
                         futs = [ex.submit(_optuna_batch_worker, p) for p in payloads]
                         for f in futs:
                             f.result()
