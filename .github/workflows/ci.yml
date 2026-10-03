@@ -28,7 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: 单元测试
-        run: python -m pytest tests -q
+        env:
+          PYTHONUNBUFFERED: "1"
+        # --timeout 是挂死护栏（本地全套约 70s；单测内部最长的任务等待上限 600s，
+        # 故 900s 只会命中真正的死锁/挂起，触发时 pytest-timeout 会打印全线程栈定位）
+        run: python -m pytest tests -v --timeout=900 --timeout-method=thread
         # 说明：CI 不装 requirements-sources（baostock/akshare/mootdx）——
         # 测试用例对「无数据源环境」有专门分支，且也避免了 mootdx 把 httpx 降级。
       - name: ruff 静态检查
