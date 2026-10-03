@@ -55,43 +55,10 @@ import ParamSchemaForm from '../components/ParamSchemaForm'
 import RiskConfigForm, { DEFAULT_RISK_CONFIG, RISK_FIELDS } from '../components/RiskConfigForm'
 import BacktestRangePicker from '../components/BacktestRangePicker'
 import StockPicker from '../components/StockPicker'
+import { flattenBacktestConfig, fmtDiffVal } from '../utils/configDiff'
 
-/** 模板配置 diff：把 params/risk_config/顶层标量拍平为可对比的 key -> value 映射 */
-function flattenTemplateConfig(cfg: BacktestCreateRequest): Map<string, { group: string; value: unknown }> {
-  const map = new Map<string, { group: string; value: unknown }>()
-  const put = (group: string, key: string, value: unknown) => {
-    if (value === undefined || value === null) return
-    map.set(`${group}\u0000${key}`, { group, value })
-  }
-  Object.entries(cfg.params ?? {}).forEach(([k, v]) => put('策略参数', k, v))
-  Object.entries(cfg.risk_config ?? {}).forEach(([k, v]) => put('风控', k, v))
-  if (Array.isArray(cfg.universe)) put('基础', '股票池', cfg.universe.join(', '))
-  const topKeys: Array<[string, string]> = [
-    ['strategy_id', '策略'], ['period', '周期'], ['universe_auto', '动态选股'],
-    ['start_date', '开始日期'], ['end_date', '结束日期'], ['initial_capital', '初始资金'],
-    ['benchmark', '基准指数'], ['monthly_withdraw_base', '月提取额'],
-    ['t_profit_withdraw_pct', 'T盈利提成'], ['min_t_amount', '最小T金额'],
-    ['nav_take_profit_pct', '总资金止盈'], ['nav_take_profit_withdraw_pct', '止盈提取收益'],
-    ['auto_idle_days', '空仓触发'], ['auto_top_x', '池子大小'], ['auto_above_ma', '均线锚'],
-    ['auto_with_accel', '加速项'], ['auto_rank_key', '排序键'], ['exclude_st', '剔除ST'],
-    ['pool_gate', '池级趋势开关'], ['pool_gate_enter_th', '趋势触发阈值'],
-    ['index_gate', '大盘趋势闸门'], ['index_gate_ma', '大盘闸门MA']
-  ]
-  const rcfg = cfg as unknown as Record<string, unknown>
-  topKeys.forEach(([k, label]) => {
-    const v = rcfg[k]
-    if (v !== undefined) put('基础', label, v)
-  })
-  return map
-}
-
-function fmtDiffVal(v: unknown): string {
-  if (v === null || v === undefined) return '-'
-  if (typeof v === 'boolean') return v ? '是' : '否'
-  if (typeof v === 'number') return String(Math.round(v * 100) / 100)
-  if (Array.isArray(v)) return v.length ? v.join(', ') : '（空）'
-  return String(v)
-}
+/** 多回测对比上限（配色与可读性；URL 传参也随之受限） */
+const COMPARE_MAX = 8
 
 interface DatePreset {
   label: string
@@ -245,6 +212,8 @@ export default function BacktestList() {
   const [diffOpen, setDiffOpen] = useState(false)
   const [diffA, setDiffA] = useState<number | undefined>(undefined)
   const [diffB, setDiffB] = useState<number | undefined>(undefined)
+  // ---- 多回测对比（勾选 N 个 -> 曲线叠加 + 指标并排 + 参数差异高亮） ----
+  const [compareIds, setCompareIds] = useState<string[]>([])
   // ---- AI 生成任务名称 ----
   const [naming, setNaming] = useState(false)
   const [tplNaming, setTplNaming] = useState(false)  // 存为模板弹窗的 AI 命名
@@ -255,6 +224,12 @@ export default function BacktestList() {
   const [presetNameOpen, setPresetNameOpen] = useState(false)
   const [presetName, setPresetName] = useState('')
   const prefillApplied = useRef(false)
+
+  // 换页 / 换标签后清空勾选：勾选集合与当前页可见行保持一致，
+  // 避免"对比了一个当前页看不见的任务"
+  useEffect(() => {
+    setCompareIds([])
+  }, [page, tagFilter])
 
   const strategy = useMemo(() => strategies.find((s) => s.id === strategyId), [strategies, strategyId])
   // 动态选股开关与开始日期联动（StockPicker 动量预筛需要 startDate，无后视镜）
@@ -640,8 +615,8 @@ export default function BacktestList() {
     const ca = templates.find((x) => x.id === diffA)?.config
     const cb = templates.find((x) => x.id === diffB)?.config
     if (!ca || !cb) return []
-    const ma = flattenTemplateConfig(ca)
-    const mb = flattenTemplateConfig(cb)
+    const ma = flattenBacktestConfig(ca)
+    const mb = flattenBacktestConfig(cb)
     const keys = new Set([...ma.keys(), ...mb.keys()])
     const order: Record<string, number> = { 策略参数: 0, 风控: 1, 基础: 2 }
     const rows: Array<{ group: string; label: string; a: string; b: string; diff: boolean }> = []
@@ -1401,6 +1376,16 @@ export default function BacktestList() {
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
             />
+            <Tooltip title="勾选 2 个以上「已完成」任务 → 权益曲线叠加 + 指标并排 + 参数差异高亮">
+              <Button
+                size="small"
+                icon={<DiffOutlined />}
+                disabled={compareIds.length < 2}
+                onClick={() => navigate(`/backtests/compare?ids=${compareIds.join(',')}`)}
+              >
+                对比选中{compareIds.length ? `（${compareIds.length}）` : ''}
+              </Button>
+            </Tooltip>
           </Space>
         }
       >
@@ -1409,6 +1394,19 @@ export default function BacktestList() {
           dataSource={filteredList}
           columns={columns}
           loading={loadingList}
+          rowSelection={{
+            selectedRowKeys: compareIds,
+            // 只有跑出报告的任务能参与对比（pending/running/failed 无 equity_curve）
+            getCheckboxProps: (r) => ({ disabled: r.status !== 'success' }),
+            onChange: (keys) => {
+              const next = keys as string[]
+              if (next.length > COMPARE_MAX) {
+                message.warning(`最多同时对比 ${COMPARE_MAX} 个回测`)
+                return
+              }
+              setCompareIds(next)
+            }
+          }}
           pagination={{
             current: page,
             pageSize,

@@ -5,6 +5,7 @@ import MainLayout from './layouts/MainLayout'
 import Login from './pages/Login'
 import BacktestList from './pages/BacktestList'
 import BacktestResult from './pages/BacktestResult'
+import BacktestCompare from './pages/BacktestCompare'
 import OptimizeList from './pages/OptimizeList'
 import OptimizeDetail from './pages/OptimizeDetail'
 import ExperimentList from './pages/ExperimentList'
@@ -49,6 +50,8 @@ export default function App() {
           <Route index element={<Navigate to="/backtests" replace />} />
           <Route path="live" element={<LiveSignals />} />
           <Route path="backtests" element={<BacktestList />} />
+          {/* 静态段优先于 :id（react-router v6 按具体度排序，但仍显式前置以避免歧义） */}
+          <Route path="backtests/compare" element={<BacktestCompare />} />
           <Route path="backtests/:id" element={<BacktestResult />} />
           <Route path="optimize" element={<OptimizeList />} />
           <Route path="optimize/:id" element={<OptimizeDetail />} />
