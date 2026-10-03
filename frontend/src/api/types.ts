@@ -220,6 +220,30 @@ export interface WithdrawalConfig {
   nav_take_profit_withdraw_pct?: number
 }
 
+/** 回测表单顶层字段元数据（GET /api/backtests/meta） */
+export interface BacktestFieldMeta {
+  key: string
+  label: string
+  type: string
+  default?: unknown
+  required?: boolean
+  group: string
+  ui: string
+  fill?: boolean
+  /** 前端表单是否用 default 预填（false=由用户显式选择，如 name/period） */
+  prefill?: boolean
+  min?: number
+  max?: number
+  step?: number
+  help?: string
+  choices?: Array<{ value: string | number; label: string }>
+  choices_from?: string
+}
+
+export interface BacktestFormMeta {
+  fields: BacktestFieldMeta[]
+}
+
 // ---- 回测任务 ----
 export interface BacktestCreateRequest extends WithdrawalConfig {
   name: string
@@ -238,7 +262,8 @@ export interface BacktestCreateRequest extends WithdrawalConfig {
   auto_top_x?: number
   /** 站上均线锚周期 */
   auto_above_ma?: number
-  auto_with_accel?: boolean
+  /** None=跟随策略默认（momentum_slot 开 / momentum_t 关）；后端 schema 默认 false */
+  auto_with_accel?: boolean | null
   auto_min_rps?: number | null
   /** 候选域：指数成分并集（空=不限） */
   auto_index?: string[]

@@ -89,9 +89,7 @@ scripts/               # 辅助脚本（experiments/ 收敛一次性 _*.py，不
 
 - max_holdings（最大持仓只数）有**两处**需保持一致：策略参数"核心开关"组（策略层槽位管理）与风控配置（引擎最终屏障）；实际约束取更严格者，两处填不同值无意义。
 
-- **回测顶层字段写入规则（模板保存契约）**：新增回测表单可调字段（含动态选股 auto_*、总资金止盈 nav_*、月度出金等顶层字段）时，**必须同步 4 处**，否则模板保存/载入会静默丢值（历史事故：auto_rank_key、nav_take_profit_pct 未登记导致模板落库缺失）：① 后端 `api/backtests.py` `normalize_config` 的 `top_defaults` 登记表补默认；② 前端 `BacktestList.tsx` `buildConfigFromValues`；③ 前端 `BacktestList.tsx` `applyConfigToForm`（数值键加进 `numericKeys`）；④ 前端 `BacktestList.tsx` `initialValues`。
-
-- **前端表单默认值必须与 param_schema 默认一致（2026-09-15 用户拍板，pool_refill_min 事故）**：回测表单可调字段的默认值在 `BacktestList.tsx` 有两处（`buildConfigFromValues` 的 `?? 默认` 与 `initialValues`），**必须与后端 `param_schema[].default` 相同**，否则前端建任务会被静默注入错误默认（历史事故：pool_refill_min 前端默认 2 vs 引擎默认 0=关闭，用户手动建的"采纳形态复现"任务被静默配成已证伪的 TOP50+换血线2 组合）。新增字段时三处一起对：schema default / buildConfigFromValues / initialValues。
+- **回测顶层字段单一事实源（代码约束，取代旧「4 处同步」流程约束）**：回测表单可调顶层字段的「键 / 标签 / 类型 / 默认值 / 选项 / 数值范围」统一写在 `backend/app/api/backtest_schema.py` 的 `TOP_FIELDS`——后端 `BacktestRequest` 由它 `create_model` 生成、`normalize_config` 的默认值由 `top_level_defaults()` 派生、前端通过 `GET /api/backtests/meta` 获取（`initialValues` / `buildConfigFromValues` / `applyConfigToForm` 均从接口取值，不再手抄）。**新增顶层字段只改这一处**；`backend/tests/test_backtest_form_contract.py` 在 CI 上兜底：① 模型字段 ↔ schema 键集合必须一致（拦「pydantic 静默丢弃」）；② 默认值必须与 schema 一致；③ 每个可渲染字段必须在前端表单出现（拦「新增了字段但界面填不到」）。历史事故：`auto_rank_key` / `nav_take_profit_pct` 未登记导致模板落库缺失；`pool_refill_min` 未进模型被 pydantic 静默丢弃、后端兼底 2，而前端/引擎/文档都是 0=关闭（用户手动建的「采纳形态复现」任务被静默配成已证伪组合）。参数中英对照以 schema 的 `label` 为准。
 
 - 池级趋势开关（pool_gate）与 universe_auto 正交互补：gate 管"能不能买"，重选管"买谁"；换池时 gate 随新池重置（新池=门槛筛选产物，无需确认期）。
 

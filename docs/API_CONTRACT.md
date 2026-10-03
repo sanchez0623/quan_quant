@@ -137,7 +137,7 @@ param\_schema 条目字段：key/label/type(int|float|str|bool|select)/default/m
   "universe_meta": null,
   "universe_auto": false,
   "auto_idle_days": 5,
-  "pool_refill_min": 2,
+  "pool_refill_min": 0,
   "auto_top_x": 30,
   "auto_above_ma": 20,
   "auto_with_accel": null,
@@ -178,7 +178,7 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 
 - **滚动重选**：全空仓持续 `auto_idle_days` 个交易日 → 以触发日收盘为基准重筛，旧池退役、新池次日接管；全市场（候选域内）无票过门槛 → 空仓现金推进，绝不硬买；
 
-- **枯竭换血**（`pool_refill_min`，默认 2，0=关闭）：建仓宽限期（段首 `auto_idle_days` 日，容纳新池 T+1 成交）后，日终持仓仍低于换血线 → 当天收盘后换池重选，已持仓不动（只换新开仓候选域，槽位按 `max_holdings-已持仓` 分配、名单排除持仓票）；闸门停开仓日（pool_gate/index_gate）冻结：不累计空仓、不换血（停开仓下重选是无用功）；
+- **枯竭换血**（`pool_refill_min`，默认 0，0=关闭）：建仓宽限期（段首 `auto_idle_days` 日，容纳新池 T+1 成交）后，日终持仓仍低于换血线 → 当天收盘后换池重选，已持仓不动（只换新开仓候选域，槽位按 `max_holdings-已持仓` 分配、名单排除持仓票）；闸门停开仓日（pool_gate/index_gate）冻结：不累计空仓、不换血（停开仓下重选是无用功）；
 
 - 候选域：`auto_index`（指数成分**并集**，sz50/hs300/zz500/csi800）∩ `auto_boards`（板块并集 main/chinext/star/bse），均空=全市场剔ST/退市；域内无票则初始池报错、中途无票则空池等待（不回退全市场）；
 
@@ -204,6 +204,20 @@ risk\_config 全字段可选（有默认值）。`max_intraday_trades` 传 `null
 - 与池级趋势开关（`pool_gate`）正交叠加：任一触发即停开仓（更严格者生效）；
 
 - 指数日线缺失（未拉取 index\_daily）时**静默降级为不抑制**（同 benchmark 缺失口径）；非动量策略开启 → 校验 400。
+
+### GET /api/backtests/meta
+
+回测表单顶层字段元数据（**默认值/选项/数值范围的唯一事实源**，后端 `app/api/backtest_schema.py`）。
+前端 `BacktestList.tsx` 据此生成 `initialValues` / `buildConfigFromValues` / `applyConfigToForm`，不再手抄默认值与选项表。
+
+响应：`{"fields":[{"key","label","type","default","required","group","ui","fill","prefill","min","max","step","help","choices":[{"value","label"}],"choices_from"}]}`
+
+- `prefill=true`：表单用 `default` 预填；缺省（`name`/`period`/`universe` 等）由用户显式选择。
+- `ui=hidden`：只进配置不进表单（`start_date`/`end_date` 由区间选择器写入，`params`/`risk_config` 有独立表单）。
+- `auto_rank_key`/`auto_index`/`auto_boards` 的 `choices` 由后端注册表实时生成（RANK_KEYS / INDEX_REGISTRY / BOARD_LABELS），不再前后端各抄一份。
+- `fill=true`：`normalize_config` 会对非模型路径（模板/实验/寻优）补该默认值。
+
+新增顶层字段只改 `backend/app/api/backtest_schema.py`；`tests/test_backtest_form_contract.py` 兜底（模型字段↔schema 键集合一致、默认值一致、每个可渲染字段都必须出现在前端表单）。
 
 ### GET /api/backtests
 

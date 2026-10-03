@@ -5,6 +5,7 @@ import type {
   AiProfilesResponse,
   AiSuggestionStats,
   BacktestCreateRequest,
+  BacktestFormMeta,
   BacktestListItem,
   BacktestListResponse,
   BacktestReport,
@@ -122,6 +123,12 @@ export async function pickStocks(data: PickRequest): Promise<PickResponse> {
 }
 
 // ---- 回测任务 ----
+/** 回测表单顶层字段元数据（默认值/选项/范围的唯一来源，见后端 backtest_schema.py） */
+export async function getBacktestFormMeta(): Promise<BacktestFormMeta> {
+  const res = await api.get<BacktestFormMeta>('/backtests/meta')
+  return res.data
+}
+
 export async function createBacktest(data: BacktestCreateRequest): Promise<TaskCreateResponse> {
   const res = await api.post<TaskCreateResponse>('/backtests', data)
   return res.data

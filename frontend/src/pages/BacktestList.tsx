@@ -18,6 +18,7 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Switch,
   Table,
   Tag,
@@ -36,12 +37,14 @@ import {
   deleteTemplate,
   errDetail,
   generateBacktestName,
+  getBacktestFormMeta,
   getBacktests,
   getStrategies,
   getTemplates
 } from '../api/client'
 import type {
   BacktestCreateRequest,
+  BacktestFieldMeta,
   BacktestListItem,
   BacktestTemplateItem,
   ParamSchema,
@@ -169,19 +172,11 @@ const CAPITAL_PRESETS: Record<string, { label: string; initial_capital: number; 
   '300w': { label: '300万档', initial_capital: 3000000, max_holdings: 5, monthly_withdraw_base: 20000, min_t_amount: 80000 }
 }
 
-/** 动态选股候选域选项（与后端 INDEX_REGISTRY / BOARD_LABELS 对齐） */
-const AUTO_INDEX_OPTIONS = [
-  { value: 'sz50', label: '上证50' },
-  { value: 'hs300', label: '沪深300' },
-  { value: 'zz500', label: '中证500' },
-  { value: 'csi800', label: '中证800（=沪深300+中证500）' }
-]
-const AUTO_BOARD_OPTIONS = [
-  { value: 'main', label: '主板' },
-  { value: 'chinext', label: '创业板' },
-  { value: 'star', label: '科创板' },
-  { value: 'bse', label: '北交所' }
-]
+/**
+ * 动态选股候选域 / 排序键 / 基准等选项改由 GET /api/backtests/meta 下发
+ * （后端 backtest_schema.py 是唯一事实源），前端不再手抄，避免与
+ * INDEX_REGISTRY / BOARD_LABELS / RANK_KEYS 漂移。
+ */
 
 export default function BacktestList() {
   const [form] = Form.useForm<BacktestFormValues>()
@@ -224,6 +219,34 @@ export default function BacktestList() {
   const [presetNameOpen, setPresetNameOpen] = useState(false)
   const [presetName, setPresetName] = useState('')
   const prefillApplied = useRef(false)
+  // ---- 回测表单顶层字段元数据（默认值/选项/范围的唯一来源，后端 backtest_schema.py）----
+  const [formMeta, setFormMeta] = useState<BacktestFieldMeta[]>([])
+  const [metaReady, setMetaReady] = useState(false)
+  const metaByKey = useMemo(() => {
+    const m: Record<string, BacktestFieldMeta> = {}
+    formMeta.forEach((f) => { m[f.key] = f })
+    return m
+  }, [formMeta])
+  /** 前端预填默认值：schema 里 prefill=true 的字段（等价于旧的手抄 initialValues） */
+  const topDefaults = useMemo(() => {
+    const d: Record<string, unknown> = {}
+    formMeta.forEach((f) => { if (f.prefill && f.default !== undefined) d[f.key] = f.default })
+    return d
+  }, [formMeta])
+  const metaChoices = useCallback(
+    (key: string): Array<{ value: string | number; label: string }> =>
+      metaByKey[key]?.choices ?? [],
+    [metaByKey])
+  /** 表单初值：全部来自后端 schema，前端不再手抄默认值 */
+  const initialValues = useMemo(
+    () => ({ ...topDefaults, risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number> }),
+    [topDefaults])
+  useEffect(() => {
+    getBacktestFormMeta()
+      .then((m) => setFormMeta(m.fields))
+      .catch((err) => message.error(errDetail(err, '表单默认值加载失败，将回退后端默认')))
+      .finally(() => setMetaReady(true))
+  }, [])
 
   // 换页 / 换标签后清空勾选：勾选集合与当前页可见行保持一致，
   // 避免"对比了一个当前页看不见的任务"
@@ -283,6 +306,9 @@ export default function BacktestList() {
    */
   const buildConfigFromValues = useCallback((values: BacktestFormValues): BacktestCreateRequest => {
     const schema = strategies.find((s) => s.id === values.strategy_id)?.param_schema ?? []
+    // 顶层默认值一律取自后端 schema（D[f.key]），前端不再写死数字——
+    // 历史事故：前端默认 2 vs 引擎默认 0=关闭，用户建的任务被静默配错。
+    const D = topDefaults
     return {
       name: values.name ?? '',
       strategy_id: values.strategy_id,
@@ -291,42 +317,42 @@ export default function BacktestList() {
       // 动态选股：池子由后端动量预筛自动生成，universe 留空
       universe: values.universe_auto ? [] : (values.universe ?? []),
       universe_meta: universeMeta ?? null,
-      universe_auto: values.universe_auto ?? false,
-      auto_idle_days: values.auto_idle_days ?? 5,
-      pool_refill_min: values.pool_refill_min ?? 0,  // 与 param_schema 默认一致（0=关闭枯竭换血）
-      auto_top_x: values.auto_top_x ?? 30,
-      auto_above_ma: values.auto_above_ma ?? 20,
-      auto_with_accel: values.auto_with_accel ?? (values.strategy_id === 'momentum_slot'),
-      auto_min_rps: values.auto_min_rps ?? null,
-      auto_index: values.auto_index ?? [],
-      auto_boards: values.auto_boards ?? [],
-      auto_rank_key: values.auto_rank_key ?? 'score',
-      benchmark: values.benchmark ?? '000905',
-      pool_gate: values.pool_gate ?? false,
-      pool_gate_enter_th: values.pool_gate_enter_th ?? 0.15,
-      index_gate: values.index_gate ?? false,
-      index_gate_ma: values.index_gate_ma ?? 20,
+      universe_auto: values.universe_auto ?? (D.universe_auto as boolean),
+      auto_idle_days: values.auto_idle_days ?? (D.auto_idle_days as number),
+      pool_refill_min: values.pool_refill_min ?? (D.pool_refill_min as number),
+      auto_top_x: values.auto_top_x ?? (D.auto_top_x as number),
+      auto_above_ma: values.auto_above_ma ?? (D.auto_above_ma as number),
+      auto_with_accel: values.auto_with_accel ?? (D.auto_with_accel as boolean | null),
+      auto_min_rps: values.auto_min_rps ?? (D.auto_min_rps as number | null),
+      auto_index: values.auto_index ?? (D.auto_index as string[]),
+      auto_boards: values.auto_boards ?? (D.auto_boards as string[]),
+      auto_rank_key: values.auto_rank_key ?? (D.auto_rank_key as string),
+      benchmark: values.benchmark ?? (D.benchmark as string),
+      pool_gate: values.pool_gate ?? (D.pool_gate as boolean),
+      pool_gate_enter_th: values.pool_gate_enter_th ?? (D.pool_gate_enter_th as number),
+      index_gate: values.index_gate ?? (D.index_gate as boolean),
+      index_gate_ma: values.index_gate_ma ?? (D.index_gate_ma as number),
       start_date: values.dateRange?.[0]?.format('YYYY-MM-DD') ?? '',
       end_date: values.dateRange?.[1]?.format('YYYY-MM-DD') ?? '',
-      period: (values.period as 'daily' | 'minute5') ?? 'daily',
-      initial_capital: values.initial_capital ?? 400000,
-      slippage_pct: values.slippage_pct,
-      commission_rate: values.commission_rate,
-      commission_min: values.commission_min,
-      stamp_tax: values.stamp_tax,
-      transfer_fee: values.transfer_fee,
-      handling_fee: values.handling_fee,
-      regulatory_fee: values.regulatory_fee,
-      warmup_days: values.warmup_days,
-      monthly_withdraw_base: values.monthly_withdraw_base,
-      t_profit_withdraw_pct: values.t_profit_withdraw_pct,
-      min_t_amount: values.min_t_amount,
-      nav_take_profit_pct: values.nav_take_profit_pct ?? 0,
-      nav_take_profit_withdraw_pct: values.nav_take_profit_withdraw_pct ?? 0,
-      exclude_st: values.exclude_st ?? true
+      period: (values.period as 'daily' | 'minute5') ?? (D.period as 'daily' | 'minute5'),
+      initial_capital: values.initial_capital ?? (D.initial_capital as number),
+      slippage_pct: values.slippage_pct ?? (D.slippage_pct as number),
+      commission_rate: values.commission_rate ?? (D.commission_rate as number),
+      commission_min: values.commission_min ?? (D.commission_min as number),
+      stamp_tax: values.stamp_tax ?? (D.stamp_tax as number),
+      transfer_fee: values.transfer_fee ?? (D.transfer_fee as number),
+      handling_fee: values.handling_fee ?? (D.handling_fee as number),
+      regulatory_fee: values.regulatory_fee ?? (D.regulatory_fee as number),
+      warmup_days: values.warmup_days ?? (D.warmup_days as number),
+      monthly_withdraw_base: values.monthly_withdraw_base ?? (D.monthly_withdraw_base as number),
+      t_profit_withdraw_pct: values.t_profit_withdraw_pct ?? (D.t_profit_withdraw_pct as number),
+      min_t_amount: values.min_t_amount ?? (D.min_t_amount as number),
+      nav_take_profit_pct: values.nav_take_profit_pct ?? (D.nav_take_profit_pct as number),
+      nav_take_profit_withdraw_pct: values.nav_take_profit_withdraw_pct ?? (D.nav_take_profit_withdraw_pct as number),
+      exclude_st: values.exclude_st ?? (D.exclude_st as boolean)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [universeMeta, strategies])
+  }, [universeMeta, strategies, topDefaults])
 
   /** 回测配置 -> 表单（载入模板 / AI 建议预填共用） */
   const applyConfigToForm = useCallback(
@@ -336,42 +362,17 @@ export default function BacktestList() {
       // 与默认值合并：老模板 / AI 建议可能缺新增字段（如自适应止损参数），
       // 缺项按 schema default 回填，避免表单出现空框、用户误以为未配置
       const schema = strategies.find((s) => s.id === cfg.strategy_id)?.param_schema ?? []
-      const values: Record<string, unknown> = {
-        name: cfg.name ?? '',
-        strategy_id: cfg.strategy_id,
-        period: cfg.period,
-        universe: cfg.universe ?? [],
-        initial_capital: cfg.initial_capital ?? 400000,
-        exclude_st: cfg.exclude_st ?? true,
-        universe_auto: cfg.universe_auto ?? false,
-        auto_idle_days: cfg.auto_idle_days ?? 5,
-        ...(cfg.pool_refill_min != null ? { pool_refill_min: cfg.pool_refill_min } : {}),
-        auto_top_x: cfg.auto_top_x ?? 30,
-        auto_above_ma: cfg.auto_above_ma ?? 20,
-        auto_with_accel: cfg.auto_with_accel ?? (cfg.strategy_id === 'momentum_slot'),
-        ...(cfg.auto_min_rps != null ? { auto_min_rps: cfg.auto_min_rps } : {}),
-        auto_index: cfg.auto_index ?? [],
-        auto_boards: cfg.auto_boards ?? [],
-        auto_rank_key: cfg.auto_rank_key ?? 'score',
-        ...(cfg.benchmark != null ? { benchmark: cfg.benchmark } : {}),
-        pool_gate: cfg.pool_gate ?? false,
-        ...(cfg.pool_gate_enter_th != null ? { pool_gate_enter_th: cfg.pool_gate_enter_th } : {}),
-        index_gate: cfg.index_gate ?? false,
-        index_gate_ma: cfg.index_gate_ma ?? 20
-      }
+      // 顶层字段全部由后端 schema 驱动：字段名、默认值都不再手写。
+      // 老模板/AI 建议缺新增字段时自动按 schema 默认补齐，不会出现空框。
+      const values: Record<string, unknown> = {}
+      formMeta.forEach((f) => {
+        if (f.ui === 'hidden') return
+        const raw = (cfg as unknown as Record<string, unknown>)[f.key]
+        values[f.key] = raw !== undefined && raw !== null ? raw : f.default
+      })
       if (cfg.start_date && cfg.end_date) {
         values.dateRange = [dayjs(cfg.start_date), dayjs(cfg.end_date)]
       }
-      const numericKeys = [
-        'slippage_pct', 'commission_rate', 'commission_min', 'stamp_tax', 'transfer_fee',
-        'handling_fee', 'regulatory_fee', 'warmup_days', 'monthly_withdraw_base',
-        't_profit_withdraw_pct', 'min_t_amount', 'nav_take_profit_pct',
-        'nav_take_profit_withdraw_pct'
-      ] as const
-      numericKeys.forEach((k) => {
-        const v = cfg[k]
-        if (v !== undefined && v !== null) values[k] = v
-      })
       form.setFieldsValue(values as unknown as BacktestFormValues)
       // params / risk_config 必须整体替换：setFieldsValue 是深合并，上一个策略的
       // 参数键会留在 store 里（下一次保存就会混进新策略配置）
@@ -387,12 +388,12 @@ export default function BacktestList() {
   // AI 分析页「应用建议」跳转过来时预填表单（只应用一次）
   useEffect(() => {
     const st = location.state as { prefill?: BacktestCreateRequest } | null
-    if (!st?.prefill || prefillApplied.current || strategies.length === 0) return
+    if (!st?.prefill || prefillApplied.current || strategies.length === 0 || !metaReady) return
     prefillApplied.current = true
     applyConfigToForm(st.prefill, '已载入 AI 优化配置，确认后可提交下一轮回测')
     // replace 清掉 state，避免刷新重复应用
     navigate('/backtests', { replace: true })
-  }, [location.state, strategies, applyConfigToForm, navigate])
+  }, [location.state, strategies, metaReady, applyConfigToForm, navigate])
 
   // 存在运行中任务时每 3s 自动刷新（带当前搜索词/标签/页码，保持服务端过滤一致）
   const hasActive = list.some((t) => t.status === 'pending' || t.status === 'running')
@@ -903,42 +904,14 @@ export default function BacktestList() {
           </Space>
         }
       >
+        {!metaReady ? (
+          <div style={{ padding: 48, textAlign: 'center' }}><Spin /></div>
+        ) : (
         <Form
           form={form}
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{
-            initial_capital: 400000,
-            slippage_pct: 0.001,
-            commission_rate: 0.00005,
-            commission_min: 5,
-            stamp_tax: 0.0005,
-            transfer_fee: 0.00001,
-            handling_fee: 0.0000341,
-            regulatory_fee: 0.00002,
-            warmup_days: 0,
-            monthly_withdraw_base: 5000,
-            t_profit_withdraw_pct: 10,
-            min_t_amount: 20000,
-            nav_take_profit_pct: 0,
-            nav_take_profit_withdraw_pct: 0,
-            exclude_st: true,
-            universe_auto: false,
-            auto_idle_days: 5,
-            pool_refill_min: 0,  // 与 param_schema 默认一致（0=关闭枯竭换血）
-            auto_top_x: 30,
-            auto_above_ma: 20,
-            auto_with_accel: false,
-            auto_index: [],
-            auto_boards: [],
-            auto_rank_key: 'score',
-            benchmark: '000905',
-            pool_gate: false,
-            pool_gate_enter_th: 0.15,
-            index_gate: false,
-            index_gate_ma: 20,
-            risk_config: DEFAULT_RISK_CONFIG as Record<string, string | number>
-          }}
+          initialValues={initialValues}
         >
           <Row gutter={16}>
             <Col span={8}>
@@ -1052,11 +1025,7 @@ export default function BacktestList() {
                     <Form.Item name="auto_above_ma" noStyle>
                       <Select
                         size="small" style={{ width: 118 }}
-                        options={[
-                          { value: 20, label: 'MA20（slot）' },
-                          { value: 60, label: 'MA60（t）' },
-                          { value: 120, label: 'MA120' }
-                        ]}
+                        options={metaChoices('auto_above_ma')}
                       />
                     </Form.Item>
                   </Space>
@@ -1077,12 +1046,7 @@ export default function BacktestList() {
                     <Form.Item name="auto_rank_key" noStyle>
                       <Select
                         size="small" style={{ width: 108 }}
-                        options={[
-                          { value: 'score', label: '累计强度' },
-                          { value: 'accel', label: '加速度' },
-                          { value: 'fresh', label: '金叉新鲜' },
-                          { value: 'mom_gap', label: '短中差值' }
-                        ]}
+                        options={metaChoices('auto_rank_key')}
                       />
                     </Form.Item>
                   </Space>
@@ -1098,7 +1062,7 @@ export default function BacktestList() {
                         maxTagCount="responsive"
                         allowClear
                         placeholder="全市场"
-                        options={AUTO_INDEX_OPTIONS}
+                        options={metaChoices('auto_index')}
                         style={{ width: 260 }}
                         size="small"
                       />
@@ -1107,7 +1071,7 @@ export default function BacktestList() {
                   <Space size={4}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>板块域：</Typography.Text>
                     <Form.Item name="auto_boards" noStyle>
-                      <Checkbox.Group options={AUTO_BOARD_OPTIONS} />
+                      <Checkbox.Group options={metaChoices('auto_boards')} />
                     </Form.Item>
                   </Space>
                 </Space>
@@ -1198,10 +1162,7 @@ export default function BacktestList() {
                 <Select
                   allowClear
                   placeholder="默认中证500"
-                  options={[
-                    { value: '000905', label: '中证500' },
-                    { value: '000300', label: '沪深300' }
-                  ]}
+                  options={metaChoices('benchmark')}
                 />
               </Form.Item>
               <Form.Item
@@ -1353,6 +1314,7 @@ export default function BacktestList() {
             </Col>
           </Row>
         </Form>
+        )}
       </Card>
 
       <Card

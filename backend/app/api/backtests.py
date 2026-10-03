@@ -8,12 +8,19 @@ from pathlib import Path
 import logging
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from .. import db
 from ..auth import get_current_user
 from ..engine.strategies import REGISTRY, apply_param_defaults, validate_params
 from ..task_manager import manager
+from .backtest_schema import (
+    RANK_KEY_LABELS,
+    TOP_FIELDS,
+    UI_FIELDS,
+    pydantic_field_spec,
+    top_level_defaults,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -58,56 +65,25 @@ class RiskConfigModel(BaseModel):
     regime_b_on: bool = False
 
 
-class BacktestRequest(BaseModel):
-    name: str = "回测任务"
-    strategy_id: str
-    params: dict = Field(default_factory=dict)
-    risk_config: RiskConfigModel = Field(default_factory=RiskConfigModel)
-    # universe_auto=True 时留空（池子由动量预筛自动生成并滚动重选）
-    universe: list[str] = Field(default_factory=list)
-    # 条件选股溯源（UNIVERSE_PICKER §7）：池子的来历与 seed，模板载入/实验复现可审计
-    universe_meta: dict | None = None
-    # ---- 动态选股（universe_auto，仅 momentum_t/momentum_slot）----
-    universe_auto: bool = False
-    auto_idle_days: int = 5        # 全空仓持续 N 个交易日 -> 重选
-    auto_top_x: int = 30           # 每次预筛取前 x 只
-    auto_above_ma: int = 20        # 站上均线锚周期（默认20 对齐 momentum_slot / 60=momentum_t）
-    auto_with_accel: bool | None = None  # None=跟随策略默认（momentum_slot 开 / momentum_t 关）
-    auto_min_rps: float | None = None  # 全市场 RPS 分位下限（0~100，None=不启用）
-    auto_index: list[str] = Field(default_factory=list)   # 候选域：指数成分并集（空=不限）
-    auto_boards: list[str] = Field(default_factory=list)  # 候选域：板块并集（空=不限）
-    auto_rank_key: str = "score"  # 重选排序键（RANK_KEYS）：score/accel/fresh/mom_gap
-    # ---- 基准对比（BENCHMARK）：报告净值图叠加基准指数 + 超额收益指标 ----
-    benchmark: str = "000905"     # 基准指数（000905=中证500 / 000300=沪深300）
-    # ---- 池级趋势开关（POOL_GATE，仅 momentum_t/momentum_slot）----
-    pool_gate: bool = False           # 池内动量健康度过低时抑制开仓/加仓
-    pool_gate_enter_th: float = 0.15  # 触发阈值（恢复线=×2 内置）
-    # ---- 大盘趋势闸门（INDEX_GATE，仅 momentum_t/momentum_slot）----
-    index_gate: bool = False          # 中证500收盘<MA{index_gate_ma}连续2日时抑制开仓/加仓（恢复缓冲带内置）
-    index_gate_ma: int = 20           # 大盘闸门均线周期（可填 20/30/60 等）
-    start_date: str
-    end_date: str
-    end_date_today: bool = False
-    period: str = "daily"
-    initial_capital: float = 1_000_000
-    slippage_pct: float = 0.001
-    # ---- 交易成本（2026年现行费率默认值）----
-    commission_rate: float = 0.00005   # 佣金 万0.5（双边）
-    commission_min: float = 5          # 最低佣金（元）
-    stamp_tax: float = 0.0005          # 印花税 万5（仅卖出）
-    transfer_fee: float = 0.00001      # 过户费 万0.1（双边）
-    handling_fee: float = 0.0000341    # 经手费 万0.341（双边）
-    regulatory_fee: float = 0.00002    # 证管费 万0.2（双边）
-    exclude_st: bool = True
-    # ---- 指标预热（0=使用策略建议的预热期）----
-    warmup_days: int = 0
-    # ---- 月度出金（0=关闭）----
-    monthly_withdraw_base: float = 0       # 每月提取目标额，不足月末补齐
-    t_profit_withdraw_pct: float = 10      # 每笔做T盈利即时提取比例（%）
-    min_t_amount: float = 20000            # 做T卖出最小金额（防碎单费用磨损）
-    # ---- 总资金止盈提取（NAV_TAKE_PROFIT，0=关闭）----
-    nav_take_profit_pct: float = 0         # 净值相对上次提取后基准涨幅达阈值（%）-> 触发一次提取
-    nav_take_profit_withdraw_pct: float = 0  # 触发时提取收益比例（%）
+def _build_backtest_request_model():
+    """由 backtest_schema.TOP_FIELDS 生成 BacktestRequest（字段与默认值单一来源）。
+
+    此前手写模型漏登记了 pool_refill_min，pydantic 直接静默丢弃前端传值、
+    后端再兜底 2，导致用户手动建的任务被静默配成已证伪组合（历史事故）。
+    改为生成式后，「模型漏字段」在结构上不可能发生。
+    """
+    fields: dict[str, tuple] = {}
+    for f in TOP_FIELDS:
+        if f["type"] == "risk_config":
+            fields[f["key"]] = (RiskConfigModel,
+                                Field(default_factory=RiskConfigModel, description=f["label"]))
+            continue
+        annotation, field_info = pydantic_field_spec(f)
+        fields[f["key"]] = (annotation, field_info)
+    return create_model("BacktestRequest", **fields)
+
+
+BacktestRequest = _build_backtest_request_model()
 
 
 def _norm_universe(universe: list[str]) -> list[str]:
@@ -163,30 +139,9 @@ def normalize_config(cfg: dict) -> dict:
             risk[k] = v
     cfg["risk_config"] = risk
 
-    # ---- 回测顶层标量字段登记表（TOP_LEVEL_DEFAULTS）----
-    # ⚠️ 写入规则：新增回测顶层字段时，必须同步四处，否则模板保存/载入会静默丢值——
-    #   ① 本登记表补默认；② 前端 BacktestList.tsx buildConfigFromValues；
-    #   ③ 前端 BacktestList.tsx applyConfigToForm（含 numericKeys）；④ 前端 initialValues。
-    # 历史事故：auto_rank_key / nav_take_profit_pct 未登记，模板落库缺失、载入回落默认。
-    top_defaults = {
-        # 动态选股
-        "auto_idle_days": 5, "auto_top_x": 30, "auto_above_ma": 20,
-        "auto_with_accel": None, "auto_min_rps": None,
-        "auto_index": [], "auto_boards": [], "auto_rank_key": "score",
-        # 枯竭换血：日终持仓低于该值（gate off 时）当天收盘后重选；0=关闭
-        "pool_refill_min": 2,
-        # 总资金止盈提取
-        "nav_take_profit_pct": 0.0, "nav_take_profit_withdraw_pct": 0.0,
-        # 月度出金
-        "monthly_withdraw_base": 0.0, "t_profit_withdraw_pct": 10.0, "min_t_amount": 20000.0,
-        # 池级趋势开关
-        "pool_gate": False, "pool_gate_enter_th": 0.15,
-        # 大盘趋势闸门
-        "index_gate": False, "index_gate_ma": 20,
-        # 基准 / 剔除ST
-        "benchmark": "000905", "exclude_st": True,
-    }
-    for k, v in top_defaults.items():
+    # 顶层字段默认值来自 backtest_schema.TOP_FIELDS（单一事实源，fill=True 的条目）。
+    # 新增顶层字段只改那里；前端默认值由 GET /api/backtests/meta 下发。
+    for k, v in top_level_defaults().items():
         if cfg.get(k) is None:
             cfg[k] = v
     return cfg
@@ -353,6 +308,35 @@ def list_backtests(_user: str = Depends(get_current_user),
 class TemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     config: dict
+
+
+@router.get("/meta")
+def backtest_form_meta(_user: str = Depends(get_current_user)):
+    """回测表单顶层字段元数据（默认值 / 选项 / 数值范围的唯一来源）。
+
+    前端 BacktestList 据此生成 initialValues / buildConfigFromValues /
+    applyConfigToForm，新增顶层字段只改后端 backtest_schema.TOP_FIELDS，
+    前端不再手抄默认值，也不会再出现「前端/引擎默认值不一致」。
+    """
+    from ..data.sources import BOARD_LABELS, INDEX_CSI800, INDEX_CSI800_NAME, INDEX_REGISTRY
+    from ..engine.momentum_core import RANK_KEYS
+
+    dynamic_choices = {
+        "rank_key": [{"value": k, "label": RANK_KEY_LABELS.get(k, k)} for k in RANK_KEYS],
+        "auto_index": (
+            [{"value": k, "label": name} for k, (_, name) in INDEX_REGISTRY.items()]
+            + [{"value": INDEX_CSI800, "label": f"{INDEX_CSI800_NAME}（=沪深300+中证500）"}]
+        ),
+        "auto_boards": [{"value": k, "label": v} for k, v in BOARD_LABELS.items()],
+    }
+
+    fields = []
+    for f in UI_FIELDS:
+        item = dict(f)
+        if f.get("choices_from"):
+            item["choices"] = dynamic_choices.get(f["choices_from"], [])
+        fields.append(item)
+    return {"fields": fields}
 
 
 @router.get("/templates")
