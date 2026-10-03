@@ -21,6 +21,10 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+# 测试临时目录：pytest/conftest 若把 tempfile.gettempdir() 解析成相对路径，
+# 会落在仓库内（历史事故：backend/quant_test_data_*、backend/pytest-of-*）
+quant_test_data_*/
+pytest-of-*/
 
 # ---- 前端 ----
 node_modules/
@@ -35,3 +39,5 @@ Thumbs.db
 
 # ---- AI agent 本地工作区（一次性脚本与中间产物，不入库）----
 .workbuddy/
+# scripts/experiments/ 里已入库的 48 个历史脚本仍受 git 跟踪；新丢进去的 _*.py 不入库
+/scripts/experiments/_*.py

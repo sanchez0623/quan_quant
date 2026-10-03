@@ -70,7 +70,7 @@ config.example/        # 配置模板（入库）
 config/                # 实际配置（不入库，gitignore）
 data/                  # Parquet 数据湖（不入库）
 docs/                  # 设计文档与 API 契约
-scripts/               # 辅助脚本
+scripts/               # 辅助脚本（experiments/ 收敛一次性 _*.py，不参与 CI）
 ```
 
 ## 关键业务约定（易错点）
