@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
+import logging
 import polars as pl
 
 from .. import db
@@ -37,6 +38,9 @@ from ..engine.datafeed import _attach_adj
 from ..engine.runner import _shift_back
 from ..engine.strategies.momentum_slot import MomentumSlotStrategy, SlotStepper
 from . import feishu, quotes
+
+
+logger = logging.getLogger(__name__)
 
 # 单票市值上限/现金缓冲默认值（占虚拟权益 %）——对齐 engine/risk.py 默认，
 # 实际取 cfg.max_pos_pct / cfg.cash_reserve_pct（模板注入/配置卡可覆盖）
@@ -268,7 +272,7 @@ def _run_intraday_impl(data_dir=None, push: bool = True,
                         for r in basic.select(["code", "name"]).to_dicts()
                         if r.get("name")}
     except Exception:
-        pass
+        logger.warning("_run_intraday_impl 失败，降级继续", exc_info=True)
 
     qt_map = quotes.realtime_quotes(active)
     _persist_prices(positions, qt_map, now, force=True)
@@ -506,6 +510,7 @@ def _circuit_check(any_bars: bool, now: datetime, push: bool) -> None:
     try:
         hb = json.loads(db.get_meta("intraday_hb") or "{}")
     except Exception:
+        logger.warning("_circuit_check 失败，降级继续", exc_info=True)
         hb = {}
     if any_bars:
         if hb.get("alerted") and push:
@@ -541,6 +546,7 @@ def status_snapshot(data_dir=None) -> dict:
     try:
         hb = json.loads(db.get_meta("intraday_hb") or "{}")
     except Exception:
+        logger.warning("status_snapshot 失败，降级继续", exc_info=True)
         hb = {}
     codes = []
     for c in active:

@@ -9,6 +9,7 @@
   影子账户做T信号不计（t_mode=off 起步）。
 - 就绪检查：M4 小资金跟单前的硬条件清单（数据/通道/影子时长/滑点样本）。
 """
+import logging
 from bisect import bisect_left
 from collections import deque
 from datetime import datetime
@@ -18,6 +19,9 @@ from .. import db
 from ..data import sources, store
 from . import feishu, quotes
 from .premarket import DEFAULT_CFG
+
+
+logger = logging.getLogger(__name__)
 
 # 参与影子账户的信号类型
 _TRADE_STYPES = ("开仓", "加仓", "减仓", "止损", "清仓")
@@ -165,7 +169,7 @@ def readiness() -> dict:
         d = store.read_daily(None)
         n_codes = d["code"].n_unique() if d is not None and d.height else 0
     except Exception:
-        pass
+        logger.debug("readiness 失败，降级继续", exc_info=True)
     _add("daily_coverage", "日线覆盖完整（≥4000只）", n_codes >= 4000,
          f"当前 {n_codes} 只（覆盖不足=幸存者偏差）")
 
@@ -176,11 +180,11 @@ def readiness() -> dict:
             try:
                 probes[s] = bool(src.health_check(timeout=6))
             except Exception:
-                pass
+                logger.debug("_add 失败，降级继续", exc_info=True)
     try:
         probes["qt"] = bool(quotes.realtime_quotes(["600000"], timeout=4))
     except Exception:
-        pass
+        logger.debug("readiness 失败，降级继续", exc_info=True)
     _add("quotes", "盘中行情源可用（mootdx/新浪/qt）",
          probes["qt"] and (probes["mootdx"] or probes["sina"]),
          f"mootdx={probes['mootdx']} sina={probes['sina']} qt={probes['qt']}")

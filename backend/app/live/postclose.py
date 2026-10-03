@@ -10,11 +10,15 @@
 import json
 from datetime import datetime
 
+import logging
 import polars as pl
 
 from .. import db
 from ..data import store
 from . import feishu, intraday, quotes
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_postclose(data_dir=None, push: bool = True,
@@ -56,6 +60,7 @@ def run_postclose(data_dir=None, push: bool = True,
             store.write_minute5(code, merged, data_dir)
             saved.append(code)
         except Exception:
+            logger.warning("run_postclose 失败，降级继续", exc_info=True)
             skipped.append(code)
 
     qt_map = quotes.realtime_quotes(codes)

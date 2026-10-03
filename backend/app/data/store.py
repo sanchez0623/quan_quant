@@ -7,6 +7,7 @@ DATA_DIR 结构：
   trade_calendar.parquet   date,is_open(int)
   stock_basic.parquet      code,name,st(bool),list_date
 """
+import logging
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,9 @@ from typing import Optional
 import polars as pl
 
 from .. import config
+
+
+logger = logging.getLogger(__name__)
 
 
 # 进程内统计缓存：minute5 冷盘 IO（约 3000 文件逐读 footer）可达十几秒，
@@ -71,6 +75,7 @@ def write_daily(df: pl.DataFrame, data_dir: Optional[str] = None) -> None:
         try:
             old = pl.read_parquet(p)
         except Exception:
+            logger.warning("write_daily 失败，降级继续", exc_info=True)
             old = None
         if old is not None and old.height and df.height:
             new_codes = df["code"].n_unique()
@@ -176,6 +181,7 @@ def read_minute5(code: str, start: Optional[str] = None, end: Optional[str] = No
     try:
         df = pl.read_parquet(p)
     except Exception as e:      # noqa: BLE001
+        logger.debug("read_minute5 失败，降级继续", exc_info=True)
         # 单只坏票不拖死整批回测/更新：隔离坏文件并按「无数据」处理，
         # 下一次数据更新会当新文件全量重拉（增量合并读不到旧数据即走全量覆盖分支）
         _quarantine_corrupt(p, e)
@@ -378,6 +384,7 @@ def parquet_stats_minute5(data_dir: Optional[str] = None) -> Optional[dict]:
         try:
             return pq.read_metadata(str(fp)).num_rows
         except Exception:  # noqa: BLE001
+            logger.debug("_num_rows 失败，降级继续", exc_info=True)
             return 0
 
     # 冷盘 IO 下约 3000 个文件逐读 footer 可达十几秒：线程池并发读显著提速
@@ -390,7 +397,7 @@ def parquet_stats_minute5(data_dir: Optional[str] = None) -> Optional[dict]:
              .collect())
         start, end = (d["s"][0] or "")[:10], (d["e"][0] or "")[:10]
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("parquet_stats_minute5 失败，降级继续", exc_info=True)
     stats = {"stocks": len(codes), "rows": rows, "start": start, "end": end,
              "updated_at": _mtime(root / f"{codes[0]}.parquet")}
     _stats_cache[key] = (now, stats)

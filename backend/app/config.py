@@ -65,6 +65,7 @@ META_DB_PATH = DATA_DIR / "meta.db"
 REPORTS_DIR = DATA_DIR / "reports"
 OPTUNA_DIR = DATA_DIR / "optuna"
 MINUTE5_DIR = DATA_DIR / "minute5"
+LOGS_DIR = DATA_DIR / "logs"      # 结构化日志（app-YYYYMMDD.log + task/<task_id>.log）
 
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_SECONDS = 86400
@@ -83,5 +84,5 @@ FEISHU_WEBHOOK_URL = _get("FEISHU_WEBHOOK_URL", "")
 
 def ensure_dirs() -> None:
     """确保运行期目录存在"""
-    for p in (DATA_DIR, REPORTS_DIR, OPTUNA_DIR, MINUTE5_DIR, CONFIG_DIR):
+    for p in (DATA_DIR, REPORTS_DIR, OPTUNA_DIR, MINUTE5_DIR, CONFIG_DIR, LOGS_DIR):
         p.mkdir(parents=True, exist_ok=True)

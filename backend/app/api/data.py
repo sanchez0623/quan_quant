@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据管理接口：状态 / 增量更新 / 演示数据 / 完整性自检"""
+import logging
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -11,6 +12,9 @@ from .. import db
 from ..auth import get_current_user
 from ..data import sources, store
 from ..task_manager import manager
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -46,6 +50,7 @@ def bs_check(_user: str = Depends(get_current_user)):
     try:
         ok = bool(bs_src and bs_src.health_check(timeout=15))
     except Exception:
+        logger.warning("bs_check 失败，降级继续", exc_info=True)
         ok = False
     tracker.touch_check()
     return {"ok": ok, "monitor": tracker.get_monitor()}

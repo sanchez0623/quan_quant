@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import logging
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -13,6 +14,9 @@ from .. import db
 from ..auth import get_current_user
 from ..engine.strategies import REGISTRY, apply_param_defaults, validate_params
 from ..task_manager import manager
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 
@@ -330,7 +334,7 @@ def list_backtests(_user: str = Depends(get_current_user),
             try:
                 cfg = normalize_config(cfg)
             except Exception:      # 归一化失败不影响列表展示
-                pass
+                logger.warning("归一化失败不影响列表展示", exc_info=True)
         item = {
             "task_id": t["task_id"], "name": t["name"], "status": t["status"],
             "created_at": t["created_at"], "tag": t.get("tag", ""),
@@ -362,7 +366,7 @@ def list_templates(user: str = Depends(get_current_user)):
             try:
                 cfg = normalize_config(cfg)
             except Exception:      # 归一化失败时原样返回，不阻塞列表
-                pass
+                logger.warning("归一化失败时原样返回，不阻塞列表", exc_info=True)
         out.append(dict(t, config=cfg))
     return out
 
@@ -379,7 +383,7 @@ def add_template(req: TemplateCreate, user: str = Depends(get_current_user)):
     try:
         cfg = normalize_config(cfg)
     except Exception:
-        pass
+        logger.warning("add_template 失败，降级继续", exc_info=True)
     template_id = db.add_template(user, name, cfg)
     return {"id": template_id, "status": "ok"}
 

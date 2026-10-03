@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+import logging
 import polars as pl
 
 # baostock 用量监控（跨进程计数/串行锁/黑名单），见 bs_usage.py
@@ -19,6 +20,9 @@ from .bs_usage import (
     BsLockTimeout,
     tracker,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataSource:
@@ -256,9 +260,10 @@ class BaostockSource(DataSource):
                     try:
                         self._bs.logout()
                     except Exception:
-                        pass
+                        logger.debug("_ensure_login 失败，降级继续", exc_info=True)
                 return ok
             except Exception:
+                logger.debug("_ensure_login 失败，降级继续", exc_info=True)
                 self._bs_logged_in = False
                 self._record_fail()
                 return False
@@ -269,7 +274,7 @@ class BaostockSource(DataSource):
             try:
                 self._bs.logout()
             except Exception:
-                pass
+                logger.debug("_force_logout 失败，降级继续", exc_info=True)
             self._bs_logged_in = False
 
     def _run_query(self, qfn) -> Optional[list]:
@@ -321,6 +326,7 @@ class BaostockSource(DataSource):
             except (BsDailyCapExceeded, BsBlacklisted, BsLockTimeout):
                 raise
             except Exception:
+                logger.debug("_run_query 失败，降级继续", exc_info=True)
                 # 网络级异常（WinError 10057 等）：计入冷却
                 self._record_fail()
                 self._force_logout()
@@ -342,6 +348,7 @@ class BaostockSource(DataSource):
                 return rs, rows
             return bool(self._run_query(_q))
         except Exception:
+            logger.debug("health_check 失败，降级继续", exc_info=True)
             return False
 
     def get_daily(self, code, start, end):
@@ -668,6 +675,7 @@ class AkshareSource(DataSource):
                 pl.col("amount").cast(pl.Float64, strict=False),
             ).select(["code", "date", "open", "high", "low", "close", "volume", "amount"])
         except Exception:
+            logger.debug("get_daily 失败，降级继续", exc_info=True)
             return None
 
     def get_adj_factor(self, code, start: str = "19900101",
@@ -705,6 +713,7 @@ class AkshareSource(DataSource):
             df = df.filter(pl.col("adj_factor") > 0).sort("date")
             return df if df.height else None
         except Exception:
+            logger.debug("get_adj_factor 失败，降级继续", exc_info=True)
             return None
 
     def get_minute5(self, code, start, end):
@@ -734,6 +743,7 @@ class AkshareSource(DataSource):
                 pl.col("成交额").cast(pl.Float64).alias("amount"),
             ])
         except Exception:
+            logger.debug("get_minute5 失败，降级继续", exc_info=True)
             return None
 
 
@@ -774,6 +784,7 @@ class MootdxSource(DataSource):
             # 改用单次 K 线请求验证（也是实际取数路径，快且稳定）
             return self._get_client().bars(symbol="600000", frequency=9, offset=1) is not None
         except Exception:
+            logger.debug("health_check 失败，降级继续", exc_info=True)
             return False
 
     def _fetch_bars(self, code, frequency, start, end):
@@ -804,6 +815,7 @@ class MootdxSource(DataSource):
             try:
                 earliest = str(df["datetime"].min())
             except Exception:
+                logger.debug("_fetch_bars 失败，降级继续", exc_info=True)
                 earliest = None
             if earliest and start and earliest[:10] < start[:10]:
                 break
@@ -837,6 +849,7 @@ class MootdxSource(DataSource):
         try:
             return self._fetch_bars(code, 0, start, end)
         except Exception:
+            logger.debug("get_minute5 失败，降级继续", exc_info=True)
             return None
 
     def get_daily(self, code, start, end):
@@ -847,6 +860,7 @@ class MootdxSource(DataSource):
         try:
             return self._fetch_bars(code, 9, start, end)
         except Exception:
+            logger.debug("get_daily 失败，降级继续", exc_info=True)
             return None
 
 
@@ -914,6 +928,7 @@ class LixingerSource(DataSource):
                     continue
                 j = r.json()
             except Exception:
+                logger.debug("_post 失败，降级继续", exc_info=True)
                 time.sleep(1.0 * (attempt + 1))
                 continue
             if not isinstance(j, dict) or j.get("code") != 1:
@@ -933,6 +948,7 @@ class LixingerSource(DataSource):
         try:
             rows = self._post(sc, start, end)
         except Exception:
+            logger.debug("get_daily 失败，降级继续", exc_info=True)
             return None
         if not rows:
             return None
@@ -964,6 +980,7 @@ class LixingerSource(DataSource):
             df = df.filter((pl.col("date") >= start) & (pl.col("date") <= end))
             return df if df.height else None
         except Exception:
+            logger.debug("get_daily 失败，降级继续", exc_info=True)
             return None
 
     def get_minute5(self, code, start, end):
@@ -1017,6 +1034,7 @@ class SinaSource(DataSource):
             rows = json.loads(r.content.decode("gbk", errors="replace"))
             return isinstance(rows, list) and len(rows) >= 1
         except Exception:
+            logger.debug("health_check 失败，降级继续", exc_info=True)
             return False
 
     def get_daily(self, code, start, end):
@@ -1075,6 +1093,7 @@ class SinaSource(DataSource):
             df = df.filter((pl.col("date") >= start) & (pl.col("date") <= end + " 23:59"))
             return df if df.height else None
         except Exception:
+            logger.debug("get_minute5 失败，降级继续", exc_info=True)
             return None
 
 
@@ -1144,11 +1163,12 @@ def check_health(timeout: float = 10,
             try:
                 on_each(s.name, s.role)
             except Exception:
-                pass
+                logger.debug("check_health 失败，降级继续", exc_info=True)
         healthy = False
         try:
             healthy = bool(s.health_check(timeout))
         except Exception:
+            logger.debug("check_health 失败，降级继续", exc_info=True)
             healthy = False
         result[s.name] = healthy
         _health_cache[s.name] = {"healthy": healthy,

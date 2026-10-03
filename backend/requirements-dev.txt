@@ -1,0 +1,3 @@
+# 开发/CI 工具依赖（运行时不需要）
+-r requirements.txt
+ruff>=0.6

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """AI 分析接口（多 LLM）"""
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,9 @@ from .. import config, db
 from ..auth import get_current_user
 from ..llm import provider
 from ..task_manager import manager
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -70,6 +74,7 @@ def _latest_sensitivity(backtest_id: str):
     try:
         return load_latest_sensitivity(backtest_id, str(config.REPORTS_DIR))
     except Exception:  # noqa: BLE001
+        logger.debug("_latest_sensitivity 失败，降级继续", exc_info=True)
         return None
 
 

@@ -2,6 +2,7 @@
 """FastAPI 入口：CORS、路由挂载、WebSocket 进度推送、启动初始化、静态托管"""
 import asyncio
 import contextlib
+import logging
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,17 +12,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, db
+from . import auth, config, db, logging_setup
 from .api import (ai, auth as api_auth, backtests, data as api_data, experiments, keys,
                   live, optimize, stocks, strategies, tasks as api_tasks, users)
 from .task_manager import manager
 
 FINAL_STATES = ("success", "failed", "cancelled")
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动：初始化 DB、确保 admin 存在、启动 TaskManager（惰性进程池）
+    logging_setup.setup()
     config.ensure_dirs()
     db.init_db()
     if db.get_user(config.ADMIN_USERNAME) is None:
@@ -37,7 +41,7 @@ async def lifespan(app: FastAPI):
             from .data import sources
             sources.check_health(timeout=8)
         except Exception:
-            pass
+            logger.debug("启动预热数据源健康检查失败（不影响服务）", exc_info=True)
     threading.Thread(target=_warmup_health, daemon=True, name="health-warmup").start()
 
     scheduler = None

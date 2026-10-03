@@ -3,12 +3,16 @@
 from typing import Optional
 
 import httpx
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..auth import get_current_user
 from ..llm.provider import PROVIDER_REGISTRY, _chat_once
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/keys", tags=["keys"])
 
@@ -143,7 +147,7 @@ def _http_error_detail(e: httpx.HTTPStatusError) -> str:
         if msg:
             return f"{reason}：{str(msg)[:200]}"
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("_http_error_detail 失败，降级继续", exc_info=True)
     return reason
 
 

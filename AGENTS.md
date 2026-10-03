@@ -16,6 +16,8 @@
 
 - 性能/待办类结论记录到 `docs/PERF_TODO.md`、调优硬编码记录到 `docs/TUNING_TODOS.md`；API 变更必须同步 `docs/API_CONTRACT.md`。
 
+- **日志与静默异常（2026-10-03 起）**：业务模块统一 `logging.getLogger(__name__)`，**不再新增 `except Exception: pass`**——一律「记录 + 降级」：影响结果的降级用 `logger.warning(..., exc_info=True)`，可预期的高频失败（多源探测、可选 AI 增强项）用 `logger.debug(..., exc_info=True)`。任务链路日志自动归档到 `data/logs/task/<task_id>.log`（JSON Lines，恒为 DEBUG 全量），进程级归档 `data/logs/app-YYYYMMDD.log`（级别由 `LOG_LEVEL` 控制）；排障先看 task 归档。
+
 - 完成代码改动后默认 commit + push（用户明确要求过的工作流）。
 
 ## 常用命令
@@ -24,6 +26,7 @@
 |---|---|
 | 后端测试 | `cd backend; python -m pytest tests/ -q` |
 | 前端类型检查 | `cd frontend; npx tsc --noEmit` |
+| 后端静态检查 | `python -m ruff check .`（仓库根目录，配置见 `ruff.toml`） |
 | 后端启动（开发） | `cd backend; ..\.venv\Scripts\python.exe run.py` |
 | 前端启动（开发） | `cd frontend; npm run dev` |
 | Docker 启动 | `docker compose up -d --build` |

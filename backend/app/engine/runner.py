@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import re
 from typing import Callable, Optional
 
+import logging
 import polars as pl
 
 from . import datafeed
@@ -20,6 +21,9 @@ from .risk import RiskConfig, RiskManager
 from .stats import build_metrics, monthly_returns
 from .strategies import REGISTRY, apply_param_defaults
 from ..data import store, sources
+
+
+logger = logging.getLogger(__name__)
 
 DEFAULTS = {
     "initial_capital": 1_000_000.0,
@@ -650,6 +654,7 @@ def _day_ratio(d: str, start: str, end: str) -> float:
         span = max(1, (e - s).days)
         return max(0.0, min(1.0, (c - s).days / span))
     except Exception:  # noqa: BLE001
+        logger.warning("_day_ratio 失败，降级继续", exc_info=True)
         return 0.0
 
 
@@ -1348,6 +1353,7 @@ def _simulate(cfg: dict, prepared: dict[str, pl.DataFrame], params: dict,
                     else:
                         month_end = True
                 except Exception:
+                    logger.warning("nav_take_profit_settle 失败，降级继续", exc_info=True)
                     month_end = True  # 无法判断全局日历：保持旧行为（最后一天结算）
             if month_end:
                 month_settle(day)

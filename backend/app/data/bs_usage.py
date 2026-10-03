@@ -14,6 +14,7 @@
   由 sources._ensure_login 在登录/查询返回错误码 10001011 时写入。
 - 达上限行为：拒绝并抛出 BsDailyCapExceeded（任务以明确错误失败，不硬撞黑名单）。
 """
+import logging
 import os
 import re
 import socket
@@ -25,6 +26,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from .. import config, db
+
+
+logger = logging.getLogger(__name__)
 
 # 每日 API 上限（baostock 官方限制）；可用环境变量覆盖
 DAILY_CAP = int(os.environ.get("BS_DAILY_CAP", "50000"))
@@ -84,6 +88,7 @@ def _fetch_official_blacklist(ip: str) -> dict | None:
                 "latest_release": release,
                 "pending_release": pending}
     except Exception:
+        logger.debug("_fetch_official_blacklist 失败，降级继续", exc_info=True)
         return None
 
 
@@ -208,12 +213,12 @@ class BsUsageTracker:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception:
-            pass
+            logger.debug("_release_fd 失败，降级继续", exc_info=True)
         finally:
             try:
                 os.close(fd)
             except Exception:
-                pass
+                logger.debug("_release_fd 失败，降级继续", exc_info=True)
 
     # ---- 黑名单状态（跨进程） ----
     def _blacklist_row(self, ip: str = "") -> dict | None:
@@ -383,7 +388,7 @@ class BsUsageTracker:
                 if r.status_code == 200:
                     return _extract_ipv4(r.text)
         except Exception:
-            pass
+            logger.debug("_fetch_public_ip 失败，降级继续", exc_info=True)
         return ""
 
     @staticmethod
@@ -396,9 +401,11 @@ class BsUsageTracker:
             finally:
                 s.close()
         except Exception:
+            logger.debug("_outbound_interface_ip 失败，降级继续", exc_info=True)
             try:
                 return socket.gethostbyname(socket.gethostname())
             except Exception:
+                logger.debug("_outbound_interface_ip 失败，降级继续", exc_info=True)
                 return ""
 
     # ---- 监控快照（API 用） ----

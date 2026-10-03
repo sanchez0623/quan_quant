@@ -13,6 +13,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+import logging
 import polars as pl
 
 from .. import db
@@ -21,6 +22,9 @@ from ..engine import momentum_core as mc
 from ..engine.runner import _auto_domain, _shift_back
 from ..engine.strategies.momentum_slot import MomentumSlotStrategy
 from . import feishu, intraday
+
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CFG = {
     "above_ma": 20,          # 站上均线锚周期（20 对齐 momentum_slot）
@@ -80,7 +84,7 @@ def _stale_by_calendar(data_dir, as_of: str,
                 return (as_of < expected,
                         f"较上一交易日 {expected} 缺 {missed} 个交易日", missed)
     except Exception:  # noqa: BLE001  日历缺失/异常走自然日兜底
-        pass
+        logger.debug("日历缺失/异常走自然日兜底", exc_info=True)
     days = (now - datetime.strptime(as_of, "%Y-%m-%d")).days
     return days > 4, f"滞后 {days} 天（自然日，日历缺失）", days
 
@@ -112,7 +116,7 @@ def run_premarket(data_dir: Optional[str] = None,
             daily_close = dict(zip(day_close["code"].to_list(),
                                    [float(x) for x in day_close["close"].to_list()]))
     except Exception:
-        pass
+        logger.warning("run_premarket 失败，降级继续", exc_info=True)
 
     # 名称映射（stock_basic）；信号与池子展示用
     name_map: dict[str, str] = {}
@@ -123,7 +127,7 @@ def run_premarket(data_dir: Optional[str] = None,
                         for r in basic.select(["code", "name"]).to_dicts()
                         if r.get("name")}
     except Exception:
-        pass
+        logger.warning("run_premarket 失败，降级继续", exc_info=True)
 
     # 数据滞后检测（交易日历口径）：as_of 落后上一交易日才告警，跨长假不误报
     stale, stale_detail, stale_days = _stale_by_calendar(

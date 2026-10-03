@@ -9,8 +9,12 @@
 """
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 def auto_pick_params(report: dict, limit: int = 3) -> list[str]:
@@ -105,6 +109,7 @@ def scan_params(report: dict, param_keys: list[str], data_dir: Optional[str] = N
                 rows.append({"param": key, "value": value,
                              **{k: m.get(k) for k in _METRIC_KEYS}})
             except Exception as e:  # noqa: BLE001  单点失败不中断
+                logger.debug("参数单点评估失败，跳过该点", exc_info=True)
                 rows.append({"param": key, "value": value, "error": str(e)[:150]})
             done += 1
             if progress_cb:

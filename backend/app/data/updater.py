@@ -3,6 +3,7 @@
 框架完整；可选数据源不可用时抛出带说明的错误（提示生成演示数据）。
 """
 import bisect
+import logging
 import time
 import traceback
 from datetime import datetime
@@ -11,6 +12,9 @@ from typing import Callable, Optional
 import polars as pl
 
 from . import sources, store
+
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateError(RuntimeError):
@@ -268,6 +272,7 @@ def update_industry(data_dir: Optional[str] = None,
             data_dir,
             progress_cb=lambda p, m: report(8.5 + 1.0 * p / 100, m))
     except Exception as e:  # noqa: BLE001
+        logger.warning("update_industry 失败，降级继续", exc_info=True)
         report(9.5, f"警告：指数历史快照同步失败（{e}），候选域将回退当前快照")
 
     # ---- 步骤 2：申万三级行业（理杏仁加速 -> 乐咕爬虫，全量替换） ----
@@ -287,6 +292,7 @@ def update_industry(data_dir: Optional[str] = None,
             report(100, "行业与成分更新完成（理杏仁）")
             return stats
         except Exception as e:  # noqa: BLE001
+            logger.warning("_write_industry 失败，降级继续", exc_info=True)
             report(12, f"理杏仁拉取失败（{e}），回退乐咕爬虫...")
 
     report(10, "抓取申万三级行业（乐咕，约 3~5 分钟）...")
@@ -629,6 +635,7 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
                     try:
                         adj_df = src.get_adj_factor(code)
                     except Exception:
+                        logger.warning("_flush_daily 失败，降级继续", exc_info=True)
                         adj_df = None
                     if adj_df is not None and adj_df.height:
                         break
@@ -668,6 +675,7 @@ def update(scope: str = "daily", codes: Optional[list[str]] = None,
             for line in fmt_health_report(h).splitlines():
                 report(77, line)
         except Exception as e:   # 健康检查失败不阻断更新
+            logger.warning("健康检查失败不阻断更新", exc_info=True)
             report(77, f"复权因子健康检查执行失败（不阻断）: {e}")
         stats["daily_rows"] = daily_rows
         stats["adj_factor_rows"] = adj_rows

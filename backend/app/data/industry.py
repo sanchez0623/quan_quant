@@ -18,9 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 from typing import Callable, Optional
 
+import logging
 import polars as pl
 
 from . import sources
+
+
+logger = logging.getLogger(__name__)
 
 _URL_OVERVIEW = "https://legulegu.com/stockdata/sw-industry-overview"
 _URL_COMPOSITION = "https://legulegu.com/stockdata/index-composition?industryCode={code}"
@@ -135,6 +139,7 @@ def fetch_sw_tree() -> dict:
     try:
         return _tree_from_akshare()
     except Exception:  # noqa: BLE001
+        logger.debug("fetch_sw_tree 失败，降级继续", exc_info=True)
         return _tree_from_html()
 
 
@@ -285,6 +290,7 @@ def crawl_sw_industry(
         try:
             cons = fetch_sw_constituents(item["code"])
         except Exception as e:  # noqa: BLE001
+            logger.debug("行业成分抓取失败，降级继续", exc_info=True)
             return None
         if not cons:
             return None
@@ -308,6 +314,7 @@ def crawl_sw_industry(
             try:
                 df = fut.result()
             except Exception:  # noqa: BLE001
+                logger.debug("行业成分结果解析失败，降级继续", exc_info=True)
                 df = None
             if df is not None and df.height:
                 frames.append(df)

@@ -14,10 +14,15 @@ from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Callable, Optional
 
+import logging
 import optuna
 
 from .engine import datafeed, runner
 from .engine.strategies import apply_param_defaults
+from . import logging_setup
+
+
+logger = logging.getLogger(__name__)
 
 # risk_config 中的键（param_space 允许搜索这些键，落位到 risk_config）
 RISK_KEYS = {
@@ -208,6 +213,7 @@ def _walk_forward_score(config: dict, best_params: dict, suggested: dict,
         try:
             r = runner.run_backtest(cfg, data_dir=data_dir)
         except Exception:  # noqa: BLE001
+            logger.warning("_walk_forward_score 失败，降级继续", exc_info=True)
             continue
         curve = [p for p in (r.get("equity_curve") or [])
                  if (p.get("date") or "") >= fold["test_start"]]
@@ -254,6 +260,7 @@ def _sensitivity_analysis(config: dict, best_params: dict, param_space: dict,
             try:
                 val = _metric_value(runner.run_backtest(cfg, data_dir=data_dir), metric)
             except Exception:  # noqa: BLE001
+                logger.warning("_sensitivity_analysis 失败，降级继续", exc_info=True)
                 val = None
             rows.append({"value": p2[key], "metric": round(val, 6) if val is not None else None})
         vals = [x["metric"] for x in rows if x["metric"] is not None]
@@ -312,6 +319,7 @@ def _pool_candidates(data_dir: str, exclude: set, start: str, end: str):
             day = pl.read_parquet(f, columns=["date"])["date"].str.slice(0, 10)
             n = day.filter((day >= start) & (day <= end)).len()
         except Exception:  # noqa: BLE001
+            logger.debug("_pool_candidates 失败，降级继续", exc_info=True)
             continue
         if n >= ROBUST_ALT_MIN_BARS:
             if code.startswith(("300", "301")):
@@ -336,6 +344,7 @@ def _robust_metrics(config: dict, data_dir: str, best_params: dict,
         return {k: (float(m.get(k)) if m.get(k) is not None else None)
                 for k in ("annual_return", "total_return", "max_drawdown", "sharpe")}
     except Exception:  # noqa: BLE001
+        logger.warning("_robust_metrics 失败，降级继续", exc_info=True)
         return None
 
 
@@ -355,6 +364,7 @@ def _run_robustness(config: dict, data_dir: str, best_params: dict) -> dict:
     try:
         gem, kcb = _pool_candidates(data_dir, set(universe), start, end)
     except Exception as e:  # noqa: BLE001
+        logger.warning("_run_robustness 失败，降级继续", exc_info=True)
         gem, kcb = [], []
         out["skipped"] = f"候选池扫描失败: {e}"
 
@@ -410,6 +420,13 @@ def _run_robustness(config: dict, data_dir: str, best_params: dict) -> dict:
 # ---------------- 主流程 ----------------
 
 def _optuna_batch_worker(payload: dict) -> int:
+    """子进程入口包装：为这一批 trial 建立任务日志上下文后交给 inner。"""
+    task_id = str(payload.get("task_id") or "optimize")
+    with logging_setup.task_context(task_id, "optimize_worker"):
+        return _optuna_batch_worker_inner(payload)
+
+
+def _optuna_batch_worker_inner(payload: dict) -> int:
     """P0-3/P1-3 子进程入口：载入既有 study（SQLite），连续执行 n 个 trial 后退出。
 
     与主流程同源的行为：默认 TPE sampler（历史驱动，从 storage 读取）、
@@ -459,6 +476,7 @@ def _optuna_batch_worker(payload: dict) -> int:
                 r = runner.run_backtest(single, data_dir=data_dir)
                 partials.append(_metric_value(r, metric))
             except Exception:
+                logger.warning("objective 失败，降级继续", exc_info=True)
                 partials.append(-9e9)
             trial.report(sum(partials) / len(partials), k)
             if trial.should_prune():
@@ -488,7 +506,7 @@ def _optuna_batch_worker(payload: dict) -> int:
                 f"寻优中: {label} · trial {min(finished, g_trials)}/{g_trials}",
                 db_path)
         except Exception:  # noqa: BLE001
-            pass
+            logger.warning("objective 失败，降级继续", exc_info=True)
         gc.collect()
     return ran
 
@@ -712,6 +730,7 @@ def run_optimize(task_id: str, config: dict, *,
             imp.update({k: round(float(v), 4) for k, v in gi_imp.items()})
         param_importance = imp or None
     except Exception:  # noqa: BLE001
+        logger.warning("run_optimize 失败，降级继续", exc_info=True)
         param_importance = None
 
     # 标记与最优参数一致的 trial 的样本外值
@@ -725,6 +744,7 @@ def run_optimize(task_id: str, config: dict, *,
     try:
         robustness = _run_robustness(config, data_dir, best_params)
     except Exception as e:  # noqa: BLE001
+        logger.warning("run_optimize 失败，降级继续", exc_info=True)
         robustness = {"verdict": "unknown", "reason": f"稳健性验证异常: {e}"}
 
     # ---- 参数敏感度曲面（SENSITIVITY）：best_params 单参数邻域，样本外评估 ----
@@ -734,6 +754,7 @@ def run_optimize(task_id: str, config: dict, *,
         sensitivity = _sensitivity_analysis(config, best_params, all_space, metric,
                                             data_dir, split)
     except Exception as e:  # noqa: BLE001
+        logger.warning("run_optimize 失败，降级继续", exc_info=True)
         sensitivity = []
         cb(99, f"敏感度分析跳过: {e}")
 

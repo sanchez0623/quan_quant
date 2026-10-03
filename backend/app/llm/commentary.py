@@ -11,7 +11,11 @@
 - AI 产出仅作当下决策辅助，不回填历史信号记录（无后视镜原则在 AI 侧同样适用）。
 """
 import json
+import logging
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
 
 BRIEF_SYSTEM_PROMPT = (
     "你是量化交易实盘助手。基于系统盘前信号流程的输出数据（JSON），生成一段"
@@ -46,6 +50,7 @@ def _chat_text(system: str, data: dict, db_path: Optional[str] = None) -> Option
         text = (result.get("content") or "").strip()
         return text or None
     except Exception:  # noqa: BLE001  AI 增强失败不阻断主流程
+        logger.debug("AI 增强失败不阻断主流程", exc_info=True)
         return None
 
 

@@ -1,0 +1,19 @@
+# ruff 配置（CI 静态检查门禁）
+#
+# 规则集刻意最小化：只拦「语法错误（E9）+ 未定义名（F821）」这类必然导致
+# 运行期崩溃的问题，不把历史风格债（未使用 import / 变量 / import 顺序）一次性
+# 引进来。后续扩容路径：先治理再上锁，例如
+#   select = ["E9", "F821", "F401"],  # 未使用 import
+#   extend-select = ["I"],            # import 排序（需先 --fix 治理全库）
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E9", "F821"]
+
+# 注：.venv / node_modules / dist / build / __pycache__ 等已由 ruff 内置默认排除；
+# 这里只排除一次性调试脚本（agent 工作区产物），其余源码全部纳入检查。
+exclude = [
+  "_*.py",       # 根目录/子目录下的一次性脚本（含 backend/tests/_dbg*.py）
+  "gen_doc.py",  # 文档生成脚本
+]

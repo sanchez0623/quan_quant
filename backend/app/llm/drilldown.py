@@ -11,7 +11,11 @@
 使用纪律（预算护栏在 analyzer 的调用循环里）：下钻轮次上限、单轮工具数上限。
 """
 import json
+import logging
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
 
 # ---- 预算护栏 ----
 TOOL_RESULT_MAX_CHARS = 6000   # 单个工具结果截断上限（追加"已截断"标记）
@@ -191,6 +195,7 @@ def _weekly_overlay(code: str, trades: list[dict], data_dir: Optional[str]) -> O
         return [{"date": r["date"][:10], "close": round(float(r["close"]), 3)}
                 for r in sub.to_dicts()[::step]]
     except Exception:  # noqa: BLE001  行情叠加是增强项，失败静默降级
+        logger.debug("行情叠加是增强项，失败静默降级", exc_info=True)
         return None
 
 
@@ -289,4 +294,5 @@ def execute_tool(name: Optional[str], args: dict, report: dict,
                                       end_month=args.get("end_month"))
         return {"error": f"未知工具: {name}（可用: {sorted(TOOL_NAMES)}）"}
     except Exception as e:  # noqa: BLE001  工具失败不让整个分析崩掉
+        logger.debug("工具失败不让整个分析崩掉", exc_info=True)
         return {"error": f"工具执行失败: {e}"}

@@ -5,9 +5,13 @@ webhook 从 .env 的 FEISHU_WEBHOOK_URL 读取（config.py）；
 未配置时静默跳过（返回 False），推送失败不阻断盘前/盘中主流程。
 """
 import json
+import logging
 import urllib.request
 
 from .. import config
+
+
+logger = logging.getLogger(__name__)
 
 
 def send_text(text: str) -> bool:
@@ -24,6 +28,7 @@ def send_text(text: str) -> bool:
         resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
         return resp.get("code") == 0 or resp.get("StatusCode") == 0
     except Exception:
+        logger.warning("send_text 失败，降级继续", exc_info=True)
         return False
 
 

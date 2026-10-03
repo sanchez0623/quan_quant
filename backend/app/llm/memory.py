@@ -11,11 +11,15 @@ embedding 配置（可选）：EMBEDDING_API_KEY / EMBEDDING_BASE_URL（默认�
 EMBEDDING_MODEL（默认 BAAI/bge-large-zh-v1.5）。任何失败静默降级为文本召回。
 """
 import json
+import logging
 import math
 import os
 from typing import Optional
 
 from .. import db
+
+
+logger = logging.getLogger(__name__)
 
 EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
 EMBEDDING_MODEL = "BAAI/bge-large-zh-v1.5"
@@ -70,6 +74,7 @@ def embed_texts(texts: list[str]) -> Optional[list[list[float]]]:
         data = resp.json().get("data") or []
         return [d["embedding"] for d in sorted(data, key=lambda x: x.get("index", 0))]
     except Exception:  # noqa: BLE001  embedding 是增强项，失败降级
+        logger.debug("embedding 是增强项，失败降级", exc_info=True)
         return None
 
 

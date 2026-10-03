@@ -3,6 +3,7 @@
 后端编排子回测任务 + 归因分解（T 边际 / 时钟效应 / 交互项）。
 """
 import json
+import logging
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from .. import config, db
 from ..auth import get_current_user
 from ..task_manager import manager
 from .backtests import validate_backtest_config
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -94,6 +98,7 @@ def _metrics_for(task_id: str) -> dict | None:
         r = json.loads(Path(path).read_text(encoding="utf-8"))
         return r.get("metrics") or {}
     except Exception:  # noqa: BLE001
+        logger.warning("_metrics_for 失败，降级继续", exc_info=True)
         return None
 
 

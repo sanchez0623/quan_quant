@@ -12,6 +12,7 @@
 线程模型：daemon 守护线程 30s tick，异常捕获打日志不死；
 start() 幂等（模块级引用），由 main.py 启动时拉起。
 """
+import logging
 import threading
 import time
 import traceback
@@ -21,6 +22,9 @@ from .. import db
 from ..data import store
 from ..task_manager import manager
 from . import premarket
+
+
+logger = logging.getLogger(__name__)
 
 TICK_SEC = 30
 MORNING_WINDOW = (8 * 60 + 25, 11 * 60 + 30)     # 08:25~11:30
@@ -41,7 +45,7 @@ def _is_trading_day(today: str, now: datetime) -> bool:
             if row.height:
                 return bool(row["is_open"][0])
     except Exception:
-        pass
+        logger.debug("_is_trading_day 失败，降级继续", exc_info=True)
     return now.weekday() < 5
 
 
@@ -179,6 +183,7 @@ def tick(now: datetime | None = None) -> dict:
                                  f"实盘盘后分钟线更新（自动）{today}")
                     out["submitted"].append("minute5")
     except Exception:
+        logger.debug("tick 失败，降级继续", exc_info=True)
         out["error"] = traceback.format_exc(limit=3)
     return out
 
@@ -190,6 +195,7 @@ def _loop() -> None:
             for k in r.get("submitted", []):
                 print(f"[scheduler] auto-submitted: {k}", flush=True)
         except Exception:
+            logger.debug("_loop 失败，降级继续", exc_info=True)
             traceback.print_exc()
         time.sleep(TICK_SEC)
 

@@ -15,9 +15,13 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
+import logging
 import polars as pl
 
 from ..data import sources
+
+
+logger = logging.getLogger(__name__)
 
 # 完成bar缓冲：bar 戳后预留秒数（收盘集合竞价 15:00 bar 戳后立即视为完成）
 BAR_LAG_SEC = 0
@@ -34,6 +38,7 @@ def fetch_minute5(code: str, day: str) -> Optional[pl.DataFrame]:
         try:
             df = src.get_minute5(code, start, day)
         except Exception:
+            logger.debug("fetch_minute5 失败，降级继续", exc_info=True)
             df = None
         if df is not None and df.height:
             out = df.filter(pl.col("date").str.slice(0, 10) == day).sort("date")
@@ -99,6 +104,7 @@ def realtime_quotes(codes: list[str], timeout: float = 5.0) -> dict[str, dict]:
                 continue
         return out
     except Exception:
+        logger.debug("realtime_quotes 失败，降级继续", exc_info=True)
         return {}
 
 
@@ -134,6 +140,7 @@ def cross_check_bar(code: str, bar_date: str, bar_close: float,
     try:
         df = src.get_minute5(code, day, day)
     except Exception:
+        logger.debug("cross_check_bar 失败，降级继续", exc_info=True)
         return f"双源复核：新浪请求异常，{bar_date} bar无法交叉验证——本轮暂停"
     if df is None or not df.height:
         return f"双源复核：新浪无当日数据，{bar_date} bar无法交叉验证——本轮暂停"

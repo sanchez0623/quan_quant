@@ -19,9 +19,13 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import logging
 import yaml
 
 from .. import config, db
+
+
+logger = logging.getLogger(__name__)
 
 # ---------------- 内置服务商注册表（OpenAI 兼容协议） ----------------
 # key 池模式下免 yaml 配置；火山方舟模型可用接入点ID(ep-xxx)或方舟模型名
@@ -301,7 +305,7 @@ def _record_usage(profile_name: str, result: dict, db_path: Optional[str]) -> No
         db.record_llm_usage(profile_name, result["model"], result["prompt_tokens"],
                             result["completion_tokens"], result["elapsed"], db_path)
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("_record_usage 失败，降级继续", exc_info=True)
 
 
 def _chat_via_pool(profile_name: Optional[str], messages: list,
@@ -336,6 +340,8 @@ def _chat_via_pool(profile_name: Optional[str], messages: list,
                     "tokens": result["prompt_tokens"] + result["completion_tokens"],
                     "elapsed": result["elapsed"], "profile": entry["provider"]}
         except Exception as exc:  # noqa: BLE001  任何失败（401/402/429/超时/5xx）→ 切下一个
+            logger.warning("LLM key 调用失败（401/402/429/超时/5xx），切换下一个",
+                           exc_info=True)
             last_err = f"[{entry['provider']}#{entry['index']}] {exc}"
             print(f"[llm] key#{entry['index']}({entry['provider']}) 调用失败，"
                   f"切换下一个: {exc}", file=sys.stderr)
@@ -374,6 +380,7 @@ def _chat_via_profiles(profile_name: Optional[str], messages: list,
                         "tokens": result["prompt_tokens"] + result["completion_tokens"],
                         "elapsed": result["elapsed"], "profile": name}
             except Exception as e:  # noqa: BLE001
+                logger.warning("LLM profile 调用失败，切换下一个 key", exc_info=True)
                 last_err = f"profile {name} key#{ki} 调用失败: {e}"
                 import httpx as _hx
                 key_level = (isinstance(e, _hx.HTTPStatusError)

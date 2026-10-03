@@ -30,6 +30,7 @@
 | `backend/app/config.py` | 环境变量、路径常量（含 `META_DB_PATH`） |
 | `backend/app/db.py` | SQLite CRUD（tasks / reports / users / keys） |
 | `backend/app/task_manager.py` | 进程池任务调度与进度推送 |
+| `backend/app/logging_setup.py` | 日志体系：`setup()` 进程级、`task_context(task_id)` 任务归档 |
 | `backend/app/api/backtests.py` | 回测任务 CRUD + `normalize_config`（顶层字段登记表） |
 | `backend/app/engine/broker.py` | 撮合模拟（T+1 / 涨跌停 / 滑点 / 手续费） |
 | `backend/app/engine/datafeed.py` | 行情数据加载（polars 向量化） |
@@ -50,6 +51,12 @@
 ## API 契约
 
 所有 API 变更必须同步更新 `docs/API_CONTRACT.md`。
+
+## 日志约定
+
+- 业务模块统一 `logging.getLogger(__name__)`；禁止新增静默 `except Exception: pass`（记录 + 降级）
+- 任务链路自动归档 `data/logs/task/<task_id>.log`（JSON Lines，恒 DEBUG 全量）；进程级 `data/logs/app-YYYYMMDD.log`
+- 级别：`LOG_LEVEL`（默认 INFO）控控制台与日归档；保留期 `LOG_RETENTION_DAYS`（默认 30 天）
 
 ## 常用命令
 

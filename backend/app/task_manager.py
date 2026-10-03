@@ -3,6 +3,7 @@
 Windows spawn 兼容：任务函数均为模块级可 pickle；executor 惰性创建。
 """
 import json
+import logging
 import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor
@@ -10,7 +11,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from . import config, db
+from . import config, db, logging_setup
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------- 模块级任务函数（可 pickle，子进程执行） ----------------
@@ -74,6 +77,7 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
             (report.get("metrics") or {}).get("total_return"), ensure_ascii=False),
             limit=3, db_path=db_path, exclude_task_id=task_id)
     except Exception:  # noqa: BLE001  记忆是增强项
+        logger.debug("实验记忆召回失败（增强项，降级继续）", exc_info=True)
         memories = []
     db.update_progress(task_id, 20, "正在调用 LLM 生成分析（深度思考可能需数十秒）...", db_path)
     result = analyze_backtest(report, profile, db_path=db_path,
@@ -95,6 +99,7 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
             validation["commentary"] = vs.review_commentary(
                 report, validation, profile, db_path=db_path, username=username)
         except Exception as e:  # noqa: BLE001  验证失败不影响分析结论（AI 不为回测失败背锅）
+            logger.debug("验证失败不影响分析结论（AI 不为回测失败背锅）", exc_info=True)
             validation = {"error": f"{e}", "verdict": None}
     db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
                      result["content"], result["tokens"], result["elapsed"], None,
@@ -109,7 +114,7 @@ def ai_analyze_task(task_id: str, backtest_id: str, profile: str, db_path: str,
             memory.build_memory_text(report, result.get("suggestions"), validation),
             db_path=db_path)
     except Exception:  # noqa: BLE001  记忆是增强项
-        pass
+        logger.debug("实验记忆写入失败（增强项，降级继续）", exc_info=True)
     db.finish_task(task_id, "success",
                    payload={"backtest_id": backtest_id, "profile": result["profile"],
                             "verdict": (validation or {}).get("verdict")},
@@ -158,6 +163,7 @@ def ai_refine_task(task_id: str, refine_from: str, profile: str, db_path: str,
             validation["commentary"] = vs.review_commentary(
                 report, validation, profile, db_path=db_path, username=username)
         except Exception as e:  # noqa: BLE001
+            logger.debug("ai_refine_task 失败，降级继续", exc_info=True)
             validation = {"error": f"{e}", "verdict": None}
     db.save_analysis(task_id, backtest_id, result["profile"], result["model"], "success",
                      result["content"], result["tokens"], result["elapsed"], None,
@@ -234,7 +240,7 @@ def _expected_daily_latest(now: Optional[datetime] = None) -> str:
             if prev.height:
                 return str(prev["date"][-1])
     except Exception:  # noqa: BLE001  日历缺失/异常走 weekday 兜底
-        pass
+        logger.debug("日历缺失/异常走 weekday 兜底", exc_info=True)
     d = now.date() - timedelta(days=1)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
@@ -353,10 +359,12 @@ def live_postclose_task(task_id: str, db_path: str, data_dir: str,
         try:
             shadow = reports.shadow_stats()
         except Exception:  # noqa: BLE001
+            logger.warning("live_postclose_task 失败，降级继续", exc_info=True)
             shadow = None
         try:
             slippage = reports.slippage_stats().get("summary")
         except Exception:  # noqa: BLE001
+            logger.warning("live_postclose_task 失败，降级继续", exc_info=True)
             slippage = None
         ai_commentary = commentary.postclose_commentary(
             result, signals_today, shadow=shadow, slippage=slippage, db_path=db_path)
@@ -400,32 +408,40 @@ def run_task(kind: str, kwargs: dict) -> None:
 
     协作式取消：任务函数内抛 db.TaskCancelled（update_progress 检查点感知
     cancelling 标记）-> 落 cancelled 终态；排队期间已被请求取消的任务
-    在入口直接跳过执行。"""
+    在入口直接跳过执行。
+
+    整个执行过程包在 logging_setup.task_context 内：该任务链路的全部
+    ``app.*`` 日志额外归档到 ``data/logs/task/<task_id>.log``。"""
     import inspect
     task_id = kwargs["task_id"]
     db_path = kwargs.get("db_path")
-    try:
-        t = db.get_task(task_id, db_path=db_path)
-        if t and t["status"] == "cancelling":
-            db.finish_task(task_id, "cancelled",
-                           error="已被用户取消（执行前）", db_path=db_path)
-            return
-        fn = _TASK_FUNCS[kind]
-        sig = inspect.signature(fn)
-        filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-        fn(**filtered)
-    except db.TaskCancelled:
-        db.finish_task(task_id, "cancelled", error="已被用户取消", db_path=db_path)
-    except Exception as e:  # noqa: BLE001
-        db.finish_task(task_id, "failed",
-                       error=f"{e}\n{traceback.format_exc()[-1500:]}", db_path=db_path)
-    except BaseException as e:  # noqa: BLE001
-        # SystemExit/KeyboardInterrupt 不是 Exception 子类，会穿透上方防护导致
-        # worker 静默死亡（历史"任务进程异常终止: "空 error 的真凶）。就地转
-        # failed 并记录异常类型，worker 存活、进程池不受影响。
-        db.finish_task(task_id, "failed",
-                       error=f"BaseException {type(e).__name__}: {e}\n"
-                             f"{traceback.format_exc()[-1500:]}", db_path=db_path)
+    with logging_setup.task_context(task_id, kind):
+        try:
+            t = db.get_task(task_id, db_path=db_path)
+            if t and t["status"] == "cancelling":
+                logger.info("任务在执行前已被取消")
+                db.finish_task(task_id, "cancelled",
+                               error="已被用户取消（执行前）", db_path=db_path)
+                return
+            fn = _TASK_FUNCS[kind]
+            sig = inspect.signature(fn)
+            filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+            fn(**filtered)
+        except db.TaskCancelled:
+            logger.warning("任务已被用户取消")
+            db.finish_task(task_id, "cancelled", error="已被用户取消", db_path=db_path)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("任务异常终止: %s", e)
+            db.finish_task(task_id, "failed",
+                           error=f"{e}\n{traceback.format_exc()[-1500:]}", db_path=db_path)
+        except BaseException as e:  # noqa: BLE001
+            # SystemExit/KeyboardInterrupt 不是 Exception 子类，会穿透上方防护导致
+            # worker 静默死亡（历史"任务进程异常终止: "空 error 的真凶）。就地转
+            # failed 并记录异常类型，worker 存活、进程池不受影响。
+            logger.exception("任务被 BaseException 终止: %s", type(e).__name__)
+            db.finish_task(task_id, "failed",
+                           error=f"BaseException {type(e).__name__}: {e}\n"
+                                 f"{traceback.format_exc()[-1500:]}", db_path=db_path)
 
 
 # ---------------- 主进程 TaskManager ----------------
@@ -490,7 +506,7 @@ class TaskManager:
                 f"阶段: {task.get('message')}\n"
                 f"错误: {(task.get('error') or '')[:300]}")
         except Exception:  # noqa: BLE001  推送绝不影响任务本身
-            pass
+            logger.warning("定时任务失败飞书推送异常（不影响任务本身）", exc_info=True)
 
     def _on_done(self, fut, task_id: str) -> None:
         """worker 崩溃兜底：future 异常而任务未达终态 → 标记 failed"""
@@ -500,10 +516,11 @@ class TaskManager:
         try:
             task = db.get_task(task_id, db_path=self.db_path)
             if task and task["status"] not in ("success", "failed", "cancelled"):
+                logger.error("worker 异常终止，兜底置 failed: %s", exc)
                 db.finish_task(task_id, "failed", error=f"任务进程异常终止: {exc}",
                                db_path=self.db_path)
         except Exception:  # noqa: BLE001
-            pass
+            logger.warning("worker 崩溃兜底置 failed 失败（任务: %s）", task_id, exc_info=True)
 
     def shutdown(self) -> None:
         with self._lock:

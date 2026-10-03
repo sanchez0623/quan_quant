@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """参数寻优接口（Optuna）"""
 import json
+import logging
 import uuid
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from .. import db
 from ..auth import get_current_user
 from ..task_manager import manager
 from .backtests import validate_backtest_config
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/optimize", tags=["optimize"])
 
@@ -198,5 +202,5 @@ def optimize_detail(task_id: str, _user: str = Depends(get_current_user)):
                     best = max(done, key=lambda t: t.value)
                     base["best_params"], base["best_value"] = best.params, round(best.value, 6)
         except Exception:  # noqa: BLE001
-            pass
+            logger.warning("optimize_detail 失败，降级继续", exc_info=True)
     return base

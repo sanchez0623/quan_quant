@@ -14,7 +14,11 @@ analysis 仍为 success（AI 不为回测失败背锅），validation.error 记�
 """
 import copy
 import json
+import logging
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
 
 # 参与对比的关键指标（max_drawdown 越接近 0 越好，单独处理）
 _KEY_METRICS = ("total_return", "sharpe", "calmar", "win_rate",
@@ -173,6 +177,7 @@ def review_commentary(orig_report: dict, validation: dict, profile: Optional[str
                       temperature=0.3, db_path=db_path, username=username)
         return result["content"].strip()
     except Exception:  # noqa: BLE001  点评属增强项，任何失败静默降级
+        logger.debug("AI 点评复核失败（增强项，降级继续）", exc_info=True)
         return None
 
 
