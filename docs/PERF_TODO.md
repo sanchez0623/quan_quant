@@ -58,6 +58,8 @@
 
 - ⚠️ **mootdx（TDX 第三方协议）K线接口被服务端屏蔽（2026-09-28 实测，待办：minute5 兜底源替换）**：tdxpy 协议往返正常（`get_security_count` 正常返回），但 `get_security_bars` 全网主站返回 2 字节空标记（华为云双线主站 38 个 + 杭州电信/湖南电信经典主站均如此；招商/华泰老线路已下线连接失败）。3 个出口 IP × 43+ 服务器次复测一致；排除 DNS/fake-ip（IP 直连）、系统代理（socket 直连不经过）、并发（单线程一致）。时间点：2026-09-23 前 mootdx 兜底可用，09-28 全空——服务端上线第三方协议反爬。**影响**：`MootdxSource`（minute5 主源/兜底）失效，分钟线增量只剩 baostock（有 6 小时封禁风险，≤3 线程规则）。**待办**：实测 akshare（东财 HTTP 通道）5 分钟线深度与质量，若可用则改源顺序（需用户拍板）；`scripts/_test_mootdx_minute5.py` 留作复测探针。
 
+- ⏳ **分钟版（minute5）做T配对记账（待办，用户 2026-10-04 拍板 1a+2b 后遗留）**：`engine/dragon_dip_minute.py` 已接入 `stats.build_metrics` 增补收益归因（`stop_loss_pnl` / `commission_total` / `reduce_pnl` / `adj_pnl` 口径准确），但**未传 `t_cycle_records` / `t_open_debts`**，因此 `t_pnl` 恒为 0、`t_pnl_share` / `position_pnl_share` / `t_trade_count` / `t_win_rate` 不可用于结论（报告 `metrics.attribution_note` 已显式标出）。**下一步**：对齐日线版做T配对口径（反T：`type="做T"` 卖出 + `type="做T买回"` 买回按 `group_id` 配对，期末未回补的计入 `t_open_debts.float_pnl`），完成后 `t_pnl` / `position_pnl` 才可用。相关代码与用户当前未提交的 T 回补（`do_buyback` / `debt_since`）同一块，建议合并推进。
+
 ## 四、三年回测可行性结论（供排期参考）
 
 | 场景                       | 现状                  | P0/P1 全落地后预估         |

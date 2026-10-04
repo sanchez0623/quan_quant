@@ -28,6 +28,9 @@ T+1 按日拦截（当日买入次日才可卖）。
 分红除权日 raw_cost 不回溯调整（pnl 含分红效应，与 runner 口径略有差异）。
 
 报告结构与 runner 兼容（metrics/equity_curve/trade_log/monthly_returns/
+注：metrics 的收益/风险类字段保留分钟版口径（244 交易日），仅「增补」
+stats.build_metrics 的收益归因字段（stop_loss_pnl/commission_total/adj_pnl 等）；
+做T配对未接入，t_pnl 恒为 0（见 metrics.attribution_note）。
 gate_days——gate_days 为策略情绪门控真值，勿与引擎级池/指数门控混淆）。
 """
 import math
@@ -42,9 +45,24 @@ from ..data import store
 from . import limitup_core as lc
 from .broker import Broker
 from .datafeed import load_minute5
-from .stats import monthly_returns
+from .stats import build_metrics, monthly_returns
 
 _LIMIT_TOL = 0.011
+
+# _report 增补的收益归因字段（来自 stats.build_metrics —— 与日线版同一产地）。
+# 刻意不含收益/风险类键：那些键在 _report 里已有分钟版口径（setdefault 保证零数值漂移）。
+_ATTRIBUTION_KEYS = (
+    "adj_pnl", "position_pnl", "open_pnl", "add_pnl", "reduce_pnl",
+    "stop_loss_pnl", "t_pnl", "t_pnl_closed", "t_payoff", "t_trade_count",
+    "t_win_rate", "t_pnl_share", "position_pnl_share", "commission_total",
+    "start_equity", "end_equity",
+)
+# 1a：做T配对明细尚未接入，这些字段暂不可用于结论——在报告里显式标出，避免被当成真值读。
+_ATTRIBUTION_NOTE = (
+    "做T配对（t_cycle_records/t_open_debts）未接入：t_pnl 恒为 0，"
+    "t_pnl_share/position_pnl_share/t_trade_count/t_win_rate 暂不可用于结论；"
+    "stop_loss_pnl/commission_total/reduce_pnl/adj_pnl 口径准确"
+)
 _CTX_START = "2022-01-01"      # Stage 1 预热起点（新股 mature 计数基准）
 _WINDOW_START = "2024-01-02"   # 分钟级回测最早窗口（minute5 覆盖范围）
 
@@ -754,6 +772,19 @@ def _report(cfg: dict, p: dict, days: list[str], trades: list[dict],
         "total_pnl": round(sum(t["pnl"] or 0 for t in sells), 2),
         "avg_hold_days": None,
     }
+    # ---- 收益归因（与日线版同一产地——stats.build_metrics）----
+    # 2b：只「增补」归因字段，上面 12 个指标保留分钟版口径（setdefault 不覆盖）——
+    #     零数值漂移，历史 minute5 报告的收益/夏普/回撤/胜率/盈亏比仍可与新版对比。
+    # 1a：做T配对未接入 -> t_pnl 恒为 0（见 _ATTRIBUTION_NOTE）。
+    # equity_curve 与 end_equity 已是「调整网值」口径（含累计提取），
+    # 故不传 withdrawn，避免提取额被重复计入 adj_end。
+    attributed = build_metrics(
+        trades, equity_curve, initial, final,
+        sum(float(t.get("fee") or 0.0) for t in trades),
+    )
+    for _k in _ATTRIBUTION_KEYS:
+        m.setdefault(_k, attributed.get(_k))
+    m["attribution_note"] = _ATTRIBUTION_NOTE
     rep = {
         "engine_version": "dragon_dip_minute_v1",
         "name": cfg.get("name"), "config": cfg, "params": p,
