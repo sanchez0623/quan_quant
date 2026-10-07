@@ -244,6 +244,31 @@ export interface BacktestFormMeta {
   fields: BacktestFieldMeta[]
 }
 
+// ---- AI 参数助手（POST /api/ai/param-assist，方案 A 单轮）----
+/** 一处待应用变更：scope 决定 key 的归属（顶层字段 / 策略参数 / 风控配置） */
+export interface ParamAssistDiffItem {
+  scope: 'top' | 'params' | 'risk_config'
+  key: string
+  old: unknown
+  new: unknown
+}
+
+export interface ParamAssistResult {
+  ok: boolean
+  /** 是否有实际变更（净化后仍为空 = AI 认为无需调整） */
+  changed?: boolean
+  error?: string
+  notes?: string
+  /** 无法自动调整的部分（结构性字段/锁定参数/非法取值），提示用户手动处理 */
+  unsupported?: string[]
+  /** 合并后新引入的业务冲突（非空时应禁用「应用到表单」） */
+  issues?: string[]
+  diff?: ParamAssistDiffItem[]
+  /** 草稿配置 + 补丁的合并结果，仅在用户点「应用」后写入表单 */
+  merged_config?: BacktestCreateRequest
+  model?: string
+}
+
 // ---- 回测任务 ----
 export interface BacktestCreateRequest extends WithdrawalConfig {
   name: string

@@ -15,9 +15,9 @@ from ..auth import get_current_user
 from ..engine.strategies import REGISTRY, apply_param_defaults, validate_params
 from ..task_manager import manager
 from .backtest_schema import (
-    RANK_KEY_LABELS,
     TOP_FIELDS,
     UI_FIELDS,
+    dynamic_choices,
     pydantic_field_spec,
     top_level_defaults,
 )
@@ -318,23 +318,13 @@ def backtest_form_meta(_user: str = Depends(get_current_user)):
     applyConfigToForm，新增顶层字段只改后端 backtest_schema.TOP_FIELDS，
     前端不再手抄默认值，也不会再出现「前端/引擎默认值不一致」。
     """
-    from ..data.sources import BOARD_LABELS, INDEX_CSI800, INDEX_CSI800_NAME, INDEX_REGISTRY
-    from ..engine.momentum_core import RANK_KEYS
-
-    dynamic_choices = {
-        "rank_key": [{"value": k, "label": RANK_KEY_LABELS.get(k, k)} for k in RANK_KEYS],
-        "auto_index": (
-            [{"value": k, "label": name} for k, (_, name) in INDEX_REGISTRY.items()]
-            + [{"value": INDEX_CSI800, "label": f"{INDEX_CSI800_NAME}（=沪深300+中证500）"}]
-        ),
-        "auto_boards": [{"value": k, "label": v} for k, v in BOARD_LABELS.items()],
-    }
+    choices_by_key = dynamic_choices()
 
     fields = []
     for f in UI_FIELDS:
         item = dict(f)
         if f.get("choices_from"):
-            item["choices"] = dynamic_choices.get(f["choices_from"], [])
+            item["choices"] = choices_by_key.get(f["choices_from"], [])
         fields.append(item)
     return {"fields": fields}
 

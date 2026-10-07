@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -31,6 +32,7 @@ import type { ColumnsType } from 'antd/es/table'
 import TaskStopButton from '../components/TaskStopButton'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
+  aiParamAssist,
   createBacktest,
   createTemplate,
   deleteBacktest,
@@ -47,6 +49,8 @@ import type {
   BacktestFieldMeta,
   BacktestListItem,
   BacktestTemplateItem,
+  ParamAssistDiffItem,
+  ParamAssistResult,
   ParamSchema,
   ParamValue,
   RiskConfig,
@@ -62,6 +66,13 @@ import { flattenBacktestConfig, fmtDiffVal } from '../utils/configDiff'
 
 /** 多回测对比上限（配色与可读性；URL 传参也随之受限） */
 const COMPARE_MAX = 8
+
+/** AI 参数助手 diff 的作用域中文名 */
+const ASSIST_SCOPE_LABEL: Record<ParamAssistDiffItem['scope'], string> = {
+  top: '顶层字段',
+  params: '策略参数',
+  risk_config: '风控配置'
+}
 
 interface DatePreset {
   label: string
@@ -212,6 +223,10 @@ export default function BacktestList() {
   // ---- AI 生成任务名称 ----
   const [naming, setNaming] = useState(false)
   const [tplNaming, setTplNaming] = useState(false)  // 存为模板弹窗的 AI 命名
+  // ---- AI 参数助手（方案 A 单轮）：一句话 -> 补丁 diff -> 确认后才写入表单 ----
+  const [assistText, setAssistText] = useState('')
+  const [assisting, setAssisting] = useState(false)
+  const [assistRes, setAssistRes] = useState<ParamAssistResult | null>(null)
   // ---- 常用回测区间（自定义保存，localStorage 私有） ----
   const [datePresets, setDatePresets] = useState<DatePreset[]>(() => {
     try { return JSON.parse(localStorage.getItem('bt_date_presets') || '[]') as DatePreset[] } catch { return [] }
@@ -261,6 +276,21 @@ export default function BacktestList() {
   const indexGate = Form.useWatch('index_gate', form)
   const dateRangeWatch = Form.useWatch('dateRange', form)
   const startDate = dateRangeWatch?.[0] ? (dateRangeWatch[0] as Dayjs).format('YYYY-MM-DD') : undefined
+
+  /** AI 参数助手 diff 的中文标签：顶层取表单元数据，策略参数取 param_schema，
+   *  风控取 RISK_FIELDS（后端不维护风控中文标签，避免第二份标签源） */
+  const riskLabelByKey = useMemo(() => {
+    const m: Record<string, string> = {}
+    RISK_FIELDS.forEach((f) => { m[f.key] = f.label })
+    return m
+  }, [])
+  const assistDiffLabel = useCallback((d: ParamAssistDiffItem): string => {
+    if (d.scope === 'top') return metaByKey[d.key]?.label ?? d.key
+    if (d.scope === 'params') {
+      return strategy?.param_schema?.find((x) => x.key === d.key)?.label ?? d.key
+    }
+    return riskLabelByKey[d.key] ?? d.key
+  }, [metaByKey, strategy, riskLabelByKey])
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -439,6 +469,44 @@ export default function BacktestList() {
     } finally {
       setNaming(false)
     }
+  }
+
+  /** AI 参数助手：把一句话翻译成配置补丁并预览（不动表单，确认后才应用） */
+  const onParamAssist = async () => {
+    const text = assistText.trim()
+    if (!text) {
+      message.warning('请先描述要调整的参数')
+      return
+    }
+    const values = form.getFieldsValue(true) as BacktestFormValues
+    if (!values.strategy_id) {
+      message.warning('请先选择策略，再让 AI 调整参数')
+      return
+    }
+    setAssisting(true)
+    try {
+      const res = await aiParamAssist({ message: text, config: buildConfigFromValues(values) })
+      if (!res.ok) {
+        setAssistRes(null)
+        message.error(res.error || 'AI 未能解析这段需求，请换个说法')
+        return
+      }
+      setAssistRes(res)
+      if (!res.changed) message.info('AI 认为当前配置已满足描述，无需调整')
+    } catch (err) {
+      message.error(errDetail(err, 'AI 参数助手调用失败'))
+    } finally {
+      setAssisting(false)
+    }
+  }
+
+  /** 应用 AI 补丁：合并结果（当前草稿 + 补丁）整体回填表单，之后由用户自行提交 */
+  const applyParamAssist = () => {
+    const merged = assistRes?.merged_config
+    if (!merged) return
+    applyConfigToForm(merged, '已应用 AI 参数调整，确认后可提交回测')
+    setAssistRes(null)
+    setAssistText('')
   }
 
   const onStrategyChange = (id: string) => {
@@ -913,6 +981,122 @@ export default function BacktestList() {
           onFinish={onFinish}
           initialValues={initialValues}
         >
+          <Card
+            type="inner"
+            size="small"
+            style={{ marginBottom: 16 }}
+            title={
+              <Space size={8}>
+                <RobotOutlined />
+                AI 参数助手
+                <Typography.Text type="secondary" style={{ fontWeight: 'normal', fontSize: 12 }}>
+                  用一句话描述调整，AI 生成补丁，确认后再写入表单（不会自动提交回测）
+                </Typography.Text>
+              </Space>
+            }
+          >
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                placeholder="例如：max_holdings（最大持仓只数）改成 3，关掉 pool_gate（池级趋势开关），止损收紧到 8%"
+                value={assistText}
+                onChange={(e) => setAssistText(e.target.value)}
+                onPressEnter={onParamAssist}
+                disabled={assisting}
+                maxLength={500}
+              />
+              <Button type="primary" icon={<RobotOutlined />} loading={assisting} onClick={onParamAssist}>
+                生成调整
+              </Button>
+            </Space.Compact>
+            {assistRes && (
+              <div style={{ marginTop: 12 }}>
+                {assistRes.notes && (
+                  <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                    AI：{assistRes.notes}
+                    {assistRes.model ? `（${assistRes.model}）` : ''}
+                  </Typography.Paragraph>
+                )}
+                {!!assistRes.issues?.length && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 8 }}
+                    message="与现有配置冲突，已停用「应用」（请先处理后再试）"
+                    description={
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {assistRes.issues.map((x, i) => <li key={i}>{x}</li>)}
+                      </ul>
+                    }
+                  />
+                )}
+                {!!assistRes.unsupported?.length && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 8 }}
+                    message="以下部分无法自动调整，请手动处理"
+                    description={
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {assistRes.unsupported.map((x, i) => <li key={i}>{x}</li>)}
+                      </ul>
+                    }
+                  />
+                )}
+                {(assistRes.diff?.length ?? 0) > 0 ? (
+                  <>
+                    <Table
+                      size="small"
+                      pagination={false}
+                      rowKey={(r: ParamAssistDiffItem) => `${r.scope}:${r.key}`}
+                      dataSource={assistRes.diff ?? []}
+                      columns={[
+                        {
+                          title: '作用域',
+                          dataIndex: 'scope',
+                          width: 90,
+                          render: (s: ParamAssistDiffItem['scope']) => ASSIST_SCOPE_LABEL[s]
+                        },
+                        {
+                          title: '字段',
+                          dataIndex: 'key',
+                          render: (_: unknown, r: ParamAssistDiffItem) => (
+                            <Space size={6}>
+                              <span>{assistDiffLabel(r)}</span>
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                {r.key}
+                              </Typography.Text>
+                            </Space>
+                          )
+                        },
+                        {
+                          title: '变更',
+                          render: (_: unknown, r: ParamAssistDiffItem) => (
+                            <Space size={6}>
+                              <Typography.Text type="secondary" delete>{fmtDiffVal(r.old)}</Typography.Text>
+                              <span>→</span>
+                              <Typography.Text strong>{fmtDiffVal(r.new)}</Typography.Text>
+                            </Space>
+                          )
+                        }
+                      ] as ColumnsType<ParamAssistDiffItem>}
+                    />
+                    <Space style={{ marginTop: 8 }}>
+                      <Button type="primary" onClick={applyParamAssist} disabled={!!assistRes.issues?.length}>
+                        应用到表单
+                      </Button>
+                      <Button onClick={() => setAssistRes(null)}>取消</Button>
+                    </Space>
+                  </>
+                ) : (
+                  <Space>
+                    <Typography.Text type="secondary">没有可应用的变更</Typography.Text>
+                    <Button size="small" onClick={() => setAssistRes(null)}>取消</Button>
+                  </Space>
+                )}
+              </div>
+            )}
+          </Card>
+
           <Row gutter={16}>
             <Col span={8}>
               <Form.Item

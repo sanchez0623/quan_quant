@@ -230,3 +230,40 @@ def refine_analysis(task_id: str, body: RefineBody,
     manager.submit("ai_refine", new_task_id, refine_from=task_id,
                    profile=body.profile, username=user)
     return {"task_id": new_task_id, "status": "pending"}
+
+
+class ParamAssistBody(BaseModel):
+    message: str
+    config: dict
+    profile: Optional[str] = None  # auto(默认) | 服务商名 | key_id（数字字符串）
+
+
+@router.post("/param-assist")
+def param_assist(body: ParamAssistBody, user: str = Depends(get_current_user)):
+    """AI 参数助手（方案 A，单轮）：一句话 -> 配置补丁 + diff 预览。
+
+    只返回补丁与预览，不落库、不改表单、不自动提交回测；由用户确认后在前端
+    「应用到表单」写入草稿，再自行提交。护栏见 ``llm/param_assist.py``。
+    """
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="请输入要调整的参数")
+    if len(msg) > 500:
+        raise HTTPException(status_code=400, detail="描述过长（≤500 字），请精简后重试")
+    cfg = body.config or {}
+    if not cfg.get("strategy_id"):
+        raise HTTPException(status_code=400, detail="请先选择策略，再让 AI 调整参数")
+    # 发起人未配置任何可用 key 且系统级兜底也为空 -> 提前友好报错
+    if not provider.db_key_entries(user) and not provider.key_pool_mode():
+        available = [p["name"] for p in provider.profiles_info(user)["profiles"]
+                     if p["available"]]
+        if not available:
+            raise HTTPException(
+                status_code=400,
+                detail="未配置 LLM API Key：请到「Key 管理」页添加你的 API Key")
+    from ..llm.param_assist import assist
+    try:
+        return assist(cfg, msg, profile=body.profile, username=user)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("AI 参数助手失败", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"AI 参数助手失败：{e}")

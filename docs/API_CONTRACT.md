@@ -486,6 +486,44 @@ available = 对应环境变量已配置。
 限制：原分析需有结构化建议与有效验证结果；**修正产物不可再修正（单步限制）**；
 `GET /api/ai/analyses` 返回体新增 `refined_from` 字段。
 
+### POST /api/ai/param-assist
+
+AI 参数助手（方案 A，单轮，**不落库、不改表单、不提交回测**）：把用户在回测表单里输入的
+一句话翻译成「当前草稿配置」的补丁并返回 diff 预览，用户点「应用到表单」后才写入表单。
+
+请求：
+`{"message": "把 max_holdings（最大持仓只数）改成 3，关掉 pool_gate（池级趋势开关）",
+ "config": {与 BacktestRequest 同构的当前草稿}, "profile": "auto | 服务商名 | key_id"}`
+（message ≤500 字；config 需含 `strategy_id`）
+
+响应：
+
+```json
+{"ok": true, "changed": true,
+ "patch": {"top": {}, "params": {"mom_short": 15}, "risk_config": {}},
+ "merged_config": {"...": "草稿 + 补丁"},
+ "diff": [{"scope": "params", "key": "mom_short", "old": 10, "new": 15}],
+ "notes": "一句话说明改了什么",
+ "unsupported": ["period：换周期涉及数据可得性，请手动切换"],
+ "issues": [], "model": "deepseek-chat"}
+```
+
+护栏（`llm/param_assist.py`，与 AI 分析同口径的**代码层**幻觉护栏）：
+
+- 只认登记过的键：顶层取 `backtest_schema.TOP_FIELDS`（表单可见项），策略参数取
+  `param_schema`（剔除 frozen 锁定项），风控取 `RiskConfigModel` 全字段；表外的键一律丢弃。
+- 数值 clamp 到 schema 的 min/max；枚举只认合法 choices；风控数值越界视为口径错误，直接丢弃不 clamp。
+- 策略 / 周期 / 股票池 / 回测区间**不参与自动调整**（换策略会作废参数、换区间可能触发数据补拉），
+  LLM 若提到则落到 `unsupported` 提示用户手动处理。
+- `issues` 只报「本次补丁新引入的」业务冲突（草稿本身未选股票池等未完成状态不算）；
+  非空时前端停用「应用」。
+
+`diff[].scope` ∈ `top`（顶层字段）/ `params`（策略参数）/ `risk_config`（风控配置）；
+中文标签由前端按 `metaByKey` / `param_schema` / `RISK_FIELDS` 解析。
+
+错误：400 = 未配置 LLM Key / 未选策略 / message 为空或超长 / LLM 调用失败；
+LLM 回复无法解析为 JSON 时返回 200 + `{"ok": false, "error": "..."}`。
+
 ### POST /api/ai/sensitivity
 
 方案 B Phase 3 敏感度扫描：关键参数 ±20% 网格（当前/-20%/+20%）各跑一次回测
@@ -574,4 +612,3 @@ AI 建议验证胜率统计（全部分析的 validation.verdict 计数）：
 - 进度接口对不存在任务返回 404。
 
 - WebSocket 连接：`ws://localhost:8000/ws/tasks/{task_id}`，无需 JWT（任务id本身是随机不可猜的）。
-

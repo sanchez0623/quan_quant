@@ -173,6 +173,25 @@ def field_map() -> dict[str, dict[str, Any]]:
     return {f["key"]: f for f in TOP_FIELDS}
 
 
+def dynamic_choices() -> dict[str, list[dict[str, Any]]]:
+    """``choices_from`` 的动态选项（运行时从引擎与数据层注册表解析）。
+
+    ``GET /api/backtests/meta`` 与 AI 参数助手（``llm/param_assist``）共用，
+    避免两处各抄一份「合法取值」，选项改版时只改这里。
+    """
+    from ..data.sources import BOARD_LABELS, INDEX_CSI800, INDEX_CSI800_NAME, INDEX_REGISTRY
+    from ..engine.momentum_core import RANK_KEYS
+
+    return {
+        "rank_key": [{"value": k, "label": RANK_KEY_LABELS.get(k, k)} for k in RANK_KEYS],
+        "auto_index": (
+            [{"value": k, "label": name} for k, (_, name) in INDEX_REGISTRY.items()]
+            + [{"value": INDEX_CSI800, "label": f"{INDEX_CSI800_NAME}（=沪深300+中证500）"}]
+        ),
+        "auto_boards": [{"value": k, "label": v} for k, v in BOARD_LABELS.items()],
+    }
+
+
 def top_level_defaults() -> dict[str, Any]:
     """normalize_config 需要补默认值的字段（fill=True）。
 

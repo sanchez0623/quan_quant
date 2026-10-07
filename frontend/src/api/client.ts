@@ -40,6 +40,7 @@ import type {
   OptimizeCreateRequest,
   OptimizeDetail,
   OptimizeListItem,
+  ParamAssistResult,
   PickOptions,
   PickRequest,
   PickResponse,
@@ -293,6 +294,19 @@ export async function applyAiSuggestions(data: {
   mode: 'backtest' | 'prefill'
 }): Promise<{ mode: 'backtest' | 'prefill'; task_id?: string; config?: BacktestCreateRequest }> {
   const res = await api.post('/ai/apply', data)
+  return res.data
+}
+
+/**
+ * AI 参数助手（方案 A，单轮）：把一句话翻译成回测配置补丁。
+ * 后端只返回 diff 预览与合并结果，不落库；由用户确认后写入表单。
+ */
+export async function aiParamAssist(data: {
+  message: string
+  config: BacktestCreateRequest
+  profile?: string
+}): Promise<ParamAssistResult> {
+  const res = await api.post<ParamAssistResult>('/ai/param-assist', data)
   return res.data
 }
 
